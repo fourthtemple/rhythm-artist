@@ -35,11 +35,11 @@ export {
 } from "./rhythm-config.js";
 
 const DRUM_KIT = {
-  kick: new URL("../assets/audio/drums/kick.wav", import.meta.url).href,
-  snare: new URL("../assets/audio/drums/snare.wav", import.meta.url).href,
-  hat: new URL("../assets/audio/drums/hat.wav", import.meta.url).href,
-  rim: new URL("../assets/audio/drums/rim.wav", import.meta.url).href,
-  scratch: new URL("../assets/audio/drums/scratch.wav", import.meta.url).href
+  kick: new URL("../../assets/audio/drums/kick.wav", import.meta.url).href,
+  snare: new URL("../../assets/audio/drums/snare.wav", import.meta.url).href,
+  hat: new URL("../../assets/audio/drums/hat.wav", import.meta.url).href,
+  rim: new URL("../../assets/audio/drums/rim.wav", import.meta.url).href,
+  scratch: new URL("../../assets/audio/drums/scratch.wav", import.meta.url).href
 };
 
 export class RhythmEngine {
