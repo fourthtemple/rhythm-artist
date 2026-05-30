@@ -132,6 +132,7 @@ export const DEFAULT_RHYTHM_CONFIG = {
   trackReverbSends: DEFAULT_TRACK_REVERB_SENDS,
   trackLevels: DEFAULT_TRACK_LEVELS,
   trackPans: DEFAULT_TRACK_PANS,
+  trackSamples: {},
   generatedRowsEditable: 0,
   soloTracks: [],
   patterns: {
@@ -259,6 +260,19 @@ export const normalizeRhythmConfig = (config = {}) => {
     track,
     Math.max(-1, Math.min(1, finiteNumber(sourcePans[track], DEFAULT_TRACK_PANS[track] ?? 0)))
   ]));
+  // Per-track custom sample assignments: { trackId: { url, label } }. Only keep
+  // entries that point at a string url so save/load stays clean.
+  const sourceSamples = merged.trackSamples && typeof merged.trackSamples === "object" ? merged.trackSamples : {};
+  merged.trackSamples = Object.fromEntries(
+    Object.entries(sourceSamples)
+      .filter(([, entry]) => entry && typeof entry === "object" && typeof entry.url === "string" && entry.url)
+      .map(([track, entry]) => [track, {
+        url: String(entry.url),
+        label: typeof entry.label === "string" ? entry.label : entry.url.split("/").pop() || "sample",
+        root: typeof entry.root === "string" ? entry.root : null,
+        path: typeof entry.path === "string" ? entry.path : null
+      }])
+  );
   merged.generatedRowsEditable = finiteNumber(merged.generatedRowsEditable, DEFAULT_RHYTHM_CONFIG.generatedRowsEditable) >= 0.5 ? 1 : 0;
   merged.soloTracks = Array.isArray(merged.soloTracks)
     ? [...new Set(merged.soloTracks.filter((track) => typeof track === "string"))]

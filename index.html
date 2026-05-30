@@ -142,18 +142,41 @@
                 <output id="selected-note-reverb-send-value">0.00</output>
                 <input id="selected-note-reverb-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
               </label>
-              <label>
-                <span>Track Delay</span>
-                <input id="selected-bus-send" type="range" min="0" max="1" step="0.01" value="0" disabled />
-                <output id="selected-bus-send-value">0.00</output>
-                <input id="selected-bus-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
-              </label>
-              <label>
-                <span>Track Verb</span>
-                <input id="selected-reverb-send" type="range" min="0" max="1" step="0.01" value="0" disabled />
-                <output id="selected-reverb-send-value">0.00</output>
-                <input id="selected-reverb-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
-              </label>
+            </div>
+            <div class="selected-actions">
+              <button id="clear-selected" type="button">Clear</button>
+            </div>
+          </section>
+        </section>
+
+        <aside class="control-panel" aria-label="Rhythm controls">
+          <!-- ── Track Explorer ───────────────────────────── -->
+          <section id="track-explorer-section" class="track-explorer-section">
+            <div class="track-explorer-header">
+              <span class="panel-label">Tracks</span>
+              <div class="track-explorer-actions">
+                <button id="add-track-btn-panel" type="button" class="add-track-btn">+ Track</button>
+                <button id="manage-groups-btn" type="button" class="add-track-btn">Groups</button>
+              </div>
+            </div>
+            <div id="track-explorer-list" class="track-explorer-list" aria-label="Track list"></div>
+          </section>
+
+          <!-- ── Track Inspector (per-track settings) ─────── -->
+          <section id="track-inspector-section" class="track-inspector-section">
+            <div class="track-inspector-header">
+              <span class="panel-label">Track Inspector</span>
+              <strong id="track-inspector-name">No track selected</strong>
+            </div>
+            <div id="track-inspector-body" class="track-inspector-body" hidden>
+              <div class="track-inspector-sample">
+                <span class="track-inspector-sublabel">Sample</span>
+                <div class="track-inspector-sample-row">
+                  <span id="track-sample-name" class="track-sample-name">— built-in —</span>
+                  <button id="track-sample-audition" type="button" title="Audition track">▶</button>
+                  <button id="track-sample-clear" type="button" title="Reset to built-in voice">⟲</button>
+                </div>
+              </div>
               <label>
                 <span>Track Level</span>
                 <input id="selected-track-level" type="range" min="0" max="2" step="0.01" value="1" disabled />
@@ -166,14 +189,32 @@
                 <output id="selected-track-pan-value">C</output>
                 <input id="selected-track-pan-number" class="selected-number" type="number" min="-1" max="1" step="0.01" value="0" disabled />
               </label>
-            </div>
-            <div class="selected-actions">
-              <button id="clear-selected" type="button">Clear</button>
+              <label>
+                <span>Track Delay</span>
+                <input id="selected-bus-send" type="range" min="0" max="1" step="0.01" value="0" disabled />
+                <output id="selected-bus-send-value">0.00</output>
+                <input id="selected-bus-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
+              </label>
+              <label>
+                <span>Track Verb</span>
+                <input id="selected-reverb-send" type="range" min="0" max="1" step="0.01" value="0" disabled />
+                <output id="selected-reverb-send-value">0.00</output>
+                <input id="selected-reverb-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
+              </label>
             </div>
           </section>
-        </section>
 
-        <aside class="control-panel" aria-label="Rhythm controls">
+          <!-- ── Sample Browser ──────────────────────────── -->
+          <section id="sample-browser-section" class="sample-browser-section">
+            <div class="sample-browser-header">
+              <span class="panel-label">Sample Browser</span>
+              <select id="sample-root-select" class="sample-root-select" aria-label="Sample library"></select>
+            </div>
+            <div class="sample-browser-breadcrumb" id="sample-breadcrumb"></div>
+            <div id="sample-browser-list" class="sample-browser-list" aria-label="Samples"></div>
+            <p class="sample-browser-hint">Click ▶ to audition · click ＋ to load into the selected track</p>
+          </section>
+
           <section>
             <span class="panel-label">Groove</span>              <label>
                 <span>BPM</span>

@@ -8,7 +8,6 @@ import {
   EDITABLE_GENERATED_ROWS,
   PHRASE_BARS,
   SECTION_BARS,
-  STEP_OPTION_DEFAULTS,
   STYLE_ORDER,
   SYNTH_ROOT_HZ,
   SYNTH_SCALE,
@@ -26,6 +25,8 @@ import {
   rhythmicShiftScale
 } from "./rhythm-arrangement.js";
 import { RhythmEventEmitter } from "./rhythm-events.js";
+import { EightOhEightVoices } from "./rhythm-engine-808.js";
+import { SynthVoices } from "./rhythm-engine-synth.js";
 
 export {
   DEFAULT_RHYTHM_CONFIG,
@@ -75,6 +76,10 @@ export class RhythmEngine {
     this.reverbWetGain = null;
     this.buffers = new Map();
     this.noiseBuffer = null;
+    // User-assigned custom samples, keyed by track id. When present, they
+    // override the built-in voice for that track in `playHit`.
+    this.customSampleBuffers = new Map();
+    this.customSampleUrls = new Map();
     this.loadingPromise = null;
     this.timer = null;
     this.playing = false;
@@ -484,6 +489,96 @@ export class RhythmEngine {
       console.warn("Drum kit failed to load; rhythm engine will use synth fallbacks", error);
     });
     return this.loadingPromise;
+  }
+
+  /** True when the track has a user-assigned custom sample loaded. */
+  hasCustomSample(track) {
+    return this.customSampleBuffers.has(track);
+  }
+
+  /**
+   * Assign (or replace) a user-selected sample for a track. The buffer is
+   * decoded once and cached; subsequent `playHit(track, …)` calls use it
+   * instead of the built-in voice. Pass `null`/empty url to clear.
+   * @param {string} track registry track id
+   * @param {string|null} url fetchable audio url (e.g. /api/sample-file?…)
+   */
+  async setTrackSample(track, url) {
+    if (!track) return false;
+    if (!url) {
+      this.clearTrackSample(track);
+      return true;
+    }
+    await this.ensureContext();
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`Sample fetch failed: ${response.status}`);
+      const data = await response.arrayBuffer();
+      const buffer = await this.context.decodeAudioData(data);
+      this.customSampleBuffers.set(track, buffer);
+      this.customSampleUrls.set(track, url);
+      return true;
+    } catch (error) {
+      console.warn(`Failed to load custom sample for ${track}`, error);
+      return false;
+    }
+  }
+
+  /** Remove a track's custom sample, reverting to the built-in voice. */
+  clearTrackSample(track) {
+    this.customSampleBuffers.delete(track);
+    this.customSampleUrls.delete(track);
+  }
+
+  /** The url of a track's custom sample, or null. */
+  trackSampleUrl(track) {
+    return this.customSampleUrls.get(track) || null;
+  }
+
+  /**
+   * Audition a track once, right now: plays its custom sample if assigned,
+   * otherwise triggers the built-in voice via the generated-row dispatcher.
+   */
+  async auditionTrack(track, { gain = 0.6 } = {}) {
+    await this.ensureContext();
+    await this.loadKit();
+    await this.context.resume();
+    if (this.masterGain) this.setVolume(Math.max(this.volume, 0.5), { immediate: true });
+    const time = this.context.currentTime + 0.02;
+    if (this.hasCustomSample(track)) {
+      this.playHit(track, time, gain, 1, {});
+      return;
+    }
+    this.previewTrackVoice(track, time, gain);
+  }
+
+  /** Trigger a single hit of a track's built-in voice (no custom sample). */
+  previewTrackVoice(track, time, gain = 0.6) {
+    const stepDuration = this.activeStepDurationSeconds || this.stepDurationSeconds("jazz", 0.4);
+    const freq = this.synthFrequency(0, 1);
+    switch (track) {
+      case "bass": this.playBassSynth(time, freq, { gain, duration: 0.42, style: "jazz" }); break;
+      case "kick": case "snare": case "hat": case "rim": this.playHit(track, time, gain, 1, {}); break;
+      case "pluck": this.playPluckSynth(time, freq, { gain, duration: stepDuration * 1.85 }); break;
+      case "funk": this.playFunkSynth(time, freq, { gain, duration: stepDuration * 1.35, bite: 0.6 }); break;
+      case "pad": this.playPadSynth(time, [freq, this.synthFrequency(2, 1), this.synthFrequency(4, 1)], { gain, duration: stepDuration * 8, style: "jazz" }); break;
+      case "whale": this.playWhaleSynth(time, { gain, duration: stepDuration * 6, style: "jazz", bend: 0.55 }); break;
+      case "eightOhEightKick": this.play808Kick(time, gain * this.config.eightOhEightLevel, 0, track, {}); break;
+      case "eightOhEightSnare": this.play808Snare(time, gain * this.config.eightOhEightLevel * 0.82, track, {}); break;
+      case "eightOhEightHat": this.play808Hat(time, gain * this.config.eightOhEightLevel * 0.52, track, {}); break;
+      case "eightOhEightClick": this.play808Click(time, gain * this.config.eightOhEightLevel * 0.42, track, {}); break;
+      case "eightOhEightClap": this.play808Clap(time, gain * this.config.eightOhEightLevel * 0.7, track, {}); break;
+      case "eightOhEightTomLow": this.play808Tom(time, gain * this.config.eightOhEightLevel * 0.72, -7, track, {}); break;
+      case "eightOhEightTomMid": this.play808Tom(time, gain * this.config.eightOhEightLevel * 0.72, 0, track, {}); break;
+      case "eightOhEightTomHigh": this.play808Tom(time, gain * this.config.eightOhEightLevel * 0.72, 7, track, {}); break;
+      case "eightOhEightCowbell": this.play808Cowbell(time, gain * this.config.eightOhEightLevel * 0.6, track, {}); break;
+      case "eightOhEightConga": this.play808Conga(time, gain * this.config.eightOhEightLevel * 0.7, 0, track, {}); break;
+      case "eightOhEightMaraca": this.play808Maraca(time, gain * this.config.eightOhEightLevel * 0.5, track, {}); break;
+      case "eightOhEightCymbal": this.play808Cymbal(time, gain * this.config.eightOhEightLevel * 0.55, track, {}); break;
+      case "echo": this.playEchoPingSynth(time + 0.01, { gain, duration: stepDuration * 4, frequency: this.synthFrequency(12, 1) }); break;
+      case "space": this.playNeutralSpaceSound(time, "jazz", { gain }); break;
+      default: this.playHit(track, time, gain, 1, {}); break;
+    }
   }
 
   scheduler() {
@@ -1334,7 +1429,7 @@ export class RhythmEngine {
   }
 
   playHit(hit, time, gain = 0.5, playbackRate = 1, options = {}) {
-    const buffer = this.buffers.get(hit);
+    const buffer = this.customSampleBuffers.get(hit) || this.buffers.get(hit);
     if (!buffer) {
       this.playSynthFallback(hit, time, gain);
       return;
@@ -1350,277 +1445,6 @@ export class RhythmEngine {
     this.connectTrackBus(hitGain, hit, options, nodes);
     source.start(Math.max(this.context.currentTime, time));
     this.scheduleVoiceCleanup([source], nodes);
-  }
-
-  play808Overlay(hit, time, gain = 0.4) {
-    const amount = clamp01(gain) * this.config.eightOhEightLevel;
-    if (!this.context || !this.masterGain || amount <= 0.001) return;
-    if (hit === "kick") {
-      this.play808Kick(time, Math.max(amount, this.config.eightOhEightLevel * 0.18), 0, hit);
-    } else if (hit === "snare") {
-      this.play808Snare(time, amount * 0.82, hit);
-    } else if (hit === "hat") {
-      this.play808Hat(time, amount * 0.52, hit);
-    } else if (hit === "rim") {
-      this.play808Click(time, amount * 0.42, hit);
-    }
-  }
-
-  play808Kick(time, amount, tuneOffset = 0, track = "eightOhEightKick", options = {}) {
-    const now = Math.max(this.context.currentTime, time);
-    const tune = 2 ** ((this.config.eightOhEightTune + finiteNumber(tuneOffset, 0)) / 12);
-    const oscillator = this.context.createOscillator();
-    const body = this.context.createOscillator();
-    const filter = this.context.createBiquadFilter();
-    const drive = this.context.createWaveShaper();
-    const kickGain = this.context.createGain();
-    oscillator.type = "sine";
-    body.type = "sine";
-    oscillator.frequency.setValueAtTime(68 * tune, now);
-    oscillator.frequency.exponentialRampToValueAtTime(36 * tune, now + 0.34);
-    body.frequency.setValueAtTime(49 * tune, now);
-    body.frequency.setTargetAtTime(43 * tune, now + 0.12, 0.18);
-    filter.type = "lowpass";
-    filter.frequency.setValueAtTime(132, now);
-    filter.Q.setValueAtTime(0.75, now);
-    drive.curve = this.createDriveCurve(0.22 + amount * 0.18);
-    drive.oversample = "2x";
-    kickGain.gain.setValueAtTime(0.0001, now);
-    kickGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, Math.min(0.48, amount * 0.95)), now + 0.03);
-    kickGain.gain.setTargetAtTime(Math.max(0.0002, Math.min(0.26, amount * 0.46)), now + 0.08, 0.12);
-    kickGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.78);
-    oscillator.connect(filter);
-    body.connect(filter);
-    filter.connect(drive);
-    drive.connect(kickGain);
-    const nodes = [oscillator, body, filter, drive, kickGain];
-    this.connectTrackOutput(kickGain, track, this.drumBus || this.masterGain, nodes);
-    this.connectTrackBus(kickGain, track, options, nodes);    oscillator.start(now);
-    body.start(now);
-    oscillator.stop(now + 0.82);
-    body.stop(now + 0.82);
-    this.scheduleVoiceCleanup([oscillator, body], nodes);
-  }
-
-  play808Snare(time, amount, track = "snare", options = {}) {
-    const now = Math.max(this.context.currentTime, time);
-    const noise = this.context.createBufferSource();
-    const filter = this.context.createBiquadFilter();
-    const noiseGain = this.context.createGain();
-    const tone = this.context.createOscillator();
-    const toneGain = this.context.createGain();
-    noise.buffer = this.getNoiseBuffer();
-    filter.type = "bandpass";
-    filter.frequency.setValueAtTime(1750, now);
-    filter.Q.setValueAtTime(0.8, now);
-    noiseGain.gain.setValueAtTime(Math.max(0.0001, Math.min(0.12, amount * 0.18)), now);
-    noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
-    tone.type = "triangle";
-    tone.frequency.setValueAtTime(184, now);
-    toneGain.gain.setValueAtTime(Math.max(0.0001, Math.min(0.08, amount * 0.1)), now);
-    toneGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
-    noise.connect(filter);
-    filter.connect(noiseGain);
-    tone.connect(toneGain);
-    const snareOut = this.context.createGain();
-    noiseGain.connect(snareOut);
-    toneGain.connect(snareOut);
-    const nodes = [noise, filter, noiseGain, tone, toneGain, snareOut];
-    this.connectTrackOutput(snareOut, track, this.drumBus || this.masterGain, nodes);
-    this.connectTrackBus(snareOut, track, options, nodes);
-    noise.start(now);
-    tone.start(now);
-    noise.stop(now + 0.18);
-    tone.stop(now + 0.14);
-    this.scheduleVoiceCleanup([noise, tone], nodes);
-  }
-
-  play808Hat(time, amount, track = "eightOhEightHat", options = {}) {
-    const now = Math.max(this.context.currentTime, time);
-    const noise = this.context.createBufferSource();
-    const filter = this.context.createBiquadFilter();
-    const hatGain = this.context.createGain();
-    noise.buffer = this.getNoiseBuffer();
-    filter.type = "highpass";
-    filter.frequency.setValueAtTime(6500, now);
-    filter.Q.setValueAtTime(0.7, now);
-    hatGain.gain.setValueAtTime(Math.max(0.0001, Math.min(0.045, amount * 0.08)), now);
-    hatGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.055);
-    noise.connect(filter);
-    filter.connect(hatGain);
-    const nodes = [noise, filter, hatGain];
-    this.connectTrackOutput(hatGain, track, this.drumBus || this.masterGain, nodes);
-    this.connectTrackBus(hatGain, track, options, nodes);
-    noise.start(now);
-    noise.stop(now + 0.07);
-    this.scheduleVoiceCleanup([noise], nodes);
-  }
-
-  play808Click(time, amount, track = "eightOhEightClick", options = {}) {
-    const now = Math.max(this.context.currentTime, time);
-    const noise = this.context.createBufferSource();
-    const filter = this.context.createBiquadFilter();
-    const clickGain = this.context.createGain();
-    noise.buffer = this.getNoiseBuffer();
-    filter.type = "highpass";
-    filter.frequency.setValueAtTime(3200, now);
-    clickGain.gain.setValueAtTime(Math.max(0.0001, Math.min(0.04, amount * 0.11)), now);
-    clickGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.026);
-    noise.connect(filter);
-    filter.connect(clickGain);
-    const nodes = [noise, filter, clickGain];
-    this.connectTrackOutput(clickGain, track, this.drumBus || this.masterGain, nodes);
-    this.connectTrackBus(clickGain, track, options, nodes);
-    noise.start(now);
-    noise.stop(now + 0.04);
-    this.scheduleVoiceCleanup([noise], nodes);
-  }
-
-  play808Clap(time, amount, track = "eightOhEightClap", options = {}) {
-    const now = Math.max(this.context.currentTime, time);
-    const filter = this.context.createBiquadFilter();
-    const clapGain = this.context.createGain();
-    filter.type = "bandpass";
-    filter.frequency.setValueAtTime(1100, now);
-    filter.Q.setValueAtTime(1.3, now);
-    filter.connect(clapGain);
-    const nodes = [filter, clapGain];
-    this.connectTrackOutput(clapGain, track, this.drumBus || this.masterGain, nodes);
-    // Three quick noise bursts to imitate the 808 clap's stacked transients.
-    const bursts = [0, 0.009, 0.018, 0.04];
-    const sources = [];
-    bursts.forEach((offset, index) => {
-      const noise = this.context.createBufferSource();
-      const burstGain = this.context.createGain();
-      noise.buffer = this.getNoiseBuffer();
-      const peak = Math.max(0.0001, Math.min(0.12, amount * (index === bursts.length - 1 ? 0.16 : 0.1)));
-      const start = now + offset;
-      burstGain.gain.setValueAtTime(peak, start);
-      burstGain.gain.exponentialRampToValueAtTime(0.0001, start + (index === bursts.length - 1 ? 0.16 : 0.03));
-      noise.connect(burstGain);
-      burstGain.connect(filter);
-      noise.start(start);
-      noise.stop(start + (index === bursts.length - 1 ? 0.18 : 0.04));
-      nodes.push(noise, burstGain);
-      sources.push(noise);
-    });
-    this.connectTrackBus(clapGain, track, options, nodes);
-    this.scheduleVoiceCleanup(sources, nodes);
-  }
-
-  play808Tom(time, amount, tuneOffset = 0, track = "eightOhEightTomMid", options = {}) {
-    const now = Math.max(this.context.currentTime, time);
-    const tune = 2 ** ((this.config.eightOhEightTune + finiteNumber(tuneOffset, 0)) / 12);
-    const oscillator = this.context.createOscillator();
-    const filter = this.context.createBiquadFilter();
-    const tomGain = this.context.createGain();
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(180 * tune, now);
-    oscillator.frequency.exponentialRampToValueAtTime(92 * tune, now + 0.26);
-    filter.type = "lowpass";
-    filter.frequency.setValueAtTime(420, now);
-    filter.Q.setValueAtTime(1.1, now);
-    tomGain.gain.setValueAtTime(0.0001, now);
-    tomGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, Math.min(0.34, amount * 0.7)), now + 0.012);
-    tomGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
-    oscillator.connect(filter);
-    filter.connect(tomGain);
-    const nodes = [oscillator, filter, tomGain];
-    this.connectTrackOutput(tomGain, track, this.drumBus || this.masterGain, nodes);
-    this.connectTrackBus(tomGain, track, options, nodes);
-    oscillator.start(now);
-    oscillator.stop(now + 0.46);
-    this.scheduleVoiceCleanup([oscillator], nodes);
-  }
-
-  play808Cowbell(time, amount, track = "eightOhEightCowbell", options = {}) {
-    const now = Math.max(this.context.currentTime, time);
-    const oscA = this.context.createOscillator();
-    const oscB = this.context.createOscillator();
-    const filter = this.context.createBiquadFilter();
-    const bellGain = this.context.createGain();
-    oscA.type = "square";
-    oscB.type = "square";
-    oscA.frequency.setValueAtTime(540, now);
-    oscB.frequency.setValueAtTime(800, now);
-    filter.type = "bandpass";
-    filter.frequency.setValueAtTime(2640, now);
-    filter.Q.setValueAtTime(1.6, now);
-    bellGain.gain.setValueAtTime(0.0001, now);
-    bellGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, Math.min(0.18, amount * 0.32)), now + 0.006);
-    bellGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.32);
-    oscA.connect(filter);
-    oscB.connect(filter);
-    filter.connect(bellGain);
-    const nodes = [oscA, oscB, filter, bellGain];
-    this.connectTrackOutput(bellGain, track, this.drumBus || this.masterGain, nodes);
-    this.connectTrackBus(bellGain, track, options, nodes);
-    oscA.start(now);
-    oscB.start(now);
-    oscA.stop(now + 0.34);
-    oscB.stop(now + 0.34);
-    this.scheduleVoiceCleanup([oscA, oscB], nodes);
-  }
-
-  play808Conga(time, amount, tuneOffset = 0, track = "eightOhEightConga", options = {}) {
-    const now = Math.max(this.context.currentTime, time);
-    const tune = 2 ** ((this.config.eightOhEightTune + finiteNumber(tuneOffset, 0)) / 12);
-    const oscillator = this.context.createOscillator();
-    const congaGain = this.context.createGain();
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(360 * tune, now);
-    oscillator.frequency.exponentialRampToValueAtTime(300 * tune, now + 0.12);
-    congaGain.gain.setValueAtTime(0.0001, now);
-    congaGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, Math.min(0.26, amount * 0.5)), now + 0.008);
-    congaGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
-    oscillator.connect(congaGain);
-    const nodes = [oscillator, congaGain];
-    this.connectTrackOutput(congaGain, track, this.drumBus || this.masterGain, nodes);
-    this.connectTrackBus(congaGain, track, options, nodes);
-    oscillator.start(now);
-    oscillator.stop(now + 0.26);
-    this.scheduleVoiceCleanup([oscillator], nodes);
-  }
-
-  play808Maraca(time, amount, track = "eightOhEightMaraca", options = {}) {
-    const now = Math.max(this.context.currentTime, time);
-    const noise = this.context.createBufferSource();
-    const filter = this.context.createBiquadFilter();
-    const maracaGain = this.context.createGain();
-    noise.buffer = this.getNoiseBuffer();
-    filter.type = "highpass";
-    filter.frequency.setValueAtTime(9000, now);
-    maracaGain.gain.setValueAtTime(Math.max(0.0001, Math.min(0.04, amount * 0.09)), now);
-    maracaGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.04);
-    noise.connect(filter);
-    filter.connect(maracaGain);
-    const nodes = [noise, filter, maracaGain];
-    this.connectTrackOutput(maracaGain, track, this.drumBus || this.masterGain, nodes);
-    this.connectTrackBus(maracaGain, track, options, nodes);
-    noise.start(now);
-    noise.stop(now + 0.05);
-    this.scheduleVoiceCleanup([noise], nodes);
-  }
-
-  play808Cymbal(time, amount, track = "eightOhEightCymbal", options = {}) {
-    const now = Math.max(this.context.currentTime, time);
-    const noise = this.context.createBufferSource();
-    const filter = this.context.createBiquadFilter();
-    const cymbalGain = this.context.createGain();
-    noise.buffer = this.getNoiseBuffer();
-    filter.type = "highpass";
-    filter.frequency.setValueAtTime(7800, now);
-    filter.Q.setValueAtTime(0.5, now);
-    cymbalGain.gain.setValueAtTime(Math.max(0.0001, Math.min(0.05, amount * 0.07)), now);
-    cymbalGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.9);
-    noise.connect(filter);
-    filter.connect(cymbalGain);
-    const nodes = [noise, filter, cymbalGain];
-    this.connectTrackOutput(cymbalGain, track, this.drumBus || this.masterGain, nodes);
-    this.connectTrackBus(cymbalGain, track, options, nodes);
-    noise.start(now);
-    noise.stop(now + 0.95);
-    this.scheduleVoiceCleanup([noise], nodes);
   }
 
   getNoiseBuffer() {
@@ -1697,432 +1521,6 @@ export class RhythmEngine {
     }
   }
 
-  playBassSynth(time, frequency, {
-    gain = 0.09,
-    duration = 0.28,
-    style = this.activePatternStyle,
-    attackMs = STEP_OPTION_DEFAULTS.attackMs,
-    delayMs = STEP_OPTION_DEFAULTS.delayMs,
-    delaySend = STEP_OPTION_DEFAULTS.delaySend,
-    reverbSend = STEP_OPTION_DEFAULTS.reverbSend,
-    dubEcho = STEP_OPTION_DEFAULTS.dubEcho
-  } = {}) {
-    if (!this.context || !this.masterGain) return;
-    const now = Math.max(this.context.currentTime, time);
-    const safeDuration = Math.max(0.08, duration);
-    const oscillator = this.context.createOscillator();
-    const sub = this.context.createOscillator();
-    const accent = this.context.createOscillator();
-    const filter = this.context.createBiquadFilter();
-    const bassGain = this.context.createGain();
-    const accentGain = this.context.createGain();
-    oscillator.type = style === "jazz" ? "triangle" : "sawtooth";
-    sub.type = "sine";
-    accent.type = "triangle";
-    oscillator.frequency.setValueAtTime(frequency, now);
-    sub.frequency.setValueAtTime(frequency * 0.5, now);
-    accent.frequency.setValueAtTime(frequency * 2, now);
-    filter.type = "lowpass";
-    filter.frequency.setValueAtTime(220 + this.config.bassTone * 820 + this.activeBarIntensity * 280, now);
-    filter.frequency.exponentialRampToValueAtTime(86 + this.config.bassTone * 120, now + safeDuration);
-    filter.Q.setValueAtTime(3.8 + this.config.bassTone * 4.5, now);
-    const attackSeconds = Math.max(0.006, Math.min(0.28, finiteNumber(attackMs, STEP_OPTION_DEFAULTS.attackMs) / 1000));
-    const peakGain = Math.max(0.0002, this.synthGain(gain) * this.config.bassLevel);
-    bassGain.gain.setValueAtTime(0.0001, now);
-    bassGain.gain.exponentialRampToValueAtTime(peakGain, now + attackSeconds);
-    bassGain.gain.exponentialRampToValueAtTime(0.0001, now + safeDuration);
-    accentGain.gain.setValueAtTime(0.0001, now);
-    accentGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, peakGain * 0.18), now + 0.008);
-    accentGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.06);
-    oscillator.connect(filter);
-    sub.connect(filter);
-    filter.connect(bassGain);
-    const bassOut = this.context.createGain();
-    bassGain.connect(bassOut);
-    accent.connect(accentGain);
-    accentGain.connect(bassOut);
-    const nodes = [oscillator, sub, accent, filter, bassGain, accentGain, bassOut];
-    this.connectTrackOutput(bassOut, "bass", this.masterGain, nodes);
-    this.connectTrackBus(bassGain, "bass", { delaySend, reverbSend, dubEcho }, nodes);
-    const echoAmount = Math.max(clamp01(delaySend), clamp01(dubEcho));
-    if (echoAmount > 0.001) {
-      this.pushDubFx(now + Math.max(0, finiteNumber(delayMs, 0) / 1000), echoAmount * 0.7, {
-        sustainSeconds: 0.35 + clamp01(dubEcho) * 1.9
-      });
-    }
-    oscillator.start(now);
-    sub.start(now);
-    accent.start(now);
-    oscillator.stop(now + safeDuration + 0.02);
-    sub.stop(now + safeDuration + 0.02);
-    accent.stop(now + 0.07);
-    this.scheduleVoiceCleanup([oscillator, sub, accent], nodes);
-  }
-
-  playPluckSynth(time, frequency, {
-    gain = 0.05,
-    duration = 0.24,
-    pan = 0,
-    wobble = STEP_OPTION_DEFAULTS.wobble,
-    delaySend = STEP_OPTION_DEFAULTS.delaySend,
-    reverbSend = STEP_OPTION_DEFAULTS.reverbSend,
-    dubEcho = STEP_OPTION_DEFAULTS.dubEcho
-  } = {}) {
-    if (!this.context || !this.masterGain) return;
-    const now = Math.max(this.context.currentTime, time);
-    const safeDuration = Math.max(0.06, duration);
-    const oscillator = this.context.createOscillator();
-    const filter = this.context.createBiquadFilter();
-    const pluckGain = this.context.createGain();
-    const wobbleAmount = Math.max(0, Math.min(4, finiteNumber(wobble, 0)));
-    let lfo = null;
-    let lfoGain = null;
-    const panner = typeof this.context.createStereoPanner === "function"
-      ? this.context.createStereoPanner()
-      : null;
-    oscillator.type = "triangle";
-    oscillator.frequency.setValueAtTime(frequency, now);
-    oscillator.frequency.setTargetAtTime(frequency * 0.995, now + 0.02, 0.08);
-    if (wobbleAmount > 0.001) {
-      const centsDepth = wobbleAmount * 32;
-      const frequencyDepth = frequency * (2 ** (centsDepth / 1200) - 1);
-      lfo = this.context.createOscillator();
-      lfoGain = this.context.createGain();
-      lfo.type = "sine";
-      lfo.frequency.setValueAtTime(4.8 + wobbleAmount * 1.4, now);
-      lfoGain.gain.setValueAtTime(frequencyDepth, now);
-      lfo.connect(lfoGain);
-      lfoGain.connect(oscillator.frequency);
-    }
-    filter.type = "bandpass";
-    filter.frequency.setValueAtTime(frequency * 2.1, now);
-    filter.Q.setValueAtTime(7, now);
-    pluckGain.gain.setValueAtTime(0.0001, now);
-    pluckGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, this.synthGain(gain)), now + 0.012);
-    pluckGain.gain.exponentialRampToValueAtTime(0.0001, now + safeDuration);
-    oscillator.connect(filter);
-    if (panner) {
-      filter.connect(panner);
-      panner.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), now);
-      panner.connect(pluckGain);
-    } else {
-      filter.connect(pluckGain);
-    }
-    const nodes = [oscillator, filter, pluckGain];
-    if (panner) nodes.push(panner);
-    if (lfo) nodes.push(lfo);
-    if (lfoGain) nodes.push(lfoGain);
-    this.connectTrackOutput(pluckGain, "pluck", this.masterGain, nodes);
-    this.connectTrackBus(pluckGain, "pluck", { delaySend, reverbSend, dubEcho }, nodes);
-    oscillator.start(now);
-    if (lfo) lfo.start(now);
-    oscillator.stop(now + safeDuration + 0.02);
-    if (lfo) lfo.stop(now + safeDuration + 0.02);
-    this.scheduleVoiceCleanup([oscillator], nodes);
-  }
-
-  playFunkSynth(time, frequency, {
-    gain = 0.045,
-    duration = 0.18,
-    pan = 0,
-    bite = 0.6,
-    wobble = STEP_OPTION_DEFAULTS.wobble,
-    delaySend = STEP_OPTION_DEFAULTS.delaySend,
-    reverbSend = STEP_OPTION_DEFAULTS.reverbSend,
-    dubEcho = STEP_OPTION_DEFAULTS.dubEcho
-  } = {}) {
-    if (!this.context || !this.masterGain) return;
-    const now = Math.max(this.context.currentTime, time);
-    const safeDuration = Math.max(0.05, duration);
-    const oscillator = this.context.createOscillator();
-    const filter = this.context.createBiquadFilter();
-    const funkGain = this.context.createGain();
-    const wobbleAmount = Math.max(0, Math.min(4, finiteNumber(wobble, 0)));
-    let lfo = null;
-    let lfoGain = null;
-    let filterLfoGain = null;
-    const panner = typeof this.context.createStereoPanner === "function"
-      ? this.context.createStereoPanner()
-      : null;
-    oscillator.type = "triangle";
-    oscillator.frequency.setValueAtTime(frequency, now);
-    oscillator.frequency.setTargetAtTime(frequency * 1.006, now + 0.012, 0.06);
-    if (wobbleAmount > 0.001) {
-      const centsDepth = wobbleAmount * 42;
-      const frequencyDepth = frequency * (2 ** (centsDepth / 1200) - 1);
-      lfo = this.context.createOscillator();
-      lfoGain = this.context.createGain();
-      filterLfoGain = this.context.createGain();
-      lfo.type = "sine";
-      lfo.frequency.setValueAtTime(5.2 + wobbleAmount * 1.8, now);
-      lfoGain.gain.setValueAtTime(frequencyDepth, now);
-      filterLfoGain.gain.setValueAtTime(40 + wobbleAmount * 70, now);
-      lfo.connect(lfoGain);
-      lfo.connect(filterLfoGain);
-      lfoGain.connect(oscillator.frequency);
-      filterLfoGain.connect(filter.frequency);
-    }
-    filter.type = "lowpass";
-    filter.Q.setValueAtTime(5 + bite * 4, now);
-    filter.frequency.setValueAtTime(480 + bite * 420, now);
-    filter.frequency.exponentialRampToValueAtTime(1250 + bite * 1050, now + safeDuration * 0.32);
-    filter.frequency.exponentialRampToValueAtTime(520, now + safeDuration);
-    funkGain.gain.setValueAtTime(0.0001, now);
-    const funkLevel = this.synthGain(gain);
-    funkGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, funkLevel), now + 0.01);
-    funkGain.gain.setTargetAtTime(funkLevel * 0.34, now + safeDuration * 0.32, safeDuration * 0.12);
-    funkGain.gain.exponentialRampToValueAtTime(0.0001, now + safeDuration);
-    oscillator.connect(filter);
-    if (panner) {
-      filter.connect(panner);
-      panner.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), now);
-      panner.connect(funkGain);
-    } else {
-      filter.connect(funkGain);
-    }
-    const nodes = [oscillator, filter, funkGain];
-    if (panner) nodes.push(panner);
-    if (lfo) nodes.push(lfo);
-    if (lfoGain) nodes.push(lfoGain);
-    if (filterLfoGain) nodes.push(filterLfoGain);
-    this.connectTrackOutput(funkGain, "funk", this.masterGain, nodes);
-    this.connectTrackBus(funkGain, "funk", { delaySend, reverbSend, dubEcho }, nodes);    oscillator.start(now);
-    if (lfo) lfo.start(now);
-    oscillator.stop(now + safeDuration + 0.03);
-    if (lfo) lfo.stop(now + safeDuration + 0.03);
-    this.scheduleVoiceCleanup([oscillator], nodes);
-  }
-
-  playEchoPingSynth(time, {
-    gain = 0.04,
-    duration = 0.6,
-    frequency = this.synthFrequency(12, 1),
-    pan = 0,
-    delaySend = STEP_OPTION_DEFAULTS.delaySend,
-    reverbSend = STEP_OPTION_DEFAULTS.reverbSend,
-    dubEcho = STEP_OPTION_DEFAULTS.dubEcho
-  } = {}) {
-    if (!this.context || !this.masterGain) return;
-    const now = Math.max(this.context.currentTime, time);
-    const safeDuration = Math.max(0.12, duration);
-    const oscillator = this.context.createOscillator();
-    const filter = this.context.createBiquadFilter();
-    const pingGain = this.context.createGain();
-    const panner = typeof this.context.createStereoPanner === "function"
-      ? this.context.createStereoPanner()
-      : null;
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(frequency, now);
-    oscillator.frequency.setTargetAtTime(frequency * 0.74, now + safeDuration * 0.2, safeDuration * 0.32);
-    filter.type = "bandpass";
-    filter.frequency.setValueAtTime(frequency * 1.45, now);
-    filter.Q.setValueAtTime(5.5, now);
-    pingGain.gain.setValueAtTime(0.0001, now);
-    pingGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, this.synthGain(gain)), now + 0.015);
-    pingGain.gain.exponentialRampToValueAtTime(0.0001, now + safeDuration);
-    oscillator.connect(filter);
-    if (panner) {
-      filter.connect(panner);
-      panner.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), now);
-      panner.connect(pingGain);
-    } else {
-      filter.connect(pingGain);
-    }
-    const nodes = [oscillator, filter, pingGain];
-    if (panner) nodes.push(panner);
-    if (this.fxSend) {
-      this.connectTrackBus(pingGain, "echo", { delaySend, reverbSend, dubEcho }, nodes);
-    } else {
-      pingGain.connect(this.masterGain);
-    }
-    oscillator.start(now);
-    oscillator.stop(now + safeDuration + 0.03);
-    this.scheduleVoiceCleanup([oscillator], nodes);
-  }
-
-  playPadSynth(time, frequencies, {
-    gain = 0.045,
-    duration = 1.5,
-    style = this.activePatternStyle,
-    wobble = STEP_OPTION_DEFAULTS.wobble,
-    delaySend = STEP_OPTION_DEFAULTS.delaySend,
-    reverbSend = STEP_OPTION_DEFAULTS.reverbSend,
-    dubEcho = STEP_OPTION_DEFAULTS.dubEcho
-  } = {}) {
-    if (!this.context || !this.masterGain) return;
-    const now = Math.max(this.context.currentTime, time);
-    const safeDuration = Math.max(0.2, duration);
-    const filter = this.context.createBiquadFilter();
-    const padGain = this.context.createGain();
-    const oscillators = [];
-    const wobbleAmount = Math.max(0, Math.min(4, finiteNumber(wobble, 0)));
-    let lfo = null;
-    let detuneGain = null;
-    let filterLfoGain = null;
-    filter.type = "lowpass";
-    filter.frequency.setValueAtTime(style === "jazz" ? 980 : 760, now);
-    filter.frequency.setTargetAtTime(420 + this.activeBarIntensity * 520, now + safeDuration * 0.35, safeDuration * 0.4);
-    filter.Q.setValueAtTime(1.8, now);
-    if (wobbleAmount > 0.001) {
-      lfo = this.context.createOscillator();
-      detuneGain = this.context.createGain();
-      filterLfoGain = this.context.createGain();
-      lfo.type = "sine";
-      lfo.frequency.setValueAtTime(2.6 + wobbleAmount * 0.75, now);
-      detuneGain.gain.setValueAtTime(10 + wobbleAmount * 14, now);
-      filterLfoGain.gain.setValueAtTime(18 + wobbleAmount * 38, now);
-      lfo.connect(detuneGain);
-      lfo.connect(filterLfoGain);
-      filterLfoGain.connect(filter.frequency);
-    }
-    padGain.gain.setValueAtTime(0.0001, now);
-    const rawPadLevel = this.synthGain(gain);
-    const padLevel = Math.min(0.26, rawPadLevel * 0.68);
-    padGain.gain.linearRampToValueAtTime(padLevel, now + Math.min(0.42, safeDuration * 0.25));
-    padGain.gain.setTargetAtTime(padLevel * 0.55, now + safeDuration * 0.55, safeDuration * 0.2);
-    padGain.gain.exponentialRampToValueAtTime(0.0001, now + safeDuration);
-    frequencies.forEach((frequency, index) => {
-      const oscillator = this.context.createOscillator();
-      oscillator.type = index === 0 ? "triangle" : "sine";
-      oscillator.frequency.setValueAtTime(frequency * (1 + (index - 1) * 0.003), now);
-      if (detuneGain) detuneGain.connect(oscillator.detune);
-      oscillator.connect(filter);
-      oscillator.start(now);
-      oscillator.stop(now + safeDuration + 0.04);
-      oscillators.push(oscillator);
-    });
-    filter.connect(padGain);
-    const nodes = [filter, padGain, ...oscillators];
-    if (lfo) nodes.push(lfo);
-    if (detuneGain) nodes.push(detuneGain);
-    if (filterLfoGain) nodes.push(filterLfoGain);
-    this.connectTrackOutput(padGain, "pad", this.masterGain, nodes);
-    this.connectTrackBus(padGain, "pad", { delaySend, reverbSend, dubEcho }, nodes);    if (lfo) {
-      lfo.start(now);
-      lfo.stop(now + safeDuration + 0.04);
-    }
-    this.scheduleVoiceCleanup(lfo ? [...oscillators, lfo] : oscillators, nodes);
-  }
-
-  scheduleWhaleLayer(time, style) {
-    if (!this.trackIsAudible("whale")) return;
-    const pressure = clamp01(this.activeBarIntensity);
-    const amount = clamp01(this.config.whaleAutoAmount);
-    if (amount <= 0.01) return;
-    const barsBetween = pressure > 0.72 ? 4 : pressure > 0.45 ? 8 : 16;
-    const lowIntensityChance = pressure > 0.45 && amount > 0.08;
-    if (!lowIntensityChance) return;
-    if (this.barIndex - this.lastWhaleBar < barsBetween) return;
-    this.lastWhaleBar = this.barIndex;
-    const upbend = 0.35;
-    const gain = (0.05 + pressure * 0.1) * amount;
-    const duration = 1.1 + amount * 0.4;
-    const whaleOffset = this.config.generatedWhaleOffsetMs / 1000;
-    this.playWhaleSynth(time + 0.015 + whaleOffset, {
-      gain,
-      duration,
-      style,
-      bend: upbend,
-      pan: Math.sin(this.barIndex * 1.7) * 0.42
-    });
-    if (pressure > 0.82 && amount > 0.45) {
-      this.playWhaleSynth(time + this.activeStepDurationSeconds * 6 + whaleOffset, {
-        gain: gain * 0.62,
-        duration: duration * 0.72,
-        style,
-        bend: -0.45,
-        pan: Math.cos(this.barIndex * 1.3) * 0.38
-      });
-    }
-  }
-
-  playWhaleSynth(time, {
-    gain = 0.2,
-    duration = 1.2,
-    style = this.activePatternStyle,
-    bend = 0.7,
-    pan = 0,
-    delaySend = STEP_OPTION_DEFAULTS.delaySend,
-    reverbSend = STEP_OPTION_DEFAULTS.reverbSend,
-    dubEcho = STEP_OPTION_DEFAULTS.dubEcho
-  } = {}) {
-    if (!this.context || !this.masterGain) return;
-    const now = Math.max(this.context.currentTime, time);
-    const safeDuration = Math.max(0.18, duration);
-    const pressure = clamp01(this.activeBarIntensity || this.intensity);
-    const baseFrequency = 132;
-    const endFrequency = Math.max(32, baseFrequency * (bend >= 0 ? 1.85 + pressure * 1.35 : 0.48));
-    const oscillator = this.context.createOscillator();
-    const second = this.context.createOscillator();
-    const lfo = this.context.createOscillator();
-    const lfoDepth = this.context.createGain();
-    const filter = this.context.createBiquadFilter();
-    const voiceGain = this.context.createGain();
-    const panner = typeof this.context.createStereoPanner === "function"
-      ? this.context.createStereoPanner()
-      : null;
-    oscillator.type = "triangle";
-    second.type = "sine";
-    oscillator.frequency.setValueAtTime(baseFrequency, now);
-    oscillator.frequency.exponentialRampToValueAtTime(endFrequency, now + safeDuration * 0.78);
-    second.frequency.setValueAtTime(baseFrequency * 0.503, now);
-    second.frequency.exponentialRampToValueAtTime(Math.max(24, endFrequency * 0.51), now + safeDuration * 0.76);
-    lfo.frequency.setValueAtTime(2.1, now);
-    lfo.frequency.linearRampToValueAtTime(3.2 + pressure * 8.5, now + safeDuration);
-    lfoDepth.gain.setValueAtTime(8 + pressure * 36, now);
-    filter.type = "lowpass";
-    filter.Q.setValueAtTime(4.5, now);
-    filter.frequency.setValueAtTime(820, now);
-    filter.frequency.exponentialRampToValueAtTime(1200 + pressure * 1600, now + safeDuration * 0.62);
-    filter.frequency.exponentialRampToValueAtTime(260, now + safeDuration);
-    const attack = Math.min(0.16, safeDuration * 0.22);
-    const releaseStart = now + safeDuration * 0.72;
-    voiceGain.gain.setValueAtTime(0.0001, now);
-    const whaleLevel = this.synthGain(gain);
-    voiceGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, whaleLevel * 0.32), now + attack);
-    voiceGain.gain.setTargetAtTime(Math.max(0.0001, whaleLevel * 0.18), releaseStart, safeDuration * 0.1);
-    voiceGain.gain.exponentialRampToValueAtTime(0.0001, now + safeDuration);
-    if (panner) {
-      panner.pan.setValueAtTime(clamp01((pan + 1) / 2) * 2 - 1, now);
-      filter.connect(panner);
-      panner.connect(voiceGain);
-    } else {
-      filter.connect(voiceGain);
-    }
-    lfo.connect(lfoDepth);
-    lfoDepth.connect(oscillator.frequency);
-    lfoDepth.connect(second.frequency);
-    oscillator.connect(filter);
-    second.connect(filter);
-    const nodes = [oscillator, second, lfo, lfoDepth, filter, voiceGain];
-    if (panner) nodes.push(panner);
-    this.connectTrackOutput(voiceGain, "whale", this.masterGain, nodes);
-    this.connectTrackBus(voiceGain, "whale", { delaySend, reverbSend, dubEcho }, nodes);    oscillator.start(now);
-    second.start(now);
-    lfo.start(now);
-    oscillator.stop(now + safeDuration + 0.05);
-    second.stop(now + safeDuration + 0.05);
-    lfo.stop(now + safeDuration + 0.05);
-    this.scheduleVoiceCleanup([oscillator, second, lfo], nodes);
-  }
-
-  playSynthFallback(hit, time, gain) {
-    const oscillator = this.context.createOscillator();
-    const hitGain = this.context.createGain();
-    const now = Math.max(this.context.currentTime, time);
-    oscillator.frequency.setValueAtTime(hit === "kick" ? 92 : hit === "snare" ? 210 : 520, now);
-    oscillator.frequency.exponentialRampToValueAtTime(hit === "kick" ? 42 : 140, now + 0.12);
-    hitGain.gain.setValueAtTime(Math.max(0, gain) * 0.18, now);
-    hitGain.gain.exponentialRampToValueAtTime(0.001, now + (hit === "kick" ? 0.22 : 0.08));
-    oscillator.connect(hitGain);
-    hitGain.connect(this.drumBus || this.masterGain);
-    const nodes = [oscillator, hitGain];
-    this.connectTrackBus(hitGain, hit, {}, nodes);
-    oscillator.start(now);
-    oscillator.stop(now + 0.24);
-    this.scheduleVoiceCleanup([oscillator], nodes);
-  }
-
   createReverbImpulse(duration = 1.4, decay = 2.4) {
     const sampleRate = this.context.sampleRate;
     const length = Math.max(1, Math.floor(sampleRate * duration));
@@ -2149,3 +1547,11 @@ export class RhythmEngine {
     return curve;
   }
 }
+
+// Mix the 808 drum-machine voices onto the prototype. They live in their own
+// module to keep this file focused; see `rhythm-engine-808.js`.
+Object.assign(RhythmEngine.prototype, EightOhEightVoices);
+
+// Mix the pitched/melodic synth voices onto the prototype; see
+// `rhythm-engine-synth.js`.
+Object.assign(RhythmEngine.prototype, SynthVoices);

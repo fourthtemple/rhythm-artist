@@ -121,6 +121,14 @@ const selectedTrackLevelNumber = $("#selected-track-level-number");
 const selectedTrackPan = $("#selected-track-pan");
 const selectedTrackPanValue = $("#selected-track-pan-value");
 const selectedTrackPanNumber = $("#selected-track-pan-number");
+// Right-side panels
+const trackExplorerList = $("#track-explorer-list");
+const trackInspectorName = $("#track-inspector-name");
+const trackInspectorBody = $("#track-inspector-body");
+const trackSampleName = $("#track-sample-name");
+const sampleRootSelect = $("#sample-root-select");
+const sampleBreadcrumb = $("#sample-breadcrumb");
+const sampleBrowserList = $("#sample-browser-list");
 const runningFromFile = window.location.protocol === "file:";
 const selectedControls = [
   selectedVelocity,
@@ -1087,13 +1095,13 @@ function buildStepGrid() {
       toggleSolo(hit);
     });
     rowLabel.addEventListener("click", () => {
-      selectRow(hit);
+      selectRowToggle(hit);
       renderStepGrid();
     });
     rowLabel.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
-      selectRow(hit);
+      selectRowToggle(hit);
       renderStepGrid();
     });
     rowLabel.append(rowText, soloButton);
@@ -1126,6 +1134,19 @@ function buildStepGrid() {
       button.addEventListener("click", () => {
         const scrollLeft = stepGrid.scrollLeft;
         const scrollTop = stepGrid.scrollTop;
+        // Clicking the already-selected step again deselects it (but keeps
+        // the note). This lets the user dismiss the inspector selection
+        // without wiping the step they just placed.
+        if (state.selected
+          && state.selected.hit === hit
+          && state.selected.step === step
+          && state.selected.mode === "step") {
+          resetSelectedPanel();
+          renderStepGrid();
+          stepGrid.scrollLeft = scrollLeft;
+          stepGrid.scrollTop = scrollTop;
+          return;
+        }
         const current = getHitData(hit, step);
         if (current.velocity <= 0.005) {
           setHitVelocity(hit, step, DEFAULT_VELOCITY[hit] ?? 0.5);
@@ -1278,6 +1299,8 @@ function selectStep(hit, step, mode = "step", barIndex = state.activeBar, pressu
   setPairedControl(selectedNoteReverbSend, selectedNoteReverbSendNumber, selectedNoteReverbSendValue, options.reverbSend, (next) => next.toFixed(2));
   syncSelectedBusSendDisplay();
   updateTrackClipboardButtons();
+  renderTrackInspector();
+  renderTrackExplorer();
 }
 
 function selectRow(hit) {
@@ -1292,6 +1315,15 @@ function selectRow(hit) {
     ? soundingStepForRow(hit, playheadStep, barIndex)
     : playheadStep;
   selectStep(hit, step, "row", barIndex, playback.activeBarIntensity ?? state.intensity);
+}
+
+/** Toggle a row selection: re-clicking the selected row deselects it. */
+function selectRowToggle(hit) {
+  if (state.selected?.hit === hit && state.selected?.mode === "row") {
+    resetSelectedPanel();
+    return;
+  }
+  selectRow(hit);
 }
 
 function resetSelectedPanel() {
@@ -1319,6 +1351,8 @@ function resetSelectedPanel() {
   setPairedControl(selectedTrackLevel, selectedTrackLevelNumber, selectedTrackLevelValue, 1, (next) => next.toFixed(2));
   setPairedControl(selectedTrackPan, selectedTrackPanNumber, selectedTrackPanValue, 0, formatPan);
   updateTrackClipboardButtons();
+  renderTrackInspector();
+  renderTrackExplorer();
 }
 
 function clearSelection() {
@@ -1477,6 +1511,7 @@ function playFullSong() {
 function restartPlayback() {
   state.engine.stop();
   state.engine = new RhythmEngine({ config: previewConfig(), style: "jazz", volume: 0.58 });
+  void reapplyTrackSamples();
   if (state.playing) void startPlayback();
   else status.textContent = "Restarted";
 }
@@ -1633,6 +1668,9 @@ async function loadConfigFile(file) {
   buildLoopTabs();
   buildBarTabs();
   buildStepGrid();
+  renderTrackExplorer();
+  renderTrackInspector();
+  void reapplyTrackSamples();
   updateTwoBarClipboardButtons();
   updateTrackClipboardButtons();
   status.textContent = `Loaded ${file.name}`;
@@ -1654,6 +1692,9 @@ async function loadSavedRhythmConfig() {
     buildLoopTabs();
     buildBarTabs();
     buildStepGrid();
+    renderTrackExplorer();
+    renderTrackInspector();
+    void reapplyTrackSamples();
     updateTwoBarClipboardButtons();
     updateTrackClipboardButtons();
     status.textContent = "Loaded game rhythm";
@@ -1784,6 +1825,8 @@ function wireEvents() {
     buildLoopTabs();
     buildBarTabs();
     buildStepGrid();
+    renderTrackExplorer();
+    renderTrackInspector();
     updateTwoBarClipboardButtons();
     updateTrackClipboardButtons();
     status.textContent = "Reset to defaults";
@@ -1808,6 +1851,26 @@ function wireEvents() {
   $("#add-track-cancel")?.addEventListener("click", () => {
     /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.close();
   });
+
+  // ── Right-side panels: Track Explorer / Inspector / Sample Browser ──
+  $("#add-track-btn-panel")?.addEventListener("click", () => {
+    renderAddTrackDialog();
+    /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.showModal();
+  });
+  $("#manage-groups-btn")?.addEventListener("click", () => {
+    renderAddTrackDialog();
+    /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.showModal();
+  });
+  $("#track-sample-audition")?.addEventListener("click", () => {
+    void auditionSelectedTrack();
+  });
+  $("#track-sample-clear")?.addEventListener("click", () => {
+    if (state.selected?.hit) clearTrackSample(state.selected.hit);
+  });
+  sampleRootSelect?.addEventListener("change", () => {
+    void browseSampleRoot(sampleRootSelect.value, "");
+  });
+
   $("#add-loop-cancel")?.addEventListener("click", () => {
     /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"))?.close();
   });
@@ -1896,6 +1959,7 @@ function addGridTrack(trackId) {
   state.gridTrackIds = next;
   ensureTrackColumn(trackId);
   renderStepGrid();
+  renderTrackExplorer();
   syncJson();
   status.textContent = `Added ${TRACK_LABELS[trackId] || trackId} track`;
 }
@@ -1909,6 +1973,8 @@ function removeGridTrack(trackId) {
   state.soloTracks.delete(trackId);
   state.engine.setConfig(previewConfig());
   renderStepGrid();
+  renderTrackExplorer();
+  renderTrackInspector();
   syncJson();
   status.textContent = `Removed ${def.label} track`;
 }
@@ -1952,6 +2018,356 @@ function renderAddTrackDialog() {
     section.appendChild(list);
     host.appendChild(section);
   });
+}
+
+// ── Track Explorer (right-side track list) ──────────────────
+
+/** Re-render the grouped track list in the right-side Track Explorer. */
+function renderTrackExplorer() {
+  if (!trackExplorerList) return;
+  trackExplorerList.innerHTML = "";
+  const selectedHit = state.selected?.hit || null;
+  TRACK_GROUPS.forEach((group) => {
+    const groupTrackIds = state.gridTrackIds.filter((id) => getTrackDef(id)?.group === group.id);
+    if (groupTrackIds.length === 0) return;
+    const groupEl = document.createElement("div");
+    groupEl.className = "track-explorer-group";
+    const heading = document.createElement("div");
+    heading.className = "track-explorer-group-heading";
+    heading.textContent = group.label;
+    if (group.accent) heading.style.setProperty("--group-accent", group.accent);
+    groupEl.appendChild(heading);
+
+    groupTrackIds.forEach((id) => {
+      const def = getTrackDef(id);
+      const row = document.createElement("div");
+      row.className = `track-explorer-row ${selectedHit === id ? "is-selected" : ""}`;
+      row.dataset.trackId = id;
+
+      const name = document.createElement("button");
+      name.type = "button";
+      name.className = "track-explorer-name";
+      name.textContent = def?.label || id;
+      const hasSample = Boolean(state.config.trackSamples?.[id]);
+      if (hasSample) {
+        const dot = document.createElement("span");
+        dot.className = "track-explorer-sample-dot";
+        dot.title = `Custom sample: ${state.config.trackSamples[id].label}`;
+        name.appendChild(dot);
+      }
+      name.addEventListener("click", () => {
+        if (state.selected?.hit === id && state.selected?.mode === "row") {
+          resetSelectedPanel();
+        } else {
+          selectRow(id);
+        }
+        renderStepGrid();
+      });
+
+      const soloBtn = document.createElement("button");
+      soloBtn.type = "button";
+      soloBtn.className = `track-explorer-solo ${state.soloTracks.has(id) ? "is-active" : ""}`;
+      soloBtn.textContent = "S";
+      soloBtn.title = `Solo ${def?.label || id}`;
+      soloBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toggleSolo(id);
+        renderTrackExplorer();
+      });
+
+      row.append(name, soloBtn);
+
+      if (def?.removable) {
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "track-explorer-remove";
+        removeBtn.textContent = "×";
+        removeBtn.title = `Remove ${def.label}`;
+        removeBtn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          removeGridTrack(id);
+        });
+        row.append(removeBtn);
+      }
+
+      groupEl.appendChild(row);
+    });
+    trackExplorerList.appendChild(groupEl);
+  });
+  if (!trackExplorerList.children.length) {
+    const empty = document.createElement("p");
+    empty.className = "track-explorer-empty";
+    empty.textContent = "No tracks yet. Use “+ Track”.";
+    trackExplorerList.appendChild(empty);
+  }
+}
+
+// ── Track Inspector header (sample row) ─────────────────────
+
+/** Refresh the inspector's name + sample row for the current selection. */
+function renderTrackInspector() {
+  const hit = state.selected?.hit || null;
+  const def = hit ? getTrackDef(hit) : null;
+  if (trackInspectorName) {
+    trackInspectorName.textContent = def ? def.label : "No track selected";
+  }
+  if (trackInspectorBody) {
+    trackInspectorBody.hidden = !hit;
+  }
+  if (trackSampleName) {
+    const assigned = hit ? state.config.trackSamples?.[hit] : null;
+    trackSampleName.textContent = assigned ? assigned.label : "— built-in —";
+    trackSampleName.classList.toggle("is-custom", Boolean(assigned));
+  }
+}
+
+/** Apply a custom sample to a track (config + engine) and refresh UI. */
+async function assignSampleToTrack(hit, sample) {
+  if (!hit) return;
+  state.config.trackSamples = {
+    ...(state.config.trackSamples || {}),
+    [hit]: { url: sample.url, label: sample.label, root: sample.root ?? null, path: sample.path ?? null }
+  };
+  const ok = await state.engine.setTrackSample(hit, sample.url);
+  if (!ok) {
+    status.textContent = `Could not load ${sample.label}`;
+    return;
+  }
+  renderTrackInspector();
+  renderTrackExplorer();
+  syncJson();
+  status.textContent = `Loaded ${sample.label} into ${TRACK_LABELS[hit] || hit}`;
+}
+
+/** Clear a track's custom sample, reverting to the built-in voice. */
+function clearTrackSample(hit) {
+  if (!hit) return;
+  if (state.config.trackSamples?.[hit]) {
+    const next = { ...state.config.trackSamples };
+    delete next[hit];
+    state.config.trackSamples = next;
+  }
+  state.engine.clearTrackSample(hit);
+  renderTrackInspector();
+  renderTrackExplorer();
+  syncJson();
+  status.textContent = `${TRACK_LABELS[hit] || hit} reset to built-in voice`;
+}
+
+/** Re-apply all saved custom samples to the engine (after load). */
+async function reapplyTrackSamples() {
+  const samples = state.config.trackSamples || {};
+  // Drop any engine samples that the loaded config no longer references.
+  (state.engine.customSampleUrls ? Array.from(state.engine.customSampleUrls.keys()) : [])
+    .filter((hit) => !samples[hit])
+    .forEach((hit) => state.engine.clearTrackSample(hit));
+  await Promise.all(Object.entries(samples).map(([hit, entry]) =>
+    state.engine.setTrackSample(hit, entry.url).catch(() => false)
+  ));
+}
+
+async function auditionSelectedTrack() {
+  const hit = state.selected?.hit;
+  if (!hit) {
+    status.textContent = "Select a track first";
+    return;
+  }
+  if (runningFromFile) {
+    status.textContent = "Open the localhost version for audio";
+    return;
+  }
+  await state.engine.auditionTrack(hit, { gain: 0.7 });
+  status.textContent = `Auditioned ${TRACK_LABELS[hit] || hit}`;
+}
+
+// ── Sample Browser ──────────────────────────────────────────
+
+const sampleBrowserState = {
+  roots: [],
+  rootId: null,
+  path: "",
+  dirs: [],
+  files: []
+};
+
+async function loadSampleRoots() {
+  if (!sampleRootSelect) return;
+  if (runningFromFile) {
+    sampleRootSelect.innerHTML = `<option value="">Run on localhost</option>`;
+    if (sampleBrowserList) {
+      sampleBrowserList.innerHTML = `<p class="sample-browser-empty">Sample browsing needs the dev server (npm run dev).</p>`;
+    }
+    return;
+  }
+  try {
+    const response = await fetch("/api/sample-roots", { cache: "no-store" });
+    const data = await response.json();
+    sampleBrowserState.roots = Array.isArray(data?.roots) ? data.roots : [];
+    sampleRootSelect.innerHTML = "";
+    if (!sampleBrowserState.roots.length) {
+      sampleRootSelect.innerHTML = `<option value="">No sample roots</option>`;
+      if (sampleBrowserList) {
+        sampleBrowserList.innerHTML = `<p class="sample-browser-empty">Add a root in <code>sample-library.json</code>.</p>`;
+      }
+      return;
+    }
+    sampleBrowserState.roots.forEach((root) => {
+      const option = document.createElement("option");
+      option.value = root.id;
+      option.textContent = root.available ? root.label : `${root.label} (missing)`;
+      option.disabled = !root.available;
+      sampleRootSelect.appendChild(option);
+    });
+    const firstAvailable = sampleBrowserState.roots.find((r) => r.available);
+    if (firstAvailable) {
+      sampleRootSelect.value = firstAvailable.id;
+      await browseSampleRoot(firstAvailable.id, "");
+    }
+  } catch (error) {
+    console.warn("Sample roots failed to load", error);
+    if (sampleBrowserList) {
+      sampleBrowserList.innerHTML = `<p class="sample-browser-empty">Sample API unavailable.</p>`;
+    }
+  }
+}
+
+async function browseSampleRoot(rootId, path = "") {
+  if (!rootId) return;
+  sampleBrowserState.rootId = rootId;
+  sampleBrowserState.path = path;
+  try {
+    const url = `/api/sample-browse?root=${encodeURIComponent(rootId)}&path=${encodeURIComponent(path)}`;
+    const response = await fetch(url, { cache: "no-store" });
+    const data = await response.json();
+    sampleBrowserState.dirs = Array.isArray(data?.dirs) ? data.dirs : [];
+    sampleBrowserState.files = Array.isArray(data?.files) ? data.files : [];
+    renderSampleBrowser();
+  } catch (error) {
+    console.warn("Sample browse failed", error);
+    if (sampleBrowserList) {
+      sampleBrowserList.innerHTML = `<p class="sample-browser-empty">Could not list this folder.</p>`;
+    }
+  }
+}
+
+function renderSampleBreadcrumb() {
+  if (!sampleBreadcrumb) return;
+  sampleBreadcrumb.innerHTML = "";
+  const parts = sampleBrowserState.path ? sampleBrowserState.path.split("/").filter(Boolean) : [];
+  const rootBtn = document.createElement("button");
+  rootBtn.type = "button";
+  rootBtn.className = "sample-crumb";
+  rootBtn.textContent = "root";
+  rootBtn.addEventListener("click", () => browseSampleRoot(sampleBrowserState.rootId, ""));
+  sampleBreadcrumb.appendChild(rootBtn);
+  let acc = "";
+  parts.forEach((part) => {
+    acc = acc ? `${acc}/${part}` : part;
+    const sep = document.createElement("span");
+    sep.className = "sample-crumb-sep";
+    sep.textContent = "/";
+    const crumbPath = acc;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "sample-crumb";
+    btn.textContent = part;
+    btn.addEventListener("click", () => browseSampleRoot(sampleBrowserState.rootId, crumbPath));
+    sampleBreadcrumb.append(sep, btn);
+  });
+}
+
+function renderSampleBrowser() {
+  renderSampleBreadcrumb();
+  if (!sampleBrowserList) return;
+  sampleBrowserList.innerHTML = "";
+
+  // Up one level
+  if (sampleBrowserState.path) {
+    const up = document.createElement("button");
+    up.type = "button";
+    up.className = "sample-row sample-row-dir";
+    up.innerHTML = `<span class="sample-row-icon">↩</span><span class="sample-row-name">..</span>`;
+    up.addEventListener("click", () => {
+      const parent = sampleBrowserState.path.split("/").slice(0, -1).join("/");
+      browseSampleRoot(sampleBrowserState.rootId, parent);
+    });
+    sampleBrowserList.appendChild(up);
+  }
+
+  sampleBrowserState.dirs.forEach((dir) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "sample-row sample-row-dir";
+    row.innerHTML = `<span class="sample-row-icon">📁</span><span class="sample-row-name"></span>`;
+    row.querySelector(".sample-row-name").textContent = dir.name ?? dir;
+    const next = dir.rel ?? (sampleBrowserState.path ? `${sampleBrowserState.path}/${dir.name ?? dir}` : (dir.name ?? dir));
+    row.addEventListener("click", () => browseSampleRoot(sampleBrowserState.rootId, next));
+    sampleBrowserList.appendChild(row);
+  });
+
+  sampleBrowserState.files.forEach((file) => {
+    const row = document.createElement("div");
+    row.className = "sample-row sample-row-file";
+    const name = document.createElement("span");
+    name.className = "sample-row-name";
+    name.textContent = file.name;
+
+    const auditionBtn = document.createElement("button");
+    auditionBtn.type = "button";
+    auditionBtn.className = "sample-row-action";
+    auditionBtn.textContent = "▶";
+    auditionBtn.title = `Audition ${file.name}`;
+    auditionBtn.addEventListener("click", () => auditionSampleFile(file));
+
+    const loadBtn = document.createElement("button");
+    loadBtn.type = "button";
+    loadBtn.className = "sample-row-action sample-row-load";
+    loadBtn.textContent = "＋";
+    loadBtn.title = "Load into selected track";
+    loadBtn.disabled = !state.selected?.hit;
+    loadBtn.addEventListener("click", () => {
+      if (!state.selected?.hit) {
+        status.textContent = "Select a track first";
+        return;
+      }
+      void assignSampleToTrack(state.selected.hit, {
+        url: sampleFileUrl(file),
+        label: file.name,
+        root: sampleBrowserState.rootId,
+        path: file.rel
+      });
+    });
+
+    row.append(name, auditionBtn, loadBtn);
+    sampleBrowserList.appendChild(row);
+  });
+
+  if (!sampleBrowserState.dirs.length && !sampleBrowserState.files.length && !sampleBrowserState.path) {
+    const empty = document.createElement("p");
+    empty.className = "sample-browser-empty";
+    empty.textContent = "This root is empty.";
+    sampleBrowserList.appendChild(empty);
+  }
+}
+
+function sampleFileUrl(file) {
+  if (file.url) return file.url;
+  return `/api/sample-file?root=${encodeURIComponent(sampleBrowserState.rootId)}&path=${encodeURIComponent(file.rel)}`;
+}
+
+let sampleAuditionEl = null;
+function auditionSampleFile(file) {
+  if (runningFromFile) {
+    status.textContent = "Open the localhost version for audio";
+    return;
+  }
+  if (!sampleAuditionEl) sampleAuditionEl = new Audio();
+  sampleAuditionEl.src = sampleFileUrl(file);
+  sampleAuditionEl.currentTime = 0;
+  void sampleAuditionEl.play().catch(() => {
+    status.textContent = "Could not play sample";
+  });
+  status.textContent = `Auditioning ${file.name}`;
 }
 
 function loopTrackById(id) {
@@ -2218,4 +2634,7 @@ wireEvents();
 refreshLoopBarButton();
 syncSliders();
 syncJson();
+renderTrackExplorer();
+renderTrackInspector();
+void loadSampleRoots();
 void loadSavedRhythmConfig();

@@ -290,6 +290,41 @@ trim) and **Pan**, end-to-end and registry-driven.
 
 ---
 
+## Engine modularization (`rhythm-engine.js` → focused mixins)
+
+The sound engine had grown to ~2,150 lines. It's now split so each file is
+focused, while staying a single `RhythmEngine` class via prototype mixins:
+
+- **`rhythm-engine-808.js`** (`EightOhEightVoices`) — the full 808 drum-machine
+  kit: `play808Overlay`, `play808Kick`, `play808Snare`, `play808Hat`,
+  `play808Click`, `play808Clap`, `play808Tom`, `play808Cowbell`,
+  `play808Conga`, `play808Maraca`, `play808Cymbal`.
+- **`rhythm-engine-synth.js`** (`SynthVoices`) — pitched/melodic voices:
+  `playBassSynth`, `playPluckSynth`, `playFunkSynth`, `playEchoPingSynth`,
+  `playPadSynth`, `scheduleWhaleLayer`, `playWhaleSynth`, `playSynthFallback`.
+- **`rhythm-engine.js`** keeps the scheduler, graph wiring, track-routing
+  helpers (`connectTrackOutput` / `connectTrackBus` / `scheduleVoiceCleanup`),
+  FX, and config plumbing, then mixes the voice modules onto the prototype:
+
+  ```js
+  Object.assign(RhythmEngine.prototype, EightOhEightVoices);
+  Object.assign(RhythmEngine.prototype, SynthVoices);
+  ```
+
+Result: `rhythm-engine.js` dropped from ~2,150 → ~1,460 lines, with 288-line
+(808) and 446-line (synth) companion modules. Verified with `node --check` on
+all modules and a runtime prototype check confirming every voice method is
+present; all modules serve `200` from the dev server.
+
+### Right-side track UI (status)
+- Add Track dialog is registry-driven, grouped by `tracksByGroup()` with group
+  accents; chips toggle add/remove and disable core (non-removable) tracks.
+- Grid rows carry inline `×` remove buttons for removable tracks; selecting a
+  row surfaces per-track bus send, reverb send, level, and pan, all of which
+  round-trip through save/load and drive the live engine.
+
+---
+
 ## Dev server
 
 ```sh
@@ -320,4 +355,57 @@ init:    scaffold rhythm-artist standalone beat tool
 fix:     restore test track + effects (copy rhythm-sequence.json)
 dev:     no-store caching so updates always reload fresh
 fix:     correct drum sample path ../../assets (was ../assets, 404ing all drums)
+```
+
+---
+
+## Right-side panels + custom samples (latest pass)
+
+Moved all per-track work out of the bottom "Selected" strip into three
+right-side panels, and added user-sample support end-to-end.
+
+### Track Explorer (`#track-explorer-list`)
+- Grouped, registry-driven list of grid tracks (Core / Synths / 808 / FX).
+- Click a track name to select its **row** (toggles off when re-clicked).
+- Per-row **solo** toggle + inline **×** remove for removable tracks.
+- Green dot marks tracks with a custom sample assigned.
+- `renderTrackExplorer()` is refreshed from `selectStep`, `resetSelectedPanel`,
+  `addGridTrack`, `removeGridTrack`, and load/reset.
+
+### Track Inspector (`#track-inspector-section`)
+- Header shows the selected track name + a **Sample row**
+  (name · ▶ audition · ⟲ reset-to-built-in).
+- Body holds Level / Pan / Delay / Verb (the per-track controls that used to
+  live at the bottom). Hidden when nothing is selected.
+- `renderTrackInspector()` keeps the header/sample label in sync.
+
+### Sample Browser (`#sample-browser-section`)
+- Root `<select>` populated from `GET /api/sample-roots`.
+- Folder navigation via `GET /api/sample-browse` with a clickable breadcrumb
+  and a `..` row.
+- Each file: **▶** auditions via a throwaway `<Audio>` element; **＋** loads it
+  into the currently-selected track.
+- Verified live against the `drummy` root (Kick/808/909 → `808_01.wav` serves
+  `audio/wav`, 90 KB).
+
+### Custom-sample engine support (`rhythm-engine.js`)
+- `customSampleBuffers` / `customSampleUrls` maps on the engine.
+- `setTrackSample(track, url)` decodes + caches; `clearTrackSample(track)`
+  reverts; `trackSampleUrl` / `hasCustomSample` accessors.
+- `playHit` now prefers a track's custom buffer over the built-in kit.
+- `auditionTrack` / `previewTrackVoice` fire a single hit of either the custom
+  sample or the built-in voice (covers every registry voice).
+
+### Config round-trip (`rhythm-config.js`)
+- New `trackSamples` map: `{ trackId: { url, label, root, path } }`,
+  normalized + filtered so only valid string-url entries persist.
+- Editor `assignSampleToTrack` / `clearTrackSample` write config + engine;
+  `reapplyTrackSamples()` re-decodes on load/reset/restart (and prunes engine
+  entries dropped from config).
+
+### Bug fixes
+- **Click-to-deselect:** clicking the already-selected step (or its row, or its
+  Explorer entry) now clears the selection without wiping the note.
+- Per-track Level/Pan/Delay/Verb update + apply live again now that they're
+  wired through the inspector.
 ```
