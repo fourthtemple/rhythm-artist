@@ -8,6 +8,7 @@ export const SEQUENCED_BASS_PHRASE = [0, 3, 5, 2, 7, 5, 3, 10];
 
 import {
   ALL_TRACK_IDS,
+  ALL_GENERATED_TRACK_IDS,
   EIGHT_OH_EIGHT_DEFAULT_IDS,
   GENERATED_TRACK_IDS,
   PATTERN_TRACK_IDS,
@@ -15,8 +16,10 @@ import {
   TRACK_LEVELS,
   TRACK_PANS,
   TRACK_REGISTRY,
-  TRACK_REVERB_SENDS
+  TRACK_REVERB_SENDS,
+  baseTrackId
 } from "./rhythm-track-registry.js";
+import { defaultMasterEq, normalizeMasterEq } from "./rhythm-mastering.js";
 
 export {
   TRACK_GROUPS,
@@ -28,12 +31,19 @@ export {
   DEFAULT_GRID_TRACK_IDS,
   TRACK_LABELS,
   TRACK_DEFAULT_VELOCITY,
-  tracksByGroup
+  tracksByGroup,
+  isInstanceId,
+  baseTrackId,
+  makeInstanceId,
+  voiceForTrack
 } from "./rhythm-track-registry.js";
 
 // Back-compat aliases — these names are imported across the engine/editor.
 export const EIGHT_OH_EIGHT_ROWS = EIGHT_OH_EIGHT_DEFAULT_IDS;
-export const EDITABLE_GENERATED_ROWS = GENERATED_TRACK_IDS;
+// Every generated row the user can edit on the grid — includes tracks that are
+// added later (extra 808 voices, samplers, etc.), not just the default set.
+// This is what the engine schedules, so added tracks actually make sound.
+export const EDITABLE_GENERATED_ROWS = ALL_GENERATED_TRACK_IDS;
 export const RHYTHM_TRACKS = ALL_TRACK_IDS;
 export const DEFAULT_TRACK_BUS_SENDS = TRACK_BUS_SENDS;
 export const DEFAULT_TRACK_REVERB_SENDS = TRACK_REVERB_SENDS;
@@ -76,6 +86,33 @@ export const normalizeStepOptions = (options = {}) => {
 export const hasStepOptions = (options = {}) => Object.entries(STEP_OPTION_DEFAULTS)
   .some(([key, value]) => Math.abs(finiteNumber(options[key], value) - value) > 0.0001);
 
+// ── Per-track 808 voice shape ────────────────────────────────
+// Ranges mirror the global eightOhEight* config knobs. A per-track shape is a
+// partial override: only the fields present override the global default.
+export const TRACK_SHAPE_RANGES = {
+  drive: [0, 1],
+  punch: [0, 1],
+  decay: [0.3, 2.5],
+  tone: [0, 1],
+  sub: [0, 1],
+  choke: [0, 1]
+};
+
+/** Clamp a partial track-shape object, dropping fields outside their range. */
+export const normalizeTrackShape = (shape = {}) => {
+  const source = shape && typeof shape === "object" ? shape : {};
+  const out = {};
+  Object.entries(TRACK_SHAPE_RANGES).forEach(([key, [min, max]]) => {
+    if (source[key] === undefined || source[key] === null || source[key] === "") return;
+    if (key === "choke") {
+      out.choke = finiteNumber(source.choke, 0) >= 0.5 ? 1 : 0;
+    } else {
+      out[key] = Math.max(min, Math.min(max, finiteNumber(source[key], min)));
+    }
+  });
+  return out;
+};
+
 const normalizePatternHit = (entry) => {
   if (Array.isArray(entry)) {
     const [step, velocity, options] = entry;
@@ -116,6 +153,20 @@ export const DEFAULT_RHYTHM_CONFIG = {
   generatedWhaleOffsetMs: 0,
   eightOhEightLevel: 1.5,
   eightOhEightTune: 0,
+  // --- 808 voice shaping (Miami bass / classic circuit flavour) ---------
+  // Analog-style drive/grit applied across every 808 voice. 0 = clean.
+  eightOhEightDrive: 0.18,
+  // Transient "snap"/click emphasis — punchier attacks for kick/toms/conga.
+  eightOhEightPunch: 0.35,
+  // Global tail-length multiplier. >1 = long booming 808 sustain.
+  eightOhEightDecay: 1,
+  // Global brightness tilt on the noise voices (hat/clap/snare/maraca/cymbal).
+  eightOhEightTone: 0.5,
+  // Sub "body" emphasis on the kick — the Miami-bass low-end weight.
+  eightOhEightSub: 0.45,
+  // Choke / monophony: when on, hat + cymbal cut each other off (mono metal),
+  // and each retrigger silences the previous voice instead of stacking.
+  eightOhEightChoke: 0,
   whaleAutoAmount: 0.18,
   duckWhaleAmount: 0.72,
   hitImpactAmount: 0.82,
@@ -128,10 +179,18 @@ export const DEFAULT_RHYTHM_CONFIG = {
   downbeatEchoAmount: 1,
   accentEchoAmount: 1,
   dubThrowAmount: 0.56,
+  // Master-bus mastering EQ ("global curve"): per-band gain in dB applied to
+  // the whole mix before output. Flat (all 0) by default. See rhythm-mastering.js.
+  masterEq: defaultMasterEq(),
   trackBusSends: DEFAULT_TRACK_BUS_SENDS,
   trackReverbSends: DEFAULT_TRACK_REVERB_SENDS,
   trackLevels: DEFAULT_TRACK_LEVELS,
   trackPans: DEFAULT_TRACK_PANS,
+  // Per-track 808 voice shape overrides, keyed by track id (base or instance).
+  // Each entry is a partial of { drive, punch, decay, tone, sub, choke }; any
+  // missing field falls back to the global eightOhEight* default above. This is
+  // what makes two "808 Clap" instances sound different.
+  trackShapes: {},
   trackSamples: {},
   generatedRowsEditable: 0,
   soloTracks: [],
@@ -201,6 +260,39 @@ const normalizePatternBars = (bars) => {
   ));
 };
 
+/**
+ * Gather every non-registry (instance) track id referenced anywhere in the
+ * config: the per-track maps and the pattern bars. Used so per-instance
+ * sends/levels/pans/shapes round-trip through normalization instead of being
+ * dropped to the fixed registry list.
+ */
+const collectExtraTrackIds = (config = {}) => {
+  const known = new Set(ALL_TRACK_IDS);
+  const found = new Set();
+  const scan = (obj) => {
+    if (!obj || typeof obj !== "object") return;
+    Object.keys(obj).forEach((id) => {
+      if (!known.has(id)) found.add(id);
+    });
+  };
+  scan(config.trackBusSends);
+  scan(config.trackReverbSends);
+  scan(config.trackLevels);
+  scan(config.trackPans);
+  scan(config.trackShapes);
+  scan(config.trackSamples);
+  const bars = config.patterns?.jazz?.bars;
+  if (Array.isArray(bars)) {
+    bars.forEach((bar) => {
+      if (!bar || typeof bar !== "object") return;
+      Object.keys(bar).forEach((id) => {
+        if (!known.has(id) && Array.isArray(bar[id])) found.add(id);
+      });
+    });
+  }
+  return [...found];
+};
+
 export const normalizeRhythmConfig = (config = {}) => {
   const merged = {
     ...cloneRhythmConfig(DEFAULT_RHYTHM_CONFIG),
@@ -228,6 +320,12 @@ export const normalizeRhythmConfig = (config = {}) => {
   merged.generatedWhaleOffsetMs = Math.round(clamp(merged.generatedWhaleOffsetMs, -320, 320, DEFAULT_RHYTHM_CONFIG.generatedWhaleOffsetMs));
   merged.eightOhEightLevel = Math.max(0, Math.min(2, finiteNumber(merged.eightOhEightLevel, DEFAULT_RHYTHM_CONFIG.eightOhEightLevel)));
   merged.eightOhEightTune = Math.max(-12, Math.min(12, finiteNumber(merged.eightOhEightTune, DEFAULT_RHYTHM_CONFIG.eightOhEightTune)));
+  merged.eightOhEightDrive = Math.max(0, Math.min(1, finiteNumber(merged.eightOhEightDrive, DEFAULT_RHYTHM_CONFIG.eightOhEightDrive)));
+  merged.eightOhEightPunch = Math.max(0, Math.min(1, finiteNumber(merged.eightOhEightPunch, DEFAULT_RHYTHM_CONFIG.eightOhEightPunch)));
+  merged.eightOhEightDecay = Math.max(0.3, Math.min(2.5, finiteNumber(merged.eightOhEightDecay, DEFAULT_RHYTHM_CONFIG.eightOhEightDecay)));
+  merged.eightOhEightTone = Math.max(0, Math.min(1, finiteNumber(merged.eightOhEightTone, DEFAULT_RHYTHM_CONFIG.eightOhEightTone)));
+  merged.eightOhEightSub = Math.max(0, Math.min(1, finiteNumber(merged.eightOhEightSub, DEFAULT_RHYTHM_CONFIG.eightOhEightSub)));
+  merged.eightOhEightChoke = finiteNumber(merged.eightOhEightChoke, DEFAULT_RHYTHM_CONFIG.eightOhEightChoke) >= 0.5 ? 1 : 0;
   merged.whaleAutoAmount = Math.max(0, Math.min(1, finiteNumber(merged.whaleAutoAmount, DEFAULT_RHYTHM_CONFIG.whaleAutoAmount)));
   merged.duckWhaleAmount = Math.max(0, Math.min(1.5, finiteNumber(merged.duckWhaleAmount, DEFAULT_RHYTHM_CONFIG.duckWhaleAmount)));
   merged.hitImpactAmount = Math.max(0, Math.min(1.5, finiteNumber(merged.hitImpactAmount, DEFAULT_RHYTHM_CONFIG.hitImpactAmount)));
@@ -240,25 +338,30 @@ export const normalizeRhythmConfig = (config = {}) => {
   merged.downbeatEchoAmount = Math.max(0, Math.min(1, finiteNumber(merged.downbeatEchoAmount, DEFAULT_RHYTHM_CONFIG.downbeatEchoAmount)));
   merged.accentEchoAmount = Math.max(0, Math.min(1, finiteNumber(merged.accentEchoAmount, DEFAULT_RHYTHM_CONFIG.accentEchoAmount)));
   merged.dubThrowAmount = Math.max(0, Math.min(1.2, finiteNumber(merged.dubThrowAmount, DEFAULT_RHYTHM_CONFIG.dubThrowAmount)));
+  merged.masterEq = normalizeMasterEq(merged.masterEq);
   const sourceSends = merged.trackBusSends && typeof merged.trackBusSends === "object" ? merged.trackBusSends : {};
-  merged.trackBusSends = Object.fromEntries(RHYTHM_TRACKS.map((track) => [
+  // Include registry tracks plus any extra (instance) ids carried in the source
+  // maps / patterns, so per-instance sends/levels/pans round-trip through save.
+  const extraTrackIds = collectExtraTrackIds(merged);
+  const allTrackIds = [...RHYTHM_TRACKS, ...extraTrackIds];
+  merged.trackBusSends = Object.fromEntries(allTrackIds.map((track) => [
     track,
-    Math.max(0, Math.min(1, finiteNumber(sourceSends[track], DEFAULT_TRACK_BUS_SENDS[track] ?? 0.25)))
+    Math.max(0, Math.min(1, finiteNumber(sourceSends[track], DEFAULT_TRACK_BUS_SENDS[baseTrackId(track)] ?? 0.25)))
   ]));
   const sourceReverbSends = merged.trackReverbSends && typeof merged.trackReverbSends === "object" ? merged.trackReverbSends : {};
-  merged.trackReverbSends = Object.fromEntries(RHYTHM_TRACKS.map((track) => [
+  merged.trackReverbSends = Object.fromEntries(allTrackIds.map((track) => [
     track,
-    Math.max(0, Math.min(1, finiteNumber(sourceReverbSends[track], DEFAULT_TRACK_REVERB_SENDS[track] ?? 0.2)))
+    Math.max(0, Math.min(1, finiteNumber(sourceReverbSends[track], DEFAULT_TRACK_REVERB_SENDS[baseTrackId(track)] ?? 0.2)))
   ]));
   const sourceLevels = merged.trackLevels && typeof merged.trackLevels === "object" ? merged.trackLevels : {};
-  merged.trackLevels = Object.fromEntries(RHYTHM_TRACKS.map((track) => [
+  merged.trackLevels = Object.fromEntries(allTrackIds.map((track) => [
     track,
-    Math.max(0, Math.min(2, finiteNumber(sourceLevels[track], DEFAULT_TRACK_LEVELS[track] ?? 1)))
+    Math.max(0, Math.min(2, finiteNumber(sourceLevels[track], DEFAULT_TRACK_LEVELS[baseTrackId(track)] ?? 1)))
   ]));
   const sourcePans = merged.trackPans && typeof merged.trackPans === "object" ? merged.trackPans : {};
-  merged.trackPans = Object.fromEntries(RHYTHM_TRACKS.map((track) => [
+  merged.trackPans = Object.fromEntries(allTrackIds.map((track) => [
     track,
-    Math.max(-1, Math.min(1, finiteNumber(sourcePans[track], DEFAULT_TRACK_PANS[track] ?? 0)))
+    Math.max(-1, Math.min(1, finiteNumber(sourcePans[track], DEFAULT_TRACK_PANS[baseTrackId(track)] ?? 0)))
   ]));
   // Per-track custom sample assignments: { trackId: { url, label } }. Only keep
   // entries that point at a string url so save/load stays clean.
@@ -272,6 +375,14 @@ export const normalizeRhythmConfig = (config = {}) => {
         root: typeof entry.root === "string" ? entry.root : null,
         path: typeof entry.path === "string" ? entry.path : null
       }])
+  );
+  // Per-track 808 voice shape overrides: { trackId: { drive, punch, ... } }.
+  // Keep only entries that carry at least one in-range field after clamping.
+  const sourceShapes = merged.trackShapes && typeof merged.trackShapes === "object" ? merged.trackShapes : {};
+  merged.trackShapes = Object.fromEntries(
+    Object.entries(sourceShapes)
+      .map(([track, shape]) => [track, normalizeTrackShape(shape)])
+      .filter(([, shape]) => Object.keys(shape).length > 0)
   );
   merged.generatedRowsEditable = finiteNumber(merged.generatedRowsEditable, DEFAULT_RHYTHM_CONFIG.generatedRowsEditable) >= 0.5 ? 1 : 0;
   merged.soloTracks = Array.isArray(merged.soloTracks)

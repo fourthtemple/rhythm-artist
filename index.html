@@ -14,25 +14,16 @@
         <a href="http://127.0.0.1:3000/">Open server version</a>
       </aside>
 
-      <header class="topbar">
-        <div>
-          <p>Rhythm Artist</p>
-          <h1>Beat Sequencer</h1>
-        </div>
-        <nav>
-          <a href="./rhythm-api-demo.html">API Demo</a>
-        </nav>
-      </header>
-
       <section class="transport" aria-label="Transport">
+        <span class="transport-wordmark">rhythmartist</span>
+        <button id="open-global-mix" type="button" class="topbar-view-btn">Mixer</button>
+        <a href="./rhythm-api-demo.html" class="transport-nav-link">API Demo</a>
+        <span class="transport-divider"></span>
         <button id="play-toggle" type="button">Play</button>
         <button id="restart" type="button">Restart</button>
         <button id="play-song" type="button">Full Song</button>
         <button id="loop-bar" type="button">Loop Bar</button>
         <button id="loop-two-bars" type="button">Loop 2 Bars</button>
-        <button id="space-throw" type="button">Dub Throw</button>
-        <button id="duck-sound" type="button">Duck Sound</button>
-        <button id="hit-sound" type="button">Hit Sound</button>
         <label class="transport-bpm-label">
           <span>BPM</span>
           <input id="transport-bpm" type="range" min="40" max="220" step="1" value="118" />
@@ -55,33 +46,25 @@
               <span>Loops</span>
               <input id="loop-count" type="number" min="1" max="8" step="1" value="1" />
             </label>
-            <button id="duplicate-loop" type="button">Duplicate Loop</button>
-            <button id="delete-loop" type="button">Delete Loop</button>
-            <div class="loop-actions" aria-label="Two-bar copy actions">
-              <button id="copy-two-bars" type="button">Copy 2 Bars</button>
-              <button id="paste-two-bars" type="button" disabled>Paste 2 Bars</button>
-              <button id="fill-rest-two-bars" type="button">Fill Rest</button>
-            </div>
-            <div class="loop-actions track-actions" aria-label="Selected track copy actions">
-              <span>Track</span>
-              <button id="copy-track-two-bars" type="button">Copy 2 Bars</button>
-              <button id="paste-track-two-bars" type="button" disabled>Paste 2 Bars</button>
-              <button id="fill-rest-track" type="button" disabled>Fill Rest</button>
-            </div>
-            <div class="zoom-controls" aria-label="Grid zoom">
-              <span>Zoom</span>
-              <button type="button" class="zoom-btn is-active" data-zoom="1">1×</button>
-              <button type="button" class="zoom-btn" data-zoom="2">2×</button>
-              <button type="button" class="zoom-btn" data-zoom="4">4×</button>
-              <button type="button" class="zoom-btn" data-zoom="8">8×</button>
-            </div>
-            <div class="track-toolbar-actions" aria-label="Track management">
-              <button id="add-track-btn" type="button" class="add-track-btn">+ Add Track</button>
-            </div>
+            <label title="How many bars to show at once">
+              <span>Bars</span>
+              <input id="segments-count" type="number" min="1" max="16" step="1" value="2" />
+            </label>
+            <label title="Time signature">
+              <span>Time</span>
+              <select id="time-sig-select">
+                <option value="4/4" selected>4/4</option>
+                <option value="3/4">3/4</option>
+                <option value="6/8">6/8</option>
+                <option value="5/4">5/4</option>
+                <option value="7/8">7/8</option>
+              </select>
+            </label>
           </div>
           <div class="bar-tabs" role="tablist" aria-label="Pattern bars"></div>
           <div id="step-grid" class="step-grid"></div>
-          <section class="selected-step">
+          <div class="selected-step-resize-handle" id="selected-step-resize-handle" title="Drag to resize"></div>
+          <section class="selected-step" id="selected-step-panel">
             <div>
               <span class="panel-label">Selected</span>
               <strong id="selected-label">none</strong>
@@ -168,40 +151,61 @@
               <span class="panel-label">Track Inspector</span>
               <strong id="track-inspector-name">No track selected</strong>
             </div>
-            <div id="track-inspector-body" class="track-inspector-body" hidden>
-              <div class="track-inspector-sample">
-                <span class="track-inspector-sublabel">Sample</span>
-                <div class="track-inspector-sample-row">
-                  <span id="track-sample-name" class="track-sample-name">— built-in —</span>
-                  <button id="track-sample-audition" type="button" title="Audition track">▶</button>
-                  <button id="track-sample-clear" type="button" title="Reset to built-in voice">⟲</button>
+            <p id="track-inspector-multi-hint" class="panel-hint" hidden>Shift-click track rows to inspect several at once.</p>
+            <!-- One panel per selected track is rendered here. -->
+            <div id="track-inspector-panels" class="track-inspector-panels"></div>
+            <!-- Hidden single-panel template cloned per selected track. -->
+            <template id="track-inspector-template">
+              <div class="track-inspector-body" data-track-panel>
+                <div class="track-inspector-panel-head">
+                  <strong class="track-inspector-panel-name" data-field="name">Track</strong>
+                  <button type="button" class="track-inspector-panel-close" data-action="deselect" title="Remove from inspector">×</button>
+                </div>
+                <div class="track-inspector-sample">
+                  <span class="track-inspector-sublabel">Sample</span>
+                  <div class="track-inspector-sample-row">
+                    <span class="track-sample-name" data-field="sample">— built-in —</span>
+                    <button type="button" data-action="audition" title="Audition track">▶</button>
+                    <button type="button" data-action="clear-sample" title="Reset to built-in voice">⟲</button>
+                  </div>
+                </div>
+                <label>
+                  <span>Track Level</span>
+                  <input type="range" min="0" max="2" step="0.01" value="1" data-control="level" />
+                  <output data-output="level">1.00</output>
+                  <input class="selected-number" type="number" min="0" max="2" step="0.01" value="1" data-number="level" />
+                </label>
+                <label>
+                  <span>Track Pan</span>
+                  <input type="range" min="-1" max="1" step="0.01" value="0" data-control="pan" />
+                  <output data-output="pan">C</output>
+                  <input class="selected-number" type="number" min="-1" max="1" step="0.01" value="0" data-number="pan" />
+                </label>
+                <label>
+                  <span>Track Delay</span>
+                  <input type="range" min="0" max="1" step="0.01" value="0" data-control="busSend" />
+                  <output data-output="busSend">0.00</output>
+                  <input class="selected-number" type="number" min="0" max="1" step="0.01" value="0" data-number="busSend" />
+                </label>
+                <label>
+                  <span>Track Verb</span>
+                  <input type="range" min="0" max="1" step="0.01" value="0" data-control="reverbSend" />
+                  <output data-output="reverbSend">0.00</output>
+                  <input class="selected-number" type="number" min="0" max="1" step="0.01" value="0" data-number="reverbSend" />
+                </label>
+                <div class="track-inspector-shape" data-field="shape" hidden>
+                  <div class="track-inspector-shape-head">
+                    <span class="track-inspector-sublabel">808 Shape</span>
+                    <button type="button" class="track-shape-reset" data-action="reset-shape" title="Reset this track's shape to the global 808 defaults">Reset</button>
+                  </div>
+                  <div class="track-inspector-shape-controls" data-field="shape-controls"></div>
+                </div>
+                <div class="track-inspector-actions">
+                  <button type="button" class="btn-secondary" data-action="duplicate" hidden>Duplicate Track</button>
+                  <button type="button" class="btn-danger" data-action="delete">Delete Track</button>
                 </div>
               </div>
-              <label>
-                <span>Track Level</span>
-                <input id="selected-track-level" type="range" min="0" max="2" step="0.01" value="1" disabled />
-                <output id="selected-track-level-value">1.00</output>
-                <input id="selected-track-level-number" class="selected-number" type="number" min="0" max="2" step="0.01" value="1" disabled />
-              </label>
-              <label>
-                <span>Track Pan</span>
-                <input id="selected-track-pan" type="range" min="-1" max="1" step="0.01" value="0" disabled />
-                <output id="selected-track-pan-value">C</output>
-                <input id="selected-track-pan-number" class="selected-number" type="number" min="-1" max="1" step="0.01" value="0" disabled />
-              </label>
-              <label>
-                <span>Track Delay</span>
-                <input id="selected-bus-send" type="range" min="0" max="1" step="0.01" value="0" disabled />
-                <output id="selected-bus-send-value">0.00</output>
-                <input id="selected-bus-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
-              </label>
-              <label>
-                <span>Track Verb</span>
-                <input id="selected-reverb-send" type="range" min="0" max="1" step="0.01" value="0" disabled />
-                <output id="selected-reverb-send-value">0.00</output>
-                <input id="selected-reverb-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
-              </label>
-            </div>
+            </template>
           </section>
 
           <!-- ── Sample Browser ──────────────────────────── -->
@@ -229,89 +233,6 @@
           </section>
 
           <section>
-            <span class="panel-label">Mix</span>
-            <label>
-              <span>Drum Bus</span>
-              <input data-config="drumBusGain" type="range" min="0" max="1.2" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>Drum Cap</span>
-              <input data-config="drumGainCap" type="range" min="0.1" max="1" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>Drum Lift</span>
-              <input data-config="drumLift" type="range" min="0.2" max="1.2" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>Synths</span>
-              <input data-config="synthLevel" type="range" min="0" max="3" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>Bass</span>
-              <input data-config="bassLevel" type="range" min="0" max="2.5" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>Bass Tone</span>
-              <input data-config="bassTone" type="range" min="0" max="1" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>808 Layer</span>
-              <input data-config="eightOhEightLevel" type="range" min="0" max="2" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>808 Tune</span>
-              <input data-config="eightOhEightTune" type="range" min="-12" max="12" step="1" />
-              <output></output>
-            </label>
-            <label>
-              <span>Auto LFO</span>
-              <input data-config="whaleAutoAmount" type="range" min="0" max="1" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>Duck LFO</span>
-              <input data-config="duckWhaleAmount" type="range" min="0" max="1.5" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>Hit Impact</span>
-              <input data-config="hitImpactAmount" type="range" min="0" max="1.5" step="0.01" />
-              <output></output>
-            </label>
-          </section>
-
-          <section>
-            <span class="panel-label">Auto Echo</span>
-            <label>
-              <span>Enabled</span>
-              <input data-config="autoEchoEnabled" type="range" min="0" max="1" step="1" />
-              <output></output>
-            </label>
-            <label>
-              <span>Amount</span>
-              <input data-config="autoEchoAmount" type="range" min="0" max="1" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>Downbeat</span>
-              <input data-config="downbeatEchoAmount" type="range" min="0" max="1" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>Accent</span>
-              <input data-config="accentEchoAmount" type="range" min="0" max="1" step="0.01" />
-              <output></output>
-            </label>
-          </section>
-
-          <section>
             <span class="panel-label">Solo</span>
             <div class="solo-strip">
               <button type="button" data-solo-track="bass">Bass</button>
@@ -326,35 +247,6 @@
               <button type="button" data-solo-track="echo">Echo</button>
               <button type="button" data-solo-clear>All</button>
             </div>
-          </section>
-
-          <section>
-            <span class="panel-label">Dub Space</span>
-            <label>
-              <span>FX Send</span>
-              <input data-config="fxSendBase" type="range" min="0" max="1" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>Feedback</span>
-              <input data-config="delayFeedbackBase" type="range" min="0" max="0.8" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>Echo Wet</span>
-              <input data-config="echoWetBase" type="range" min="0" max="1" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>Reverb Wet</span>
-              <input data-config="reverbWetBase" type="range" min="0" max="1" step="0.01" />
-              <output></output>
-            </label>
-            <label>
-              <span>Dub Throw</span>
-              <input data-config="dubThrowAmount" type="range" min="0" max="1.2" step="0.01" />
-              <output></output>
-            </label>
           </section>
 
           <section>
@@ -419,11 +311,37 @@
         </aside>
       </section>
 
-      <section class="json-panel">
-        <span class="panel-label">Current JSON</span>
-        <textarea id="json-output" spellcheck="false"></textarea>
-      </section>
+      <textarea id="json-output" hidden aria-hidden="true"></textarea>
     </main>
+
+    <!-- ── Global Mix View (dedicated track-level mixer) ──── -->
+    <div id="global-mix-view" class="global-mix-view" hidden>
+      <header class="global-mix-view-header">
+        <div>
+          <p class="global-mix-kicker">Per-track mixer</p>
+          <h2>Mixer</h2>
+        </div>
+        <p class="global-mix-view-hint">Every track's Level, Pan, Delay, Verb &amp; 808 shape in one place, plus song-wide bus &amp; effects below.</p>
+        <button id="close-global-mix" type="button" class="global-mix-close">Close</button>
+      </header>
+
+      <!-- ── Master spectrum + mastering curve ──── -->
+      <section class="global-mix-master" aria-label="Master spectrum and mastering EQ">
+        <div class="global-mix-master-head">
+          <div>
+            <p class="global-mix-kicker">Mastering curve</p>
+            <p class="global-mix-master-hint">Drag a band node up/down to boost or cut that Hz range. Double-click a node to flatten it.</p>
+          </div>
+          <button id="master-eq-reset" type="button" class="global-mix-close">Reset Curve</button>
+        </div>
+        <div class="global-mix-spectrum-wrap">
+          <canvas id="global-mix-spectrum" class="global-mix-spectrum"></canvas>
+        </div>
+      </section>
+
+      <div id="global-mix-strips" class="global-mix-strips"></div>
+    </div>
+
     <script>
       if (window.location.protocol === "file:") {
         window.addEventListener("DOMContentLoaded", () => {
@@ -462,7 +380,7 @@
     <dialog id="add-track-dialog" class="add-track-dialog">
       <form method="dialog" id="add-track-form">
         <h2>Add Track</h2>
-        <p class="add-track-hint">Pick instruments to add to the grid. Grouped by kit.</p>
+        <p class="add-track-hint">Pick instruments to add to the grid. Use ++ to add multiple independent instances of a voice.</p>
         <div id="add-track-groups" class="add-track-groups"></div>
         <div class="add-track-dialog-actions">
           <button type="button" id="add-track-cancel">Close</button>

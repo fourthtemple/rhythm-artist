@@ -4,6 +4,63 @@
 
 ---
 
+## 808 Shaping — Miami-bass voice controls (latest)
+
+Added a global **808 Shape** control group (Mix panel) plus a `get808Shape()`
+helper in `rhythm-engine-808.js` so a single "machine character" drives every
+808 voice consistently. New config fields (clamped in `rhythm-config.js`,
+persist with the project):
+
+- **Drive** (`eightOhEightDrive`) — analog-style waveshaper grit, strongest on
+  the kick, for the saturated low-end of classic Miami-bass records.
+- **Punch** (`eightOhEightPunch`) — sharpens the attack/click transient on
+  kick, toms and conga for a snappier hit.
+- **Decay** (`eightOhEightDecay`) — global tail-length multiplier (0.3–2.5×);
+  crank it for the long booming 808 sustain (kick/tom/snare/clap/cymbal/conga
+  ring and the kick pitch sweep).
+- **Tone** (`eightOhEightTone`) — brightness tilt on the noise/metal voices
+  (snare, hat, clap, cymbal) so the kit can go dark or sizzly.
+- **Sub** (`eightOhEightSub`) — extra low-end weight on the kick: deeper start
+  pitch, slower sweep, wider low-pass — the sub-bass boom.
+- **Choke** (`eightOhEightChoke`, on/off) — circuit-style mono behaviour. Hat
+  and cymbal share one **"metal" choke group** (like a real 808's open/closed
+  hat circuit) and the kick chokes itself, so retriggers cut the previous voice
+  instead of stacking. Implemented via `choke808Group()` which fast-fades the
+  previous voice's gain.
+
+The choke slider renders **on/off** in `syncSliders()` like the Auto-Echo
+toggle. All voices read shaping through `get808Shape()`, so the controls work
+live during playback and round-trip through save/load.
+
+---
+
+## Track Explorer / Add-Track / Sampler fixes
+
+Round of UI/engine fixes driven by user feedback:
+
+- **Added tracks now appear + make sound.** The root bug: `EDITABLE_GENERATED_ROWS`
+  was bound to `GENERATED_TRACK_IDS` (only `addByDefault` tracks), so extra 808
+  voices and samplers were never scheduled by the engine. Added
+  `ALL_GENERATED_TRACK_IDS` to the registry and pointed `EDITABLE_GENERATED_ROWS`
+  at it. Also fixed `addGridTrack`/`removeGridTrack` to call `buildStepGrid()`
+  (rebuilds rows) instead of `renderStepGrid()` (only updates states) — that's
+  why a newly added "808 Clap" never showed up in the grid.
+- **Removed the duplicate "+ Add Track" button** under the loop toolbar / Fill
+  Rest. Adding tracks is now only done from the right-side Track Explorer.
+- **Removed the inline "×" on grid rows and the Track Explorer rows.** Deleting a
+  track is now a track-level action: select the track, then **Delete Track** in
+  the Track Inspector (disabled for non-removable core kit).
+- **Unified the drum-machine button look.** Generated rows (synths/808/samplers)
+  now share the same cell style, fill color, and label treatment as pattern
+  rows — no more dashed teal cells or per-cell track names. Only the bass row
+  shows pitch text.
+- **New Sampler tracks.** Added a "Samplers" group with `sampler1..4`
+  (voice `"sampler"`). They start empty; assign a sample from the Sample Browser
+  (＋) and the engine plays the loaded buffer, pitched by the step's pitch
+  offset. Auditioning and per-track sends/level/pan all work.
+
+---
+
 ## Prior work (before the## Roadmap (agreed priorities)
 
 1. **Track registry** — data-driven grid so tracks/groups live in config (keystone)

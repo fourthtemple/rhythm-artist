@@ -17,7 +17,10 @@ import {
   normalizeStepOptions,
   phraseBeatModeForBar,
   sequencedBassPitchForStep,
-  shiftedAccentStepsForBar
+  shiftedAccentStepsForBar,
+  baseTrackId,
+  isInstanceId,
+  voiceForTrack
 } from "./rhythm-config.js";
 import {
   arrangementHitScale,
@@ -27,6 +30,7 @@ import {
 import { RhythmEventEmitter } from "./rhythm-events.js";
 import { EightOhEightVoices } from "./rhythm-engine-808.js";
 import { SynthVoices } from "./rhythm-engine-synth.js";
+import { MasteringChain } from "./rhythm-mastering.js";
 
 export {
   DEFAULT_RHYTHM_CONFIG,
@@ -74,6 +78,9 @@ export class RhythmEngine {
     this.echoWetGain = null;
     this.reverbNode = null;
     this.reverbWetGain = null;
+    // Master mastering chain (multi-band EQ + spectrum analyser). Lazily built
+    // in ensureContext() and exposed via getMasteringChain() for the UI.
+    this.mastering = null;
     this.buffers = new Map();
     this.noiseBuffer = null;
     // User-assigned custom samples, keyed by track id. When present, they
@@ -464,7 +471,15 @@ export class RhythmEngine {
     this.reverbNode.connect(this.reverbWetGain);
     this.echoWetGain.connect(this.masterGain);
     this.reverbWetGain.connect(this.masterGain);
-    this.masterGain.connect(this.context.destination);
+    // Master bus → mastering EQ + spectrum analyser → speakers.
+    this.mastering = new MasteringChain(this.context, this.config.masterEq);
+    this.masterGain.connect(this.mastering.input);
+    this.mastering.output.connect(this.context.destination);
+  }
+
+  /** Expose the mastering chain (analyser + EQ) for the editor's spectrum UI. */
+  getMasteringChain() {
+    return this.mastering;
   }
 
   applyAudioSettings() {
@@ -475,6 +490,7 @@ export class RhythmEngine {
     if (this.delayFeedback) this.delayFeedback.gain.setTargetAtTime(this.config.delayFeedbackBase, now, 0.06);
     if (this.echoWetGain) this.echoWetGain.gain.setTargetAtTime(this.config.echoWetBase, now, 0.06);
     if (this.reverbWetGain) this.reverbWetGain.gain.setTargetAtTime(this.config.reverbWetBase, now, 0.08);
+    if (this.mastering) this.mastering.setEq(this.config.masterEq);
   }
 
   async loadKit() {
@@ -577,6 +593,7 @@ export class RhythmEngine {
       case "eightOhEightCymbal": this.play808Cymbal(time, gain * this.config.eightOhEightLevel * 0.55, track, {}); break;
       case "echo": this.playEchoPingSynth(time + 0.01, { gain, duration: stepDuration * 4, frequency: this.synthFrequency(12, 1) }); break;
       case "space": this.playNeutralSpaceSound(time, "jazz", { gain }); break;
+      case "sampler": this.playHit(track, time, gain, 1, {}); break;
       default: this.playHit(track, time, gain, 1, {}); break;
     }
   }
@@ -714,6 +731,12 @@ export class RhythmEngine {
     this.events.emit("config", { config: this.config });
   }
 
+  /** Live-set one master EQ band (dB) without a full config pass — for dragging. */
+  setMasterEqBand(bandId, gainDb) {
+    if (this.config.masterEq) this.config.masterEq[bandId] = gainDb;
+    if (this.mastering) this.mastering.setBand(bandId, gainDb);
+  }
+
   exportConfig() {
     return cloneRhythmConfig(this.config);
   }
@@ -846,6 +869,31 @@ export class RhythmEngine {
   trackIsAudible(track) {
     const soloTracks = Array.isArray(this.config.soloTracks) ? this.config.soloTracks : [];
     return soloTracks.length === 0 || soloTracks.includes(track);
+  }
+
+  /**
+   * Every generated (synth/808/sampler/fx) track id that should be scheduled
+   * for this bar: the registry's editable generated rows plus any *instance*
+   * tracks the user has added (e.g. extra "808 Clap" instances written as
+   * `eightOhEightClap~ab12`). Instances are discovered from the bar's own
+   * keys so each added track plays even though it isn't in the static registry
+   * row list. Returned ids keep their instance suffix so per-track
+   * sends/level/pan/shape routing resolves to the right instance.
+   */
+  editableGeneratedTrackIds(bar) {
+    const ids = [...EDITABLE_GENERATED_ROWS];
+    if (bar && typeof bar === "object") {
+      const known = new Set(ids);
+      Object.keys(bar).forEach((key) => {
+        if (known.has(key) || !isInstanceId(key)) return;
+        // Only schedule instances whose base voice is a known generated row.
+        if (EDITABLE_GENERATED_ROWS.includes(baseTrackId(key))) {
+          ids.push(key);
+          known.add(key);
+        }
+      });
+    }
+    return ids;
   }
 
   trackBusSend(track) {
@@ -1041,8 +1089,12 @@ export class RhythmEngine {
   scheduleEditableGeneratedRows(bar, step, time, phraseBar, style) {
     const pressure = clamp01(this.activeBarIntensity);
     const stepDuration = this.activeStepDurationSeconds || this.stepDurationSeconds(style, pressure);
-    EDITABLE_GENERATED_ROWS.forEach((track) => {
+    // Iterate the bar's own generated tracks (registry defaults + any instance    // tracks the user added, e.g. multiple "808 Clap" instances written as
+    // `eightOhEightClap~ab12`). Each instance resolves to its base voice but
+    // keeps its own id for per-track sends/level/pan/shape routing.
+    this.editableGeneratedTrackIds(bar).forEach((track) => {
       if (!this.trackIsAudible(track)) return;
+      const base = baseTrackId(track);
       const hits = Array.isArray(bar?.[track]) ? bar[track] : [];
       hits.forEach(([hitStep, velocity, optionsRaw]) => {
         if (hitStep !== step || velocity <= 0.001) return;
@@ -1050,7 +1102,7 @@ export class RhythmEngine {
         const hitTime = time + options.offsetMs / 1000 + Math.max(0, options.delayMs / 1000);
         const frequency = this.synthFrequency(options.pitch, 1);
         const gain = clamp01(velocity);
-        if (track === "pluck") {
+        if (base === "pluck") {
           this.playPluckSynth(hitTime, frequency, {
             gain,
             duration: stepDuration * 1.85,
@@ -1060,7 +1112,7 @@ export class RhythmEngine {
             reverbSend: options.reverbSend,
             dubEcho: options.dubEcho
           });
-        } else if (track === "funk") {
+        } else if (base === "funk") {
           this.playFunkSynth(hitTime + stepDuration * (step % 2 ? 0.12 : 0), frequency, {
             gain,
             duration: stepDuration * 1.35,
@@ -1071,7 +1123,7 @@ export class RhythmEngine {
             reverbSend: options.reverbSend,
             dubEcho: options.dubEcho
           });
-        } else if (track === "pad") {
+        } else if (base === "pad") {
           this.playPadSynth(hitTime, [
             this.synthFrequency(options.pitch, 1),
             this.synthFrequency(options.pitch + 2, 1),
@@ -1085,7 +1137,7 @@ export class RhythmEngine {
             reverbSend: options.reverbSend,
             dubEcho: options.dubEcho
           });
-        } else if (track === "whale") {
+        } else if (base === "whale") {
           this.playWhaleSynth(hitTime, {
             gain,
             duration: stepDuration * 8,
@@ -1096,31 +1148,31 @@ export class RhythmEngine {
             reverbSend: options.reverbSend,
             dubEcho: options.dubEcho
           });
-        } else if (track === "eightOhEightKick") {
+        } else if (base === "eightOhEightKick") {
           this.play808Kick(hitTime, Math.max(gain * this.config.eightOhEightLevel, this.config.eightOhEightLevel * 0.08), options.pitch, track, options);
-        } else if (track === "eightOhEightSnare") {
+        } else if (base === "eightOhEightSnare") {
           this.play808Snare(hitTime, gain * this.config.eightOhEightLevel * 0.82, track, options);
-        } else if (track === "eightOhEightHat") {
+        } else if (base === "eightOhEightHat") {
           this.play808Hat(hitTime, gain * this.config.eightOhEightLevel * 0.52, track, options);
-        } else if (track === "eightOhEightClick") {
+        } else if (base === "eightOhEightClick") {
           this.play808Click(hitTime, gain * this.config.eightOhEightLevel * 0.42, track, options);
-        } else if (track === "eightOhEightClap") {
+        } else if (base === "eightOhEightClap") {
           this.play808Clap(hitTime, gain * this.config.eightOhEightLevel * 0.7, track, options);
-        } else if (track === "eightOhEightTomLow") {
+        } else if (base === "eightOhEightTomLow") {
           this.play808Tom(hitTime, gain * this.config.eightOhEightLevel * 0.72, options.pitch - 7, track, options);
-        } else if (track === "eightOhEightTomMid") {
+        } else if (base === "eightOhEightTomMid") {
           this.play808Tom(hitTime, gain * this.config.eightOhEightLevel * 0.72, options.pitch, track, options);
-        } else if (track === "eightOhEightTomHigh") {
+        } else if (base === "eightOhEightTomHigh") {
           this.play808Tom(hitTime, gain * this.config.eightOhEightLevel * 0.72, options.pitch + 7, track, options);
-        } else if (track === "eightOhEightCowbell") {
+        } else if (base === "eightOhEightCowbell") {
           this.play808Cowbell(hitTime, gain * this.config.eightOhEightLevel * 0.6, track, options);
-        } else if (track === "eightOhEightConga") {
+        } else if (base === "eightOhEightConga") {
           this.play808Conga(hitTime, gain * this.config.eightOhEightLevel * 0.7, options.pitch, track, options);
-        } else if (track === "eightOhEightMaraca") {
+        } else if (base === "eightOhEightMaraca") {
           this.play808Maraca(hitTime, gain * this.config.eightOhEightLevel * 0.5, track, options);
-        } else if (track === "eightOhEightCymbal") {
+        } else if (base === "eightOhEightCymbal") {
           this.play808Cymbal(hitTime, gain * this.config.eightOhEightLevel * 0.55, track, options);
-        } else if (track === "echo") {
+        } else if (base === "echo") {
           this.playEchoPingSynth(hitTime + 0.01, {
             gain,
             duration: stepDuration * 4,
@@ -1131,13 +1183,18 @@ export class RhythmEngine {
             dubEcho: options.dubEcho
           });
           this.pushDubFx(hitTime, Math.max(gain, options.dubEcho), { sustainSeconds: 0.35 + options.dubEcho * 1.8 });
-        } else if (track === "space") {
+        } else if (base === "space") {
           if (options.pitch < 0) this.playSpaceDrop(hitTime, style, { force: true, drumAccent: false });
           else if (options.pitch > 0) this.playSpacePickup(hitTime, style, { force: true, drumAccent: false });
           else this.playNeutralSpaceSound(hitTime, style, { gain, dubEcho: options.dubEcho });
+        } else if (this.hasCustomSample(track)) {
+          // Sampler tracks (and any track with a user sample assigned): play the
+          // loaded buffer, pitched by the step's pitch offset (semitones).
+          const rate = Math.pow(2, (options.pitch || 0) / 12);
+          this.playHit(track, hitTime, this.drumGain(gain), rate, options);
         }
         const dubEcho = clamp01(options.dubEcho);
-        if ((options.delaySend > 0.001 || dubEcho > 0.001) && track !== "echo" && track !== "space") {
+        if ((options.delaySend > 0.001 || dubEcho > 0.001) && base !== "echo" && base !== "space") {
           this.pushDubFx(hitTime, Math.max(options.delaySend, dubEcho) * 0.62, { sustainSeconds: 0.35 + dubEcho * 1.8 });
         }
       });

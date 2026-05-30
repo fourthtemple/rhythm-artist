@@ -8,7 +8,8 @@ import {
   STEP_OPTION_DEFAULTS,
   SYNTH_ROOT_HZ,
   SYNTH_SCALE,
-  sequencedBassPitchForStep
+  sequencedBassPitchForStep,
+  TRACK_SHAPE_RANGES
 } from "./audio/rhythm-config.js";
 import {
   TRACK_REGISTRY,
@@ -19,9 +20,75 @@ import {
   PATTERN_TRACK_IDS,
   TRACK_LABELS,
   TRACK_DEFAULT_VELOCITY,
-  tracksByGroup
+  tracksByGroup,
+  isInstanceId,
+  baseTrackId,
+  makeInstanceId
 } from "./audio/rhythm-track-registry.js";
+import {
+  orderGridTrackIds as orderGridTrackIdsBase,
+  reconcileGridTrackIds as reconcileGridTrackIdsBase,
+  instanceLabelFor,
+  removeTrackFromConfigMaps
+} from "./audio/grid-tracks.js";
 import { RhythmEngine } from "./audio/rhythm-engine.js";
+import { createGlobalMixPanel } from "./ui/global-mix-panel.js";
+import { showContextMenu, closeContextMenu } from "./ui/context-menu.js";
+import { createSampleBrowser } from "./ui/sample-browser.js";
+import { createLoopTrackPanel } from "./ui/loop-track-panel.js";
+import { createTrackPanels } from "./ui/track-panels.js";
+import { createArrangementClipboard } from "./ui/arrangement-clipboard.js";
+import { createTransport } from "./ui/transport.js";
+import { createNoteInspector } from "./ui/note-inspector.js";
+import { createConfigFile } from "./ui/config-file.js";
+import { createStepGridBuilder } from "./ui/step-grid-builder.js";
+import { createRowSelection } from "./ui/row-selection.js";
+import { createEventWiring } from "./ui/event-wiring.js";
+import { createHitData } from "./audio/hit-data.js";
+import { createConfigSync } from "./ui/config-sync.js";
+import {
+  getPathValue as getConfigPath,
+  setPathValue as setConfigPath
+} from "./lib/object-path.js";
+import {
+  downloadJsonFile,
+  saveGameAsset,
+  fetchSavedConfig
+} from "./lib/config-io.js";
+import {
+  normalizeHitEntry,
+  readStoredHit,
+  commitHitEntry
+} from "./audio/pattern-hits.js";
+import { getTrackMix, setTrackMix } from "./audio/track-mix.js";
+import {
+  TRACK_SHAPE_FIELDS,
+  globalShapeValue as globalShapeValueBase,
+  resolvedShapeValue as resolvedShapeValueBase,
+  formatShapeValue,
+  setTrackShapeField as setTrackShapeFieldBase,
+  clearTrackShape
+} from "./audio/track-shape.js";
+import { setPairedControl, wireNumberControl, registerInteractiveInput } from "./ui/paired-control.js";
+import {
+  loopCountFor,
+  localBarIndex as localBarIndexMath,
+  loopIndexForBar as loopIndexForBarMath,
+  loopStartBar as loopStartBarMath,
+  clampLoopStart as clampLoopStartMath,
+  barLabel as barLabelMath
+} from "./audio/loop-math.js";
+import {
+  NOTE_NAMES,
+  BLACK_NOTE_PITCH_CLASSES,
+  A1_MIDI_NOTE,
+  formatPitch,
+  noteNameForPitch,
+  formatPan,
+  scaleSemitoneForIndex as scaleSemitoneForIndexBase,
+  displayedPitch as displayedPitchValueFor,
+  storedPitch as storedPitchValueFor
+} from "./ui/music-format.js";
 
 // The grid is now driven by `state.gridTrackIds` (a list of registry ids).
 // These helpers turn that id list into the row descriptors the renderer wants.
@@ -29,7 +96,7 @@ const trackRowDescriptor = (id) => {
   const def = getTrackDef(id);
   return {
     id,
-    label: def?.label || id,
+    label: isInstanceId(id) ? instanceLabel(id) : (def?.label || id),
     type: def?.kind === "pattern" ? "pattern" : "generated"
   };
 };
@@ -42,9 +109,6 @@ const LOOP_BAR_COUNT = PHRASE_BARS;
 const MAX_LOOP_COUNT = Math.floor(MAX_SEQUENCE_BARS / LOOP_BAR_COUNT);
 const PITCH_SLIDER_MIN = -24;
 const PITCH_SLIDER_MAX = 48;
-const A1_MIDI_NOTE = 33;
-const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-const BLACK_NOTE_PITCH_CLASSES = new Set([1, 3, 6, 8, 10]);
 const SAVED_RHYTHM_URL = "./assets/game/rhythm-sequence.json";
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const $ = (selector) => document.querySelector(selector);
@@ -59,6 +123,15 @@ const state = {
   activeBar: 0,
   activeLoopIndex: 0,
   selected: null,
+  // Multi-track inspector selection (ordered list of track ids). The first id
+  // mirrors `state.selected.hit` for the legacy single-track helpers.
+  selectedTracks: [],
+  trackAnchor: null,
+  // Shift-click selections for loops & bars (ordered, with anchors for ranges).
+  selectedLoops: [],
+  loopAnchor: null,
+  selectedBars: [],
+  barAnchor: null,
   soloTracks: new Set(),
   playing: false,
   intensity: 0.45,
@@ -67,9 +140,14 @@ const state = {
   loopBarLength: 0,
   twoBarClipboard: null,
   trackClipboard: null,
+  // Rich clipboards for the new shift-select copy/paste flows.
+  loopClipboard: null,
+  barClipboard: null,
   playheadStep: 0,
   uiTimer: null,
-  zoomLevel: 1,
+  zoomLevel: 8,
+  segmentsCount: 2,
+  timeSig: "4/4",
   // Registry-driven list of track ids shown in the grid (order = render order).
   gridTrackIds: [...DEFAULT_GRID_TRACK_IDS]
 };
@@ -109,27 +187,17 @@ const selectedNoteDelaySendNumber = $("#selected-note-delay-send-number");
 const selectedNoteReverbSend = $("#selected-note-reverb-send");
 const selectedNoteReverbSendValue = $("#selected-note-reverb-send-value");
 const selectedNoteReverbSendNumber = $("#selected-note-reverb-send-number");
-const selectedBusSend = $("#selected-bus-send");
-const selectedBusSendValue = $("#selected-bus-send-value");
-const selectedBusSendNumber = $("#selected-bus-send-number");
-const selectedReverbSend = $("#selected-reverb-send");
-const selectedReverbSendValue = $("#selected-reverb-send-value");
-const selectedReverbSendNumber = $("#selected-reverb-send-number");
-const selectedTrackLevel = $("#selected-track-level");
-const selectedTrackLevelValue = $("#selected-track-level-value");
-const selectedTrackLevelNumber = $("#selected-track-level-number");
-const selectedTrackPan = $("#selected-track-pan");
-const selectedTrackPanValue = $("#selected-track-pan-value");
-const selectedTrackPanNumber = $("#selected-track-pan-number");
 // Right-side panels
 const trackExplorerList = $("#track-explorer-list");
 const trackInspectorName = $("#track-inspector-name");
-const trackInspectorBody = $("#track-inspector-body");
-const trackSampleName = $("#track-sample-name");
+const trackInspectorPanels = $("#track-inspector-panels");
+const trackInspectorTemplate = $("#track-inspector-template");
+const trackInspectorMultiHint = $("#track-inspector-multi-hint");
 const sampleRootSelect = $("#sample-root-select");
 const sampleBreadcrumb = $("#sample-breadcrumb");
 const sampleBrowserList = $("#sample-browser-list");
 const runningFromFile = window.location.protocol === "file:";
+// Note-step inspector controls (per-note, not per-track).
 const selectedControls = [
   selectedVelocity,
   selectedPitch,
@@ -139,8 +207,6 @@ const selectedControls = [
   selectedWobble,
   selectedNoteDelaySend,
   selectedNoteReverbSend,
-  selectedBusSend,
-  selectedReverbSend,
   selectedVelocityNumber,
   selectedPitchNumber,
   selectedOffsetNumber,
@@ -150,13 +216,7 @@ const selectedControls = [
   selectedDubEcho,
   selectedDubEchoNumber,
   selectedNoteDelaySendNumber,
-  selectedNoteReverbSendNumber,
-  selectedBusSendNumber,
-  selectedReverbSendNumber,
-  selectedTrackLevel,
-  selectedTrackLevelNumber,
-  selectedTrackPan,
-  selectedTrackPanNumber
+  selectedNoteReverbSendNumber
 ];
 
 const selectedOptionControls = {
@@ -216,27 +276,6 @@ const selectedOptionControls = {
   }
 };
 
-function setPairedControl(range, numberInput, output, value, formatter = (next) => String(next)) {
-  const stringValue = String(value);
-  range.value = stringValue;
-  numberInput.value = stringValue;
-  output.textContent = formatter(value);
-}
-
-function wireNumberControl(input, commit) {
-  input.addEventListener("input", () => {
-    if (input.value === "") return;
-    commit(input.value);
-  });
-  input.addEventListener("change", () => commit(input.value));
-  input.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    commit(input.value);
-    input.blur();
-  });
-}
-
 function normalizeEditorConfig(config = {}) {
   return normalizeSequencedRhythmConfig(config, { pressure: 0.45 });
 }
@@ -246,15 +285,15 @@ function bars() {
 }
 
 function loopCount() {
-  return Math.max(1, Math.ceil(bars().length / LOOP_BAR_COUNT));
+  return loopCountFor(bars().length, LOOP_BAR_COUNT);
 }
 
 function localBarIndex(barIndex = state.activeBar) {
-  return ((Math.round(barIndex) % LOOP_BAR_COUNT) + LOOP_BAR_COUNT) % LOOP_BAR_COUNT;
+  return localBarIndexMath(barIndex, LOOP_BAR_COUNT);
 }
 
 function loopIndexForBar(barIndex = state.activeBar) {
-  return Math.max(0, Math.min(MAX_LOOP_COUNT - 1, Math.floor(Math.max(0, barIndex) / LOOP_BAR_COUNT)));
+  return loopIndexForBarMath(barIndex, LOOP_BAR_COUNT, MAX_LOOP_COUNT);
 }
 
 function syncActiveLoopToBar() {
@@ -268,7 +307,7 @@ function clampActiveBar() {
 }
 
 function loopStartBar(loopIndex = state.activeLoopIndex) {
-  return Math.max(0, Math.min(loopCount() - 1, loopIndex)) * LOOP_BAR_COUNT;
+  return loopStartBarMath(loopIndex, bars().length, LOOP_BAR_COUNT);
 }
 
 function activeLoopLength() {
@@ -277,13 +316,11 @@ function activeLoopLength() {
 }
 
 function clampLoopStart(start = state.activeBar, length = activeLoopLength() || 1) {
-  const safeLength = Math.max(1, Math.round(length) || 1);
-  const maxStart = Math.max(0, bars().length - safeLength);
-  return Math.max(0, Math.min(maxStart, Math.round(Number(start) || 0)));
+  return clampLoopStartMath(start, length, bars().length);
 }
 
 function barLabel(barIndex) {
-  return `${loopIndexForBar(barIndex) + 1}.${String(localBarIndex(barIndex) + 1).padStart(2, "0")}`;
+  return barLabelMath(barIndex, LOOP_BAR_COUNT, MAX_LOOP_COUNT);
 }
 
 function loopRangeLabel(start = state.loopBarIndex, length = activeLoopLength() || 1) {
@@ -297,567 +334,166 @@ function loopBarSlice(loopIndex = state.activeLoopIndex) {
   return Array.from({ length: LOOP_BAR_COUNT }, (_, index) => clone(bars()[start + index] || bars()[index % Math.max(1, bars().length)] || {}));
 }
 
-function twoBarStart() {
-  return activeLoopLength() === 2
-    ? clampLoopStart(state.loopBarIndex, 2)
-    : clampLoopStart(state.activeBar, 2);
-}
-
-function twoBarPair(start = twoBarStart()) {
-  const safeStart = clampLoopStart(start, 2);
-  const source = bars();
-  return [
-    clone(source[safeStart] || {}),
-    clone(source[safeStart + 1] || source[safeStart] || {})
-  ];
-}
-
-function updateTwoBarClipboardButtons() {
-  const pasteButton = $("#paste-two-bars");
-  if (pasteButton) pasteButton.disabled = !state.twoBarClipboard;
-}
-
-function selectedTrack() {
-  return state.selected?.hit || null;
-}
-
 function trackName(hit) {
   return ROW_LABELS[hit] || hit || "track";
 }
 
-function updateTrackClipboardButtons() {
-  const hasTrack = Boolean(selectedTrack());
-  const canPaste = hasTrack && Boolean(state.trackClipboard);
-  const copyButton = $("#copy-track-two-bars");
-  const pasteButton = $("#paste-track-two-bars");
-  const fillButton = $("#fill-rest-track");
-  if (copyButton) copyButton.disabled = !hasTrack;
-  if (pasteButton) pasteButton.disabled = !canPaste;
-  if (fillButton) fillButton.disabled = !canPaste;
-}
+// ══ Arrangement clipboard controller ═══════════════════════════════════════
+// Two-bar/track copy-paste-fill, loop/bar shift-multiselect + clipboards,
+// right-click context menus, and loop-count editing live in their own
+// controller. The editor keeps hoisted wrappers so existing call sites and the
+// tab-builders (which reference these by name) are unchanged.
+const arrangement = createArrangementClipboard({
+  $,
+  state,
+  clone,
+  setStatus: (msg) => { status.textContent = msg; },
+  LOOP_BAR_COUNT,
+  MAX_LOOP_COUNT,
+  bars,
+  clampLoopStart,
+  activeLoopLength,
+  loopRangeLabel,
+  loopBarSlice,
+  loopStartBar,
+  localBarIndex,
+  clampActiveBar,
+  loopCount,
+  applyConfig,
+  buildLoopTabs,
+  buildBarTabs,
+  renderStepGrid,
+  refreshLoopBarButton,
+  selectStep,
+  showContextMenu,
+  resetSelectedPanel,
+  trackName
+});
 
-function syncAfterArrangementEdit() {
-  clampActiveBar();
-  applyConfig();
-  buildLoopTabs();
-  buildBarTabs();
-  renderStepGrid();
-  refreshLoopBarButton();
-  if (state.selected) {
-    selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step");
-  }
-  updateTwoBarClipboardButtons();
-  updateTrackClipboardButtons();
-}
+function updateTwoBarClipboardButtons() { return arrangement.updateTwoBarClipboardButtons(); }
+function updateTrackClipboardButtons() { return arrangement.updateTrackClipboardButtons(); }
+function copyTwoBars() { return arrangement.copyTwoBars(); }
+function pasteTwoBars() { return arrangement.pasteTwoBars(); }
+function fillRestWithTwoBars() { return arrangement.fillRestWithTwoBars(); }
+function copyTrackTwoBars() { return arrangement.copyTrackTwoBars(); }
+function pasteTrackTwoBars() { return arrangement.pasteTrackTwoBars(); }
+function fillRestWithTrackTwoBars() { return arrangement.fillRestWithTrackTwoBars(); }
+function toggleLoopMultiSelect(index, event) { return arrangement.toggleLoopMultiSelect(index, event); }
+function toggleBarMultiSelect(index, event) { return arrangement.toggleBarMultiSelect(index, event); }
+function openLoopContextMenu(event, index) { return arrangement.openLoopContextMenu(event, index); }
+function openBarContextMenu(event, index) { return arrangement.openBarContextMenu(event, index); }
+function openTrackContextMenu(event, hit) { return arrangement.openTrackContextMenu(event, hit); }
+function setLoopCount(nextCount, opts) { return arrangement.setLoopCount(nextCount, opts); }
+function duplicateCurrentLoop() { return arrangement.duplicateCurrentLoop(); }
+function deleteCurrentLoop() { return arrangement.deleteCurrentLoop(); }
 
-function copyTwoBars() {
-  const start = twoBarStart();
-  state.twoBarClipboard = {
-    start,
-    bars: twoBarPair(start)
-  };
-  updateTwoBarClipboardButtons();
-  status.textContent = `Copied bars ${loopRangeLabel(start, 2)}`;
-}
+// ══ Hit-data access layer ═══════════════════════════════════════════════════
+// All pattern bar read/write (getHitData, setHitData, setHitVelocity,
+// getHitVelocity, getGeneratedHitData) live in their own module.
+const hitData = createHitData({
+  state,
+  PATTERN_ROW_IDS,
+  ROW_LABELS,
+  clamp,
+  normalizeStepOptions,
+  readStoredHit,
+  commitHitEntry,
+  generatedSynthEventsForStep,
+  applyConfig
+});
 
-function pasteTwoBars() {
-  if (!state.twoBarClipboard) {
-    copyTwoBars();
-    return;
-  }
-  const start = clampLoopStart(state.activeBar, 2);
-  const target = bars();
-  target[start] = clone(state.twoBarClipboard.bars[0]);
-  target[start + 1] = clone(state.twoBarClipboard.bars[1]);
-  state.activeBar = start;
-  if (activeLoopLength()) state.loopBarIndex = clampLoopStart(start, activeLoopLength());
-  syncAfterArrangementEdit();
-  status.textContent = `Pasted 2 bars at ${loopRangeLabel(start, 2)}`;
-}
+function patternBar(index) { return hitData.patternBar(index); }
+function getHitData(hit, step, barIndex) { return hitData.getHitData(hit, step, barIndex); }
+function setHitData(hit, step, patch, barIndex) { return hitData.setHitData(hit, step, patch, barIndex); }
+function setHitVelocity(hit, step, velocity, barIndex) { return hitData.setHitVelocity(hit, step, velocity, barIndex); }
+function getHitVelocity(hit, step, barIndex) { return hitData.getHitVelocity(hit, step, barIndex); }
+function getGeneratedHitData(hit, step, barIndex, pressure) { return hitData.getGeneratedHitData(hit, step, barIndex, pressure); }
+function generatedEventsAtStep(step, barIndex, pressure) { return hitData.generatedEventsAtStep(step, barIndex, pressure); }
 
-function fillRestWithTwoBars() {
-  const start = twoBarStart();
-  const pair = state.twoBarClipboard?.bars || twoBarPair(start);
-  if (!state.twoBarClipboard) {
-    state.twoBarClipboard = { start, bars: pair.map(clone) };
-  }
-  const target = bars();
-  for (let index = start; index < target.length; index += 1) {
-    target[index] = clone(pair[(index - start) % 2]);
-  }
-  state.activeBar = start;
-  if (activeLoopLength()) state.loopBarIndex = clampLoopStart(start, activeLoopLength());
-  syncAfterArrangementEdit();
-  status.textContent = `Filled bars ${start + 1}-${target.length} from ${loopRangeLabel(start, 2)}`;
-}
+// ══ Per-note (step) inspector controller ═══════════════════════════════════
+// The on-screen piano, pitch preview/choose, velocity/pitch/effect-option
+// controls, and the dub-echo control live in their own controller. The editor
+// keeps hoisted wrappers so existing call sites (event wiring, render loop,
+// transport playhead) are unchanged.
+const noteInspector = createNoteInspector({
+  state,
+  setStatus: (msg) => { status.textContent = msg; },
+  runningFromFile,
+  stepGrid,
+  selectedPiano,
+  selectedPitch,
+  selectedPitchNumber,
+  selectedPitchValue,
+  selectedVelocity,
+  selectedVelocityNumber,
+  selectedVelocityValue,
+  selectedDubEcho,
+  selectedDubEchoNumber,
+  selectedDubEchoValue,
+  selectedOptionControls,
+  PITCH_SLIDER_MIN,
+  PITCH_SLIDER_MAX,
+  SYNTH_ROOT_HZ,
+  SYNTH_SCALE,
+  A1_MIDI_NOTE,
+  BLACK_NOTE_PITCH_CLASSES,
+  STEP_OPTION_DEFAULTS,
+  clamp,
+  normalizeStepOptions,
+  normalizeHitEntry,
+  sequencedBassPitchForStep,
+  scaleSemitoneForIndex: scaleSemitoneForIndexBase,
+  formatPitch,
+  noteNameForPitch,
+  displayedPitchValueFor,
+  storedPitchValueFor,
+  setPairedControl,
+  getHitData,
+  setHitData,
+  setHitVelocity,
+  selectStep,
+  renderStepGrid,
+  activeLoopLength,
+  clampLoopStart,
+  trackName
+});
 
-function copyTrackTwoBars() {
-  const hit = selectedTrack();
-  if (!hit) {
-    status.textContent = "Select a track row first";
-    return;
-  }
-  const start = twoBarStart();
-  const source = bars();
-  state.trackClipboard = {
-    hit,
-    start,
-    bars: [
-      clone(source[start]?.[hit] || []),
-      clone(source[start + 1]?.[hit] || [])
-    ]
-  };
-  updateTrackClipboardButtons();
-  status.textContent = `Copied ${trackName(hit)} track ${loopRangeLabel(start, 2)}`;
-}
-
-function pasteTrackTwoBars() {
-  const hit = selectedTrack();
-  if (!hit) {
-    status.textContent = "Select a target track row first";
-    return;
-  }
-  if (!state.trackClipboard) {
-    copyTrackTwoBars();
-    return;
-  }
-  const start = clampLoopStart(state.activeBar, 2);
-  const target = bars();
-  target[start] = target[start] || {};
-  target[start + 1] = target[start + 1] || {};
-  target[start][hit] = clone(state.trackClipboard.bars[0] || []);
-  target[start + 1][hit] = clone(state.trackClipboard.bars[1] || []);
-  state.activeBar = start;
-  if (activeLoopLength()) state.loopBarIndex = clampLoopStart(start, activeLoopLength());
-  syncAfterArrangementEdit();
-  status.textContent = `Pasted ${trackName(state.trackClipboard.hit)} into ${trackName(hit)} at ${loopRangeLabel(start, 2)}`;
-}
-
-function fillRestWithTrackTwoBars() {
-  const hit = selectedTrack();
-  if (!hit) {
-    status.textContent = "Select a target track row first";
-    return;
-  }
-  if (!state.trackClipboard) {
-    copyTrackTwoBars();
-    return;
-  }
-  const start = clampLoopStart(state.activeBar, 2);
-  const target = bars();
-  for (let index = start; index < target.length; index += 1) {
-    target[index] = target[index] || {};
-    target[index][hit] = clone(state.trackClipboard.bars[(index - start) % 2] || []);
-  }
-  state.activeBar = start;
-  if (activeLoopLength()) state.loopBarIndex = clampLoopStart(start, activeLoopLength());
-  syncAfterArrangementEdit();
-  status.textContent = `Filled ${trackName(hit)} from ${loopRangeLabel(start, 2)} to the end`;
-}
-
-function setLoopCount(nextCount, { duplicateFrom = state.activeLoopIndex } = {}) {
-  const targetCount = Math.max(1, Math.min(MAX_LOOP_COUNT, Math.round(Number(nextCount) || 1)));
-  const currentCount = loopCount();
-  if (targetCount === currentCount) return;
-  const nextBars = bars();
-  if (targetCount > currentCount) {
-    const source = loopBarSlice(duplicateFrom);
-    for (let index = currentCount; index < targetCount; index += 1) {
-      nextBars.push(...source.map(clone));
-    }
-  } else {
-    nextBars.length = targetCount * LOOP_BAR_COUNT;
-    if (state.activeLoopIndex >= targetCount) {
-      state.activeLoopIndex = targetCount - 1;
-      state.activeBar = loopStartBar(state.activeLoopIndex) + localBarIndex(state.activeBar);
-    }
-  }
-  clampActiveBar();
-  applyConfig();
-  buildLoopTabs();
-  buildBarTabs();
-  renderStepGrid();
-  status.textContent = `Song has ${targetCount} ${targetCount === 1 ? "32-bar loop" : "32-bar loops"}`;
-}
-
-function duplicateCurrentLoop() {
-  const currentCount = loopCount();
-  if (currentCount >= MAX_LOOP_COUNT) {
-    status.textContent = `Maximum is ${MAX_LOOP_COUNT} loops`;
-    return;
-  }
-  bars().push(...loopBarSlice(state.activeLoopIndex).map(clone));
-  state.activeLoopIndex = currentCount;
-  state.activeBar = loopStartBar(state.activeLoopIndex);
-  applyConfig();
-  buildLoopTabs();
-  buildBarTabs();
-  renderStepGrid();
-  status.textContent = `Duplicated to loop ${state.activeLoopIndex + 1}`;
-}
-
-function deleteCurrentLoop() {
-  const currentCount = loopCount();
-  if (currentCount <= 1) {
-    status.textContent = "Keep at least one loop";
-    return;
-  }
-  const start = loopStartBar(state.activeLoopIndex);
-  bars().splice(start, LOOP_BAR_COUNT);
-  state.activeLoopIndex = Math.max(0, Math.min(state.activeLoopIndex, currentCount - 2));
-  state.activeBar = loopStartBar(state.activeLoopIndex) + localBarIndex(state.activeBar);
-  clampActiveBar();
-  applyConfig();
-  buildLoopTabs();
-  buildBarTabs();
-  renderStepGrid();
-  status.textContent = "Deleted current loop";
-}
-
-function patternBar(index = state.activeBar) {
-  return state.config.patterns.jazz.bars[index];
-}
-
-function normalizeHitEntry(entry) {
-  if (Array.isArray(entry)) {
-    const [step, velocity, options] = entry;
-    return {
-      step: Math.round(clamp(step, 0, 15, 0)),
-      velocity: clamp(velocity, 0, 1, 0),
-      options: normalizeStepOptions(options)
-    };
-  }
-  if (entry && typeof entry === "object") {
-    const optionSource = entry.options && typeof entry.options === "object"
-      ? { ...entry.options, ...entry }
-      : entry;
-    return {
-      step: Math.round(clamp(entry.step, 0, 15, 0)),
-      velocity: clamp(entry.velocity, 0, 1, 0),
-      options: normalizeStepOptions(optionSource)
-    };
-  }
-  return { step: 0, velocity: 0, options: normalizeStepOptions() };
-}
-
-function hasStepOptions(options = {}) {
-  return Object.entries(STEP_OPTION_DEFAULTS)
-    .some(([key, value]) => Math.abs(Number(options[key] ?? value) - value) > 0.0001);
-}
-
-function serializeHitEntry(entry) {
-  const normalized = normalizeHitEntry(entry);
-  const tuple = [
-    normalized.step,
-    Number(normalized.velocity.toFixed(2))
-  ];
-  if (hasStepOptions(normalized.options)) {
-    tuple.push({
-      pitch: normalized.options.pitch,
-      offsetMs: normalized.options.offsetMs,
-      attackMs: normalized.options.attackMs,
-      delayMs: normalized.options.delayMs,
-      delaySend: Number(normalized.options.delaySend.toFixed(2)),
-      reverbSend: Number(normalized.options.reverbSend.toFixed(2)),
-      dubEcho: Number(normalized.options.dubEcho.toFixed(2)),
-      wobble: Number(normalized.options.wobble.toFixed(2))
-    });
-  }
-  return tuple;
-}
-
-function hitMap(hit, bar = patternBar()) {
-  return new Map((bar[hit] || []).map((entry) => {
-    const normalized = normalizeHitEntry(entry);
-    return [normalized.step, normalized];
-  }));
-}
-
-function getHitData(hit, step, barIndex = state.activeBar) {
-  const isGeneratedRow = !PATTERN_ROW_IDS.has(hit);
-  const existing = hitMap(hit, state.config.patterns.jazz.bars[barIndex]).get(step);
-  if (existing) {
-    return {
-      ...existing,
-      generated: isGeneratedRow,
-      label: isGeneratedRow ? ROW_LABELS[hit] || hit : ""
-    };
-  }
-  if (isGeneratedRow && state.config.generatedRowsEditable < 0.5) {
-    return getGeneratedHitData(hit, step, barIndex);
-  }
-  return {
-    step,
-    velocity: 0,
-    options: normalizeStepOptions(),
-    generated: isGeneratedRow,
-    label: ""
-  };
-}
-
-function setHitData(hit, step, patch, barIndex = state.activeBar) {
-  const bar = state.config.patterns.jazz.bars[barIndex];
-  const next = hitMap(hit, bar);
-  const current = getHitData(hit, step, barIndex);
-  const merged = {
-    ...current,
-    velocity: patch.velocity ?? current.velocity,
-    options: normalizeStepOptions({
-      ...current.options,
-      ...(patch.options || {})
-    })
-  };
-  merged.step = step;
-  merged.velocity = clamp(merged.velocity, 0, 1, 0);
-  if (merged.velocity <= 0.005) next.delete(step);
-  else next.set(step, merged);
-  bar[hit] = Array.from(next.values())
-    .sort((a, b) => a.step - b.step)
-    .map(serializeHitEntry);
-  applyConfig();
-}
-
-function setHitVelocity(hit, step, velocity, barIndex = state.activeBar) {
-  setHitData(hit, step, { velocity: Number(velocity) }, barIndex);
-}
-
-function getHitVelocity(hit, step, barIndex = state.activeBar) {
-  return getHitData(hit, step, barIndex).velocity || 0;
-}
-
-function generatedEventsAtStep(step, barIndex = state.activeBar, pressure = state.intensity) {
-  return generatedSynthEventsForStep({
-    phraseBar: barIndex,
-    step,
-    pressure,
-    config: state.config
-  });
-}
-
-function getGeneratedHitData(hit, step, barIndex = state.activeBar, pressure = state.intensity) {
-  const events = generatedEventsAtStep(step, barIndex, pressure).filter((event) => event.track === hit);
-  if (!events.length) {
-    return {
-      step,
-      velocity: 0,
-      options: normalizeStepOptions(),
-      generated: true,
-      label: ""
-    };
-  }
-  const strongest = events.reduce((best, event) => (event.velocity > best.velocity ? event : best), events[0]);
-  return {
-    step,
-    velocity: clamp(strongest.velocity, 0, 1, 0),
-    options: normalizeStepOptions({ pitch: strongest.pitch || 0 }),
-    generated: true,
-    label: strongest.label || hit
-  };
-}
-
-function hitIndexForStep(hit, step, barIndex = state.activeBar) {
-  const hits = state.config.patterns.jazz.bars[barIndex]?.[hit] || [];
-  return hits
-    .map(normalizeHitEntry)
-    .sort((a, b) => a.step - b.step)
-    .findIndex((entry) => entry.step === step);
-}
-
-function formatPitch(value) {
-  const rounded = Math.round(Number(value) || 0);
-  return rounded > 0 ? `+${rounded}` : String(rounded);
-}
-
-function noteNameForPitch(value) {
-  const rounded = Math.round(Number(value) || 0);
-  const midiNote = A1_MIDI_NOTE + rounded;
-  const pitchClass = ((midiNote % 12) + 12) % 12;
-  const octave = Math.floor(midiNote / 12) - 1;
-  return `${NOTE_NAMES[pitchClass]}${octave}`;
-}
-
-function scaleSemitoneForIndex(scaleIndex) {
-  const index = Math.round(Number(scaleIndex) || 0);
-  const wrapped = ((index % SYNTH_SCALE.length) + SYNTH_SCALE.length) % SYNTH_SCALE.length;
-  const octaveOffset = Math.floor(index / SYNTH_SCALE.length);
-  return SYNTH_SCALE[wrapped] + octaveOffset * 12;
-}
-
-function bassBasePitch(step, barIndex = state.activeBar) {
-  const hitIndex = Math.max(0, hitIndexForStep("bass", step, barIndex));
-  const noteIndex = sequencedBassPitchForStep({
-    phraseBar: barIndex,
-    hitIndex,
-    step
-  });
-  return scaleSemitoneForIndex(noteIndex);
-}
-
-function displayedPitchForHit(hit, step, options, barIndex = state.activeBar) {
-  const offset = Number(options?.pitch) || 0;
-  return hit === "bass" ? bassBasePitch(step, barIndex) + offset : offset;
-}
-
-function storedPitchForDisplay(hit, step, displayedPitch, barIndex = state.activeBar) {
-  const pitch = Number(displayedPitch) || 0;
-  return hit === "bass" ? pitch - bassBasePitch(step, barIndex) : pitch;
-}
+function bassBasePitch(step, barIndex = state.activeBar) { return noteInspector.bassBasePitch(step, barIndex); }
+function displayedPitchForHit(hit, step, options, barIndex = state.activeBar) { return noteInspector.displayedPitchForHit(hit, step, options, barIndex); }
+function storedPitchForDisplay(hit, step, displayedPitch, barIndex = state.activeBar) { return noteInspector.storedPitchForDisplay(hit, step, displayedPitch, barIndex); }
+function renderSelectedPiano(displayedPitch = null, basePitch = null) { return noteInspector.renderSelectedPiano(displayedPitch, basePitch); }
+function selectedPreviewOptions() { return noteInspector.selectedPreviewOptions(); }
+function previewPianoPitch(displayedPitch, effectOptions) { return noteInspector.previewPianoPitch(displayedPitch, effectOptions); }
+function choosePianoPitch(displayedPitch) { return noteInspector.choosePianoPitch(displayedPitch); }
+function syncSelectedPitchDisplay(barIndex = state.activeBar) { return noteInspector.syncSelectedPitchDisplay(barIndex); }
+function ensureSelectedFromDom() { return noteInspector.ensureSelectedFromDom(); }
+function updateSelectedOption(field, value) { return noteInspector.updateSelectedOption(field, value); }
+function soundingStepForRow(hit, playheadStep, barIndex = state.activeBar) { return noteInspector.soundingStepForRow(hit, playheadStep, barIndex); }
+function setSelectedVelocityFromControl(value) { return noteInspector.setSelectedVelocityFromControl(value); }
+function setSelectedOptionFromControl(field, value) { return noteInspector.setSelectedOptionFromControl(field, value); }
+function syncSelectedDubEchoDisplay(options = null) { return noteInspector.syncSelectedDubEchoDisplay(options); }
+function setSelectedDubEchoFromControl(value) { return noteInspector.setSelectedDubEchoFromControl(value); }
 
 function selectedTrackBusSend(hit = state.selected?.hit) {
-  return clamp(state.config.trackBusSends?.[hit], 0, 1, 0);
+  return getTrackMix(state.config, "busSend", hit);
 }
 
 function selectedTrackReverbSend(hit = state.selected?.hit) {
-  return clamp(state.config.trackReverbSends?.[hit], 0, 1, 0);
+  return getTrackMix(state.config, "reverbSend", hit);
 }
 
 function selectedTrackLevelFor(hit = state.selected?.hit) {
-  return clamp(state.config.trackLevels?.[hit], 0, 2, 1);
+  return getTrackMix(state.config, "level", hit);
 }
 
 function selectedTrackPanFor(hit = state.selected?.hit) {
-  return clamp(state.config.trackPans?.[hit], -1, 1, 0);
-}
-
-/** Format a pan value (-1..1) as L/C/R with magnitude for the inspector. */
-function formatPan(value) {
-  const pan = clamp(value, -1, 1, 0);
-  if (Math.abs(pan) < 0.005) return "C";
-  const side = pan < 0 ? "L" : "R";
-  return `${side}${Math.round(Math.abs(pan) * 100)}`;
-}
-
-function renderSelectedPiano(displayedPitch = null, basePitch = null) {
-  if (!selectedPiano) return;
-  selectedPiano.innerHTML = "";
-  const pitch = Number(displayedPitch);
-  if (!Number.isFinite(pitch)) {
-    selectedPiano.classList.add("is-empty");
-    selectedPiano.textContent = "No sounding note";
-    return;
-  }
-  selectedPiano.classList.remove("is-empty");
-  const roundedPitch = Math.round(pitch);
-  const roundedBase = Number.isFinite(Number(basePitch)) ? Math.round(Number(basePitch)) : null;
-  const label = document.createElement("span");
-  label.className = "selected-piano-note";
-  label.textContent = `${noteNameForPitch(roundedPitch)} ${formatPitch(roundedPitch)}`;
-  label.title = roundedBase === null
-    ? "Selected pitch"
-    : `Base ${noteNameForPitch(roundedBase)} ${formatPitch(roundedBase)} plus saved trim ${formatPitch(roundedPitch - roundedBase)}`;
-  const keys = document.createElement("div");
-  keys.className = "selected-piano-keys";
-  const start = PITCH_SLIDER_MIN;
-  const end = PITCH_SLIDER_MAX;
-  for (let note = start; note <= end; note += 1) {
-    const key = document.createElement("span");
-    const midiNote = A1_MIDI_NOTE + note;
-    key.className = "selected-piano-key";
-    key.dataset.pitch = String(note);
-    key.role = "button";
-    key.tabIndex = 0;
-    key.classList.toggle("is-black", BLACK_NOTE_PITCH_CLASSES.has(((midiNote % 12) + 12) % 12));
-    key.classList.toggle("is-active", note === roundedPitch);
-    key.classList.toggle("is-base", roundedBase !== null && note === roundedBase && note !== roundedPitch);
-    key.title = `${noteNameForPitch(note)} ${formatPitch(note)}`;
-    key.addEventListener("mousedown", (event) => {
-      event.preventDefault();
-    });
-    key.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      void choosePianoPitch(note);
-    });
-    key.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      void choosePianoPitch(note);
-    });
-    keys.appendChild(key);
-  }
-  selectedPiano.append(label, keys);
-}
-
-function selectedPreviewOptions() {
-  if (!state.selected) return normalizeStepOptions();
-  return normalizeStepOptions(getHitData(state.selected.hit, state.selected.step).options);
-}
-
-async function previewPianoPitch(displayedPitch, effectOptions = selectedPreviewOptions()) {
-  if (runningFromFile) {
-    status.textContent = "Open the localhost version for audio";
-    return;
-  }
-  const pitch = Number(displayedPitch);
-  if (!Number.isFinite(pitch)) return;
-  const options = normalizeStepOptions(effectOptions);
-  await state.engine.ensureContext();
-  await state.engine.context.resume();
-  state.engine.setVolume(0.62, { immediate: true });
-  const frequency = SYNTH_ROOT_HZ * 2 ** (pitch / 12);
-  const now = state.engine.context.currentTime + 0.015 + Math.max(0, options.offsetMs / 1000);
-  state.engine.playBassSynth(now, frequency, {
-    gain: 0.12,
-    duration: 0.42,
-    style: "jazz",
-    attackMs: options.attackMs,
-    delayMs: options.delayMs,
-    delaySend: options.delaySend,
-    reverbSend: options.reverbSend,
-    dubEcho: options.dubEcho
-  });
-}
-
-async function choosePianoPitch(displayedPitch) {
-  if (!ensureSelectedFromDom()) {
-    await previewPianoPitch(displayedPitch);
-    return;
-  }
-  if (!selectedPitch.disabled) {
-    setSelectedOptionFromControl("pitch", displayedPitch);
-  } else {
-    renderSelectedPiano(displayedPitch, null);
-  }
-  await previewPianoPitch(displayedPitch, selectedPreviewOptions());
-  status.textContent = `Preview pitch ${noteNameForPitch(displayedPitch)} ${formatPitch(displayedPitch)}`;
+  return getTrackMix(state.config, "pan", hit);
 }
 
 function syncSelectedBusSendDisplay() {
-  const send = selectedTrackBusSend();
-  setPairedControl(selectedBusSend, selectedBusSendNumber, selectedBusSendValue, send, (next) => next.toFixed(2));
-  const reverbSend = selectedTrackReverbSend();
-  setPairedControl(selectedReverbSend, selectedReverbSendNumber, selectedReverbSendValue, reverbSend, (next) => next.toFixed(2));
-  const level = selectedTrackLevelFor();
-  setPairedControl(selectedTrackLevel, selectedTrackLevelNumber, selectedTrackLevelValue, level, (next) => next.toFixed(2));
-  const pan = selectedTrackPanFor();
-  setPairedControl(selectedTrackPan, selectedTrackPanNumber, selectedTrackPanValue, pan, formatPan);
-}
-
-function syncSelectedPitchDisplay(barIndex = state.activeBar) {
-  if (!state.selected) return;
-  const { hit, step } = state.selected;
-  const hitData = getHitData(hit, step, barIndex);
-  if (hitData.velocity <= 0.005) {
-    selectedPitch.min = String(PITCH_SLIDER_MIN);
-    selectedPitch.max = String(PITCH_SLIDER_MAX);
-    selectedPitch.value = "0";
-    selectedPitchNumber.value = "0";
-    selectedPitchValue.textContent = "-";
-    selectedPitch.title = "No note on this step.";
-    renderSelectedPiano(null);
-    return;
-  }
-  const displayedPitch = displayedPitchForHit(hit, step, hitData.options, barIndex);
-  const basePitch = hit === "bass" ? bassBasePitch(step, barIndex) : null;
-  selectedPitch.min = String(PITCH_SLIDER_MIN);
-  selectedPitch.max = String(PITCH_SLIDER_MAX);
-  selectedPitchNumber.min = selectedPitch.min;
-  selectedPitchNumber.max = selectedPitch.max;
-  setPairedControl(selectedPitch, selectedPitchNumber, selectedPitchValue, displayedPitch, formatPitch);
-  renderSelectedPiano(displayedPitch, basePitch);
-  selectedPitch.title = hit === "bass"
-    ? `Bass base pitch ${formatPitch(bassBasePitch(step, barIndex))}, saved trim ${formatPitch(hitData.options.pitch)}`
-    : "Pitch";
+  // Track-level Level/Pan/Delay/Verb live in the per-track inspector panels,
+  // which are (re)built on selection changes and self-update on drag, so there
+  // is nothing to mirror here anymore. Kept as a hook for callers.
 }
 
 function previewConfig() {
@@ -899,1742 +535,467 @@ function refreshLoopBarButton() {
   $("#play-song")?.classList.toggle("is-active", loopLength === 0);
 }
 
-function ensureSelectedFromDom() {
-  if (state.selected) return true;
-  const selectedButton = stepGrid.querySelector(".step-button.is-selected");
-  if (!selectedButton) return false;
-  state.selected = {
-    hit: selectedButton.dataset.hit,
-    step: Number(selectedButton.dataset.step),
-    mode: "step",
-    generated: selectedButton.dataset.type === "generated"
-  };
-  return true;
-}
-
-function updateSelectedOption(field, value) {
-  if (!ensureSelectedFromDom()) return;
-  setHitData(state.selected.hit, state.selected.step, {
-    options: { [field]: value }
-  });
-  selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step");
-  renderStepGrid();
-}
-
-function soundingStepForRow(hit, playheadStep, barIndex = state.activeBar) {
-  const step = Math.round(clamp(playheadStep, 0, 15, 0));
-  for (let offset = 0; offset < 16; offset += 1) {
-    const candidate = (step - offset + 16) % 16;
-    if (getHitData(hit, candidate, barIndex).velocity > 0.005) return candidate;
-  }
-  return step;
-}
-
-function setSelectedVelocityFromControl(value = selectedVelocity.value) {
-  if (!ensureSelectedFromDom()) return;
-  const velocity = clamp(value, 0, 0.9, 0);
-  setPairedControl(selectedVelocity, selectedVelocityNumber, selectedVelocityValue, Number(velocity.toFixed(2)), (next) => next.toFixed(2));
-  setHitVelocity(state.selected.hit, state.selected.step, velocity);
-  selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step");
-  renderStepGrid();
-}
-
-function setSelectedOptionFromControl(field, value) {
-  let number = Number(value);
-  if (field === "pitch" && state.selected) {
-    const min = Number(selectedPitch.min);
-    const max = Number(selectedPitch.max);
-    const displayedPitch = Math.round(clamp(
-      number,
-      Number.isFinite(min) ? min : PITCH_SLIDER_MIN,
-      Number.isFinite(max) ? max : PITCH_SLIDER_MAX,
-      0
-    ));
-    setPairedControl(selectedPitch, selectedPitchNumber, selectedPitchValue, displayedPitch, formatPitch);
-    number = storedPitchForDisplay(state.selected.hit, state.selected.step, displayedPitch);
-  } else if (selectedOptionControls[field]) {
-    const control = selectedOptionControls[field];
-    number = control.step >= 1
-      ? Math.round(clamp(number, control.min, control.max, STEP_OPTION_DEFAULTS[field] ?? 0))
-      : clamp(number, control.min, control.max, STEP_OPTION_DEFAULTS[field] ?? 0);
-    setPairedControl(control.range, control.number, control.output, number, control.format);
-  }
-  updateSelectedOption(field, number);
-}
-
-function selectedDubEchoAmount(options = {}) {
-  return Number(clamp(options.dubEcho, 0, 1, 0).toFixed(2));
-}
-
-function syncSelectedDubEchoDisplay(options = null) {
-  const nextOptions = options || (state.selected ? getHitData(state.selected.hit, state.selected.step).options : {});
-  const amount = selectedDubEchoAmount(nextOptions);
-  setPairedControl(selectedDubEcho, selectedDubEchoNumber, selectedDubEchoValue, amount, (next) => next.toFixed(2));
-}
-
-function setSelectedDubEchoFromControl(value = selectedDubEcho.value) {
-  if (!ensureSelectedFromDom()) {
-    status.textContent = "Select a note or row first";
-    return;
-  }
-  const hit = state.selected.hit;
-  const amount = clamp(value, 0, 1, 0);
-  setPairedControl(selectedDubEcho, selectedDubEchoNumber, selectedDubEchoValue, Number(amount.toFixed(2)), (next) => next.toFixed(2));
-  const patch = { dubEcho: Number(amount.toFixed(2)) };
-  if (state.selected.mode === "row") {
-    const length = activeLoopLength() || 1;
-    const start = activeLoopLength()
-      ? clampLoopStart(state.loopBarIndex, length)
-      : state.activeBar;
-    let applied = 0;
-    for (let offset = 0; offset < length; offset += 1) {
-      const barIndex = start + offset;
-      const rowHits = state.config.patterns.jazz.bars[barIndex]?.[hit] || [];
-      rowHits.map(normalizeHitEntry).forEach((entry) => {
-        if (entry.velocity <= 0.005) return;
-        setHitData(hit, entry.step, { options: patch }, barIndex);
-        applied += 1;
-      });
-    }
-    if (!applied) {
-      syncSelectedDubEchoDisplay();
-      status.textContent = `${trackName(hit)} row has no notes`;
-      return;
-    }
-    selectStep(hit, state.selected.step, "row");
-    setPairedControl(selectedDubEcho, selectedDubEchoNumber, selectedDubEchoValue, Number(amount.toFixed(2)), (next) => next.toFixed(2));
-    renderStepGrid();
-    status.textContent = `Dub echo ${amount.toFixed(2)} on ${applied} ${trackName(hit)} notes`;
-    return;
-  }
-  const current = getHitData(hit, state.selected.step);
-  if (current.velocity <= 0.005) {
-    status.textContent = "Select a note with volume first";
-    return;
-  }
-  setHitData(hit, state.selected.step, { options: patch });
-  selectStep(hit, state.selected.step, state.selected.mode || "step");
-  setPairedControl(selectedDubEcho, selectedDubEchoNumber, selectedDubEchoValue, Number(amount.toFixed(2)), (next) => next.toFixed(2));
-  renderStepGrid();
-  status.textContent = `Dub echo ${amount.toFixed(2)} on ${trackName(hit)} ${state.selected.step + 1}`;
-}
-
-function setSelectedBusSendFromControl(value = selectedBusSend.value) {
-  if (!ensureSelectedFromDom()) return;
-  const send = clamp(value, 0, 1, 0);
-  state.config.trackBusSends = {
-    ...(state.config.trackBusSends || {}),
-    [state.selected.hit]: send
-  };
-  setPairedControl(selectedBusSend, selectedBusSendNumber, selectedBusSendValue, Number(send.toFixed(2)), (next) => next.toFixed(2));
+// Per-track mix setters keyed by track id (used by the multi-panel inspector).
+// Each writes to its config map, applies live, and refreshes the inspector
+// panels so all selected tracks stay in sync.
+function setTrackBusSend(hit, value) {
+  if (setTrackMix(state.config, "busSend", hit, value) === null) return;
   applyConfig();
 }
 
-function setSelectedReverbSendFromControl(value = selectedReverbSend.value) {
-  if (!ensureSelectedFromDom()) return;
-  const send = clamp(value, 0, 1, 0);
-  state.config.trackReverbSends = {
-    ...(state.config.trackReverbSends || {}),
-    [state.selected.hit]: send
-  };
-  setPairedControl(selectedReverbSend, selectedReverbSendNumber, selectedReverbSendValue, Number(send.toFixed(2)), (next) => next.toFixed(2));
+function setTrackReverbSend(hit, value) {
+  if (setTrackMix(state.config, "reverbSend", hit, value) === null) return;
   applyConfig();
 }
 
-function setSelectedTrackLevelFromControl(value = selectedTrackLevel.value) {
-  if (!ensureSelectedFromDom()) return;
-  const level = clamp(value, 0, 2, 1);
-  state.config.trackLevels = {
-    ...(state.config.trackLevels || {}),
-    [state.selected.hit]: level
-  };
-  setPairedControl(selectedTrackLevel, selectedTrackLevelNumber, selectedTrackLevelValue, Number(level.toFixed(2)), (next) => next.toFixed(2));
+function setTrackLevel(hit, value) {
+  if (setTrackMix(state.config, "level", hit, value) === null) return;
   applyConfig();
 }
 
-function setSelectedTrackPanFromControl(value = selectedTrackPan.value) {
-  if (!ensureSelectedFromDom()) return;
-  const pan = clamp(value, -1, 1, 0);
-  state.config.trackPans = {
-    ...(state.config.trackPans || {}),
-    [state.selected.hit]: pan
-  };
-  setPairedControl(selectedTrackPan, selectedTrackPanNumber, selectedTrackPanValue, Number(pan.toFixed(2)), formatPan);
+function setTrackPan(hit, value) {
+  if (setTrackMix(state.config, "pan", hit, value) === null) return;
   applyConfig();
 }
 
-function buildStepGrid() {
-  stepGrid.innerHTML = "";
-  stepGrid.appendChild(Object.assign(document.createElement("div"), {
-    className: "step-header",
-    textContent: "Track"
-  }));
-  for (let step = 0; step < 16; step += 1) {
-    const header = document.createElement("div");
-    header.className = "step-header";
-    header.textContent = String(step + 1).padStart(2, "0");
-    stepGrid.appendChild(header);
-  }
-  gridRows().forEach(({ id: hit, label, type }) => {
-    const rowLabel = document.createElement("div");
-    rowLabel.className = `track-label ${type === "generated" ? "is-generated" : ""}`;
-    rowLabel.dataset.hit = hit;
-    rowLabel.dataset.type = type;
-    rowLabel.tabIndex = 0;
-    rowLabel.title = `Select ${label} row`;
-    const rowText = document.createElement("span");
-    rowText.textContent = label;
-    const soloButton = document.createElement("button");
-    soloButton.type = "button";
-    soloButton.className = "solo-button";
-    soloButton.dataset.soloTrack = hit;
-    soloButton.textContent = "S";
-    soloButton.title = `Solo ${label}`;
-    soloButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      toggleSolo(hit);
-    });
-    rowLabel.addEventListener("click", () => {
-      selectRowToggle(hit);
-      renderStepGrid();
-    });
-    rowLabel.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      selectRowToggle(hit);
-      renderStepGrid();
-    });
-    rowLabel.append(rowText, soloButton);
-    // Removable (non-core) tracks get an inline "×" to drop them from the grid.
-    if (getTrackDef(hit)?.removable) {
-      const removeButton = document.createElement("button");
-      removeButton.type = "button";
-      removeButton.className = "track-remove-button";
-      removeButton.textContent = "×";
-      removeButton.title = `Remove ${label} from grid`;
-      removeButton.addEventListener("click", (event) => {
-        event.stopPropagation();
-        removeGridTrack(hit);
-      });
-      rowLabel.append(removeButton);
-    }
-    stepGrid.appendChild(rowLabel);
-    for (let step = 0; step < 16; step += 1) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `step-button ${type === "generated" ? "is-generated-step" : ""}`;
-      button.dataset.hit = hit;
-      button.dataset.type = type;
-      button.dataset.step = String(step);
-      button.dataset.beat = step % 4 === 0 ? "1" : "0";
-      button.setAttribute("aria-label", `${label} step ${step + 1}`);
-      button.addEventListener("mousedown", (event) => {
-        event.preventDefault();
-      });
-      button.addEventListener("click", () => {
-        const scrollLeft = stepGrid.scrollLeft;
-        const scrollTop = stepGrid.scrollTop;
-        // Clicking the already-selected step again deselects it (but keeps
-        // the note). This lets the user dismiss the inspector selection
-        // without wiping the step they just placed.
-        if (state.selected
-          && state.selected.hit === hit
-          && state.selected.step === step
-          && state.selected.mode === "step") {
-          resetSelectedPanel();
-          renderStepGrid();
-          stepGrid.scrollLeft = scrollLeft;
-          stepGrid.scrollTop = scrollTop;
-          return;
-        }
-        const current = getHitData(hit, step);
-        if (current.velocity <= 0.005) {
-          setHitVelocity(hit, step, DEFAULT_VELOCITY[hit] ?? 0.5);
-        }
-        selectStep(hit, step, "step", state.activeBar, state.intensity, type === "generated");
-        renderStepGrid();
-        stepGrid.scrollLeft = scrollLeft;
-        stepGrid.scrollTop = scrollTop;
-      });
-      stepGrid.appendChild(button);
-    }
-  });
-  renderStepGrid();
-}
+// ══ Step-grid and tab-strip builder controller ══════════════════════════════
+// buildStepGrid, buildLoopTabs, buildBarTabs, and renderStepGrid live in
+// their own controller. The editor keeps thin hoisted wrappers so all
+// existing call sites are unchanged.
+const gridBuilder = createStepGridBuilder({
+  state,
+  stepGrid,
+  barTabs,
+  loopTabs,
+  loopCountInput,
+  status,
+  LOOP_BAR_COUNT,
+  MAX_LOOP_COUNT,
+  DEFAULT_VELOCITY,
+  gridRows,
+  loopCount,
+  localBarIndex,
+  loopStartBar,
+  activeLoopLength,
+  clampLoopStart,
+  syncActiveLoopToBar,
+  clampActiveBar,
+  previewConfig,
+  refreshLoopBarButton,
+  clearPlayhead,
+  renderSoloButtons,
+  toggleSolo,
+  selectRowWithModifiers,
+  selectRowToggle,
+  selectStep,
+  getHitData,
+  setHitVelocity,
+  displayedPitchForHit,
+  formatPitch,
+  noteNameForPitch,
+  toggleLoopMultiSelect,
+  toggleBarMultiSelect,
+  openLoopContextMenu,
+  openBarContextMenu,
+  openTrackContextMenu,
+  resetSelectedPanel
+});
 
-function buildLoopTabs() {
-  syncActiveLoopToBar();
-  if (loopCountInput) {
-    loopCountInput.max = String(MAX_LOOP_COUNT);
-    loopCountInput.value = String(loopCount());
-  }
-  loopTabs.innerHTML = "";
-  for (let index = 0; index < loopCount(); index += 1) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.dataset.loop = String(index);
-    button.textContent = `Loop ${index + 1}`;
-    button.title = `Bars ${index * LOOP_BAR_COUNT + 1}-${(index + 1) * LOOP_BAR_COUNT}`;
-    button.classList.toggle("is-active", index === state.activeLoopIndex);
-    button.addEventListener("click", () => {
-      const local = localBarIndex(state.activeBar);
-      state.activeLoopIndex = index;
-      state.activeBar = loopStartBar(index) + local;
-      clampActiveBar();
-      if (activeLoopLength()) {
-        state.loopBarIndex = clampLoopStart(state.activeBar, activeLoopLength());
-        state.engine.setConfig(previewConfig());
-        state.engine.seekToPhraseBar(state.activeBar, 0);
-        state.playheadStep = 0;
-        refreshLoopBarButton();
-      } else if (state.playing) {
-        state.engine.seekToPhraseBar(state.activeBar, 0);
-        state.playheadStep = 0;
-      }
-      if (state.selected) {
-        selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step");
-      }
-      buildLoopTabs();
-      buildBarTabs();
-      renderStepGrid();
-      status.textContent = state.playing || activeLoopLength()
-        ? `Jumped to loop ${index + 1}`
-        : `Editing loop ${index + 1}`;
-    });
-    loopTabs.appendChild(button);
-  }
-}
+function buildStepGrid() { return gridBuilder.buildStepGrid(); }
+function buildLoopTabs() { return gridBuilder.buildLoopTabs(); }
+function buildBarTabs() { return gridBuilder.buildBarTabs(); }
+function renderStepGrid() { return gridBuilder.renderStepGrid(); }
 
-function buildBarTabs() {
-  syncActiveLoopToBar();
-  barTabs.innerHTML = "";
-  for (let localIndex = 0; localIndex < LOOP_BAR_COUNT; localIndex += 1) {
-    const index = loopStartBar() + localIndex;
-    if (!state.config.patterns.jazz.bars[index]) continue;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.dataset.bar = String(index);
-    button.dataset.localBar = String(localIndex);
-    button.dataset.section = String(Math.floor(localIndex / 8) + 1);
-    button.textContent = String(localIndex + 1).padStart(2, "0");
-    button.title = `Loop ${state.activeLoopIndex + 1}, bar ${localIndex + 1} (song bar ${index + 1})`;
-    button.addEventListener("click", () => {
-      state.activeBar = index;
-      syncActiveLoopToBar();
-      if (activeLoopLength()) {
-        state.loopBarIndex = clampLoopStart(index, activeLoopLength());
-        state.engine.setConfig(previewConfig());
-        state.engine.seekToPhraseBar(index, 0);
-        state.playheadStep = 0;
-        refreshLoopBarButton();
-      } else if (state.playing) {
-        state.engine.seekToPhraseBar(index, 0);
-        state.playheadStep = 0;
-        status.textContent = `Jumped to bar ${String(index + 1).padStart(2, "0")}`;
-      }
-      if (state.selected) {
-        selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step");
-      }
-      clearPlayhead();
-      renderStepGrid();
-    });
-    barTabs.appendChild(button);
-  }
-}
+// ══ Row / step selection + solo controller ══════════════════════════════════
+// selectStep, selectRow, selectRowWithModifiers, resetSelectedPanel,
+// clearSelection, toggleSolo, clearSolo, renderSoloButtons live in their
+// own controller. Hoisted wrappers below preserve all existing call sites.
+const rowSelection = createRowSelection({
+  state,
+  $,
+  status,
+  selectedLabel,
+  selectedControls,
+  selectedVelocity, selectedVelocityNumber, selectedVelocityValue,
+  selectedPitch, selectedPitchNumber, selectedPitchValue,
+  selectedOffset, selectedOffsetNumber, selectedOffsetValue,
+  selectedAttack, selectedAttackNumber, selectedAttackValue,
+  selectedDelay, selectedDelayNumber, selectedDelayValue,
+  selectedWobble, selectedWobbleNumber, selectedWobbleValue,
+  selectedDubEcho, selectedDubEchoNumber, selectedDubEchoValue,
+  selectedNoteDelaySend, selectedNoteDelaySendNumber, selectedNoteDelaySendValue,
+  selectedNoteReverbSend, selectedNoteReverbSendNumber, selectedNoteReverbSendValue,
+  PITCH_SLIDER_MIN, PITCH_SLIDER_MAX, STEP_OPTION_DEFAULTS,
+  PATTERN_ROW_IDS,
+  setPairedControl, formatPitch,
+  getHitData, setHitVelocity,
+  syncSelectedPitchDisplay, syncSelectedDubEchoDisplay, renderSelectedPiano,
+  soundingStepForRow,
+  updateTrackClipboardButtons,
+  renderTrackInspector, renderTrackExplorer,
+  renderStepGrid,
+  previewConfig
+});
 
-function renderStepGrid() {
-  syncActiveLoopToBar();
-  if (loopCountInput) loopCountInput.value = String(loopCount());
-  loopTabs.querySelectorAll("button").forEach((button) => {
-    button.classList.toggle("is-active", Number(button.dataset.loop) === state.activeLoopIndex);
-  });
-  document.querySelectorAll(".bar-tabs button").forEach((button) => {
-    button.classList.toggle("is-active", Number(button.dataset.bar) === state.activeBar);
-    button.classList.toggle("is-section-start", Number(button.dataset.localBar) % 8 === 0);
-  });
-  stepGrid.querySelectorAll(".step-button").forEach((button) => {
-    const hit = button.dataset.hit;
-    const step = Number(button.dataset.step);
-    const hitData = getHitData(hit, step);
-    const velocity = hitData.velocity;
-    const isGeneratedRow = button.dataset.type === "generated";
-    button.classList.toggle("is-on", velocity > 0);
-    button.classList.toggle("is-generated-on", isGeneratedRow && hitData.generated && velocity > 0);
-    button.classList.toggle("is-selected", state.selected?.hit === hit && state.selected?.step === step);
-    button.classList.toggle("is-row-selected", state.selected?.hit === hit && state.selected?.mode === "row");
-    button.style.setProperty("--level", String(Math.min(1, velocity / 0.9)));
-    const displayedPitch = displayedPitchForHit(hit, step, hitData.options);
-    button.dataset.note = isGeneratedRow && hitData.generated && velocity > 0
-      ? hitData.label.slice(0, 6)
-      : hit === "bass" && velocity > 0 ? formatPitch(displayedPitch) : "";
-    const pitchLabel = hit === "bass"
-      ? `pitch ${formatPitch(displayedPitch)} (offset ${formatPitch(hitData.options.pitch)})`
-      : `pitch ${formatPitch(hitData.options.pitch)}`;
-    button.title = `${hit} ${step + 1}: ${velocity.toFixed(2)} ${pitchLabel} offset ${hitData.options.offsetMs}ms`;
-  });
-  stepGrid.querySelectorAll(".track-label").forEach((label) => {
-    label.classList.toggle("is-selected-row", state.selected?.hit === label.dataset.hit && state.selected?.mode === "row");
-  });
-  renderSoloButtons();
-}
+function selectStep(hit, step, mode, barIndex, pressure, generated) { return rowSelection.selectStep(hit, step, mode, barIndex, pressure, generated); }
+function selectRow(hit, opts) { return rowSelection.selectRow(hit, opts); }
+function selectRowToggle(hit) { return rowSelection.selectRowToggle(hit); }
+function selectRowWithModifiers(hit, event) { return rowSelection.selectRowWithModifiers(hit, event); }
+function orderBySelectedGrid(ids) { return rowSelection.orderBySelectedGrid(ids); }
+function resetSelectedPanel() { return rowSelection.resetSelectedPanel(); }
+function clearSelection() { return rowSelection.clearSelection(); }
+function toggleSolo(track) { return rowSelection.toggleSolo(track); }
+function clearSolo() { return rowSelection.clearSolo(); }
+function renderSoloButtons() { return rowSelection.renderSoloButtons(); }
 
-function selectStep(hit, step, mode = "step", barIndex = state.activeBar, pressure = state.intensity, generated = !PATTERN_ROW_IDS.has(hit)) {
-  state.selected = { hit, step, mode, generated };
-  const hitData = getHitData(hit, step, barIndex);
-  const { velocity, options } = hitData;
-  selectedLabel.textContent = mode === "row"
-    ? `${hit} row · ${String(step + 1).padStart(2, "0")}${hitData.generated ? ` · ${hitData.label || "generated"}` : ""}`
-    : `${hit} ${step + 1}${hitData.generated && hitData.label ? ` · ${hitData.label}` : ""}`;
-  selectedControls.forEach((control) => {
-    control.disabled = hitData.generated && state.config.generatedRowsEditable < 0.5;
-  });
-  setPairedControl(selectedVelocity, selectedVelocityNumber, selectedVelocityValue, velocity, (next) => next.toFixed(2));
-  syncSelectedPitchDisplay(barIndex);
-  setPairedControl(selectedOffset, selectedOffsetNumber, selectedOffsetValue, options.offsetMs, (next) => `${Math.round(next)}ms`);
-  setPairedControl(selectedAttack, selectedAttackNumber, selectedAttackValue, options.attackMs, (next) => `${Math.round(next)}ms`);
-  setPairedControl(selectedDelay, selectedDelayNumber, selectedDelayValue, options.delayMs, (next) => `${Math.round(next)}ms`);
-  setPairedControl(selectedWobble, selectedWobbleNumber, selectedWobbleValue, options.wobble, (next) => next.toFixed(2));
-  syncSelectedDubEchoDisplay(options);
-  setPairedControl(selectedNoteDelaySend, selectedNoteDelaySendNumber, selectedNoteDelaySendValue, options.delaySend, (next) => next.toFixed(2));
-  setPairedControl(selectedNoteReverbSend, selectedNoteReverbSendNumber, selectedNoteReverbSendValue, options.reverbSend, (next) => next.toFixed(2));
-  syncSelectedBusSendDisplay();
-  updateTrackClipboardButtons();
-  renderTrackInspector();
-  renderTrackExplorer();
-}
+// ══ Config sync controller ══════════════════════════════════════════════════
+// getPathValue, setPathValue, syncSliders, applyZoom, syncJson, applyConfig
+// live in their own controller. Hoisted wrappers below preserve all call sites.
+const configSync = createConfigSync({
+  $,
+  state,
+  stepGrid,
+  jsonOutput,
+  getConfigPath,
+  setConfigPath,
+  normalizeEditorConfig,
+  previewConfig,
+  syncSelectedPitchDisplay,
+  syncSelectedBusSendDisplay
+});
 
-function selectRow(hit) {
-  const playback = state.engine.getPlaybackState();
-  const playheadStep = state.playing && playback.playing
-    ? (playback.step + 15) % 16
-    : state.playheadStep || state.selected?.step || 0;
-  const barIndex = state.playing && playback.playing
-    ? playback.phraseBar % state.config.patterns.jazz.bars.length
-    : state.activeBar;
-  const step = state.playing && playback.playing
-    ? soundingStepForRow(hit, playheadStep, barIndex)
-    : playheadStep;
-  selectStep(hit, step, "row", barIndex, playback.activeBarIntensity ?? state.intensity);
-}
+function getPathValue(path) { return configSync.getPathValue(path); }
+function setPathValue(path, value) { return configSync.setPathValue(path, value); }
+function syncSliders() { return configSync.syncSliders(); }
+function applyZoom(level) { return configSync.applyZoom(level); }
 
-/** Toggle a row selection: re-clicking the selected row deselects it. */
-function selectRowToggle(hit) {
-  if (state.selected?.hit === hit && state.selected?.mode === "row") {
-    resetSelectedPanel();
-    return;
-  }
-  selectRow(hit);
-}
-
-function resetSelectedPanel() {
-  state.selected = null;
-  selectedLabel.textContent = "none";
-  selectedControls.forEach((control) => {
-    control.disabled = true;
-  });
-  setPairedControl(selectedVelocity, selectedVelocityNumber, selectedVelocityValue, 0, (next) => next.toFixed(2));
-  selectedPitch.min = String(PITCH_SLIDER_MIN);
-  selectedPitch.max = String(PITCH_SLIDER_MAX);
-  selectedPitchNumber.min = selectedPitch.min;
-  selectedPitchNumber.max = selectedPitch.max;
-  setPairedControl(selectedPitch, selectedPitchNumber, selectedPitchValue, 0, formatPitch);
-  renderSelectedPiano(null);
-  setPairedControl(selectedOffset, selectedOffsetNumber, selectedOffsetValue, 0, (next) => `${Math.round(next)}ms`);
-  setPairedControl(selectedAttack, selectedAttackNumber, selectedAttackValue, STEP_OPTION_DEFAULTS.attackMs, (next) => `${Math.round(next)}ms`);
-  setPairedControl(selectedDelay, selectedDelayNumber, selectedDelayValue, 0, (next) => `${Math.round(next)}ms`);
-  setPairedControl(selectedWobble, selectedWobbleNumber, selectedWobbleValue, 0, (next) => next.toFixed(2));
-  setPairedControl(selectedDubEcho, selectedDubEchoNumber, selectedDubEchoValue, 0, (next) => next.toFixed(2));
-  setPairedControl(selectedNoteDelaySend, selectedNoteDelaySendNumber, selectedNoteDelaySendValue, 0, (next) => next.toFixed(2));
-  setPairedControl(selectedNoteReverbSend, selectedNoteReverbSendNumber, selectedNoteReverbSendValue, 0, (next) => next.toFixed(2));
-  setPairedControl(selectedBusSend, selectedBusSendNumber, selectedBusSendValue, 0, (next) => next.toFixed(2));
-  setPairedControl(selectedReverbSend, selectedReverbSendNumber, selectedReverbSendValue, 0, (next) => next.toFixed(2));
-  setPairedControl(selectedTrackLevel, selectedTrackLevelNumber, selectedTrackLevelValue, 1, (next) => next.toFixed(2));
-  setPairedControl(selectedTrackPan, selectedTrackPanNumber, selectedTrackPanValue, 0, formatPan);
-  updateTrackClipboardButtons();
-  renderTrackInspector();
-  renderTrackExplorer();
-}
-
-function clearSelection() {
-  if (!state.selected) return;
-  setHitVelocity(state.selected.hit, state.selected.step, 0);
-  resetSelectedPanel();
-  renderStepGrid();
-}
-
-function toggleSolo(track) {
-  if (state.soloTracks.has(track)) state.soloTracks.delete(track);
-  else state.soloTracks.add(track);
-  state.engine.setConfig(previewConfig());
-  renderSoloButtons();
-  status.textContent = state.soloTracks.size
-    ? `Solo: ${Array.from(state.soloTracks).join(", ")}`
-    : "Solo cleared";
-}
-
-function clearSolo() {
-  state.soloTracks.clear();
-  state.engine.setConfig(previewConfig());
-  renderSoloButtons();
-  status.textContent = "Solo cleared";
-}
-
-function renderSoloButtons() {
-  document.querySelectorAll("[data-solo-track]").forEach((button) => {
-    button.classList.toggle("is-active", state.soloTracks.has(button.dataset.soloTrack));
-  });
-}
-
-function getPathValue(path) {
-  return path.split(".").reduce((target, key) => target?.[key], state.config);
-}
-
-function setPathValue(path, value) {
-  const keys = path.split(".");
-  const last = keys.pop();
-  const target = keys.reduce((next, key) => next[key], state.config);
-  target[last] = Number(value);
-  applyConfig();
-}
-
-function syncSliders() {
-  document.querySelectorAll("[data-config]").forEach((input) => {
-    const value = getPathValue(input.dataset.config);
-    input.value = String(value);
-    const suffix = input.dataset.config.includes("OffsetMs") ? "ms" : "";
-    input.nextElementSibling.textContent = input.dataset.config === "autoEchoEnabled"
-      ? Number(value) >= 0.5 ? "on" : "off"
-      : `${Number(value).toFixed(input.step.includes(".") ? 2 : 0)}${suffix}`;
-  });
-  // Sync transport BPM widget
-  const bpm = state.config.patterns.jazz.bpm;
-  const transportBpm = $("#transport-bpm");
-  const transportBpmNumber = $("#transport-bpm-number");
-  const transportBpmValue = $("#transport-bpm-value");
-  if (transportBpm) transportBpm.value = String(bpm);
-  if (transportBpmNumber) transportBpmNumber.value = String(bpm);
-  if (transportBpmValue) transportBpmValue.textContent = String(Math.round(bpm));
-  $("#intensity").value = String(state.intensity);
-  $("#intensity-value").textContent = state.intensity.toFixed(2);
-}
-
-function applyZoom(level) {
-  state.zoomLevel = level;
-  stepGrid.classList.remove("step-grid--zoom-2", "step-grid--zoom-4", "step-grid--zoom-8");
-  if (level > 1) stepGrid.classList.add(`step-grid--zoom-${level}`);
-  document.querySelectorAll(".zoom-btn").forEach((btn) => {
-    btn.classList.toggle("is-active", Number(btn.dataset.zoom) === level);
-  });
-}
-
-function syncJson() {
-  jsonOutput.value = JSON.stringify(state.config, null, 2);
-}
-
-function applyConfig() {
-  state.config = normalizeEditorConfig(state.config);
-  state.engine.setConfig(previewConfig());
-  syncSliders();
-  syncJson();
-  if (state.selected) {
-    syncSelectedPitchDisplay(state.activeBar);
-    syncSelectedBusSendDisplay();
-  }
-}
-
-async function startPlayback() {
-  if (runningFromFile) {
-    status.textContent = "Open the localhost version for audio";
-    return;
-  }
-  try {
-    state.playheadStep = 0;
-    await state.engine.start({
-      style: "jazz",
-      volume: 0.62,
-      phraseBar: state.activeBar,
-      step: 0
-    });
-    state.playing = true;
-    $("#play-toggle").textContent = "Pause";
-    status.textContent = `Playing from ${barLabel(state.activeBar)}`;
-    startUiTimer();
-  } catch (error) {
-    console.error("Rhythm sequencer audio failed to start", error);
-    status.textContent = "Audio failed to start";
-  }
-}
-
-function stopPlayback() {
-  state.engine.stop();
-  state.playing = false;
-  if (state.uiTimer) {
-    window.clearInterval(state.uiTimer);
-    state.uiTimer = null;
-  }
-  $("#play-toggle").textContent = "Play";
-  status.textContent = "Paused";
-  clearPlayhead();
-}
-
-function setLoopPlayback(length) {
-  state.loopBarLength = Math.max(0, Math.min(2, Math.round(Number(length) || 0)));
-  state.loopBar = state.loopBarLength > 0;
-  if (state.loopBar) {
-    state.loopBarIndex = clampLoopStart(state.activeBar, state.loopBarLength);
-  }
-  state.engine.setConfig(previewConfig());
-  refreshLoopBarButton();
-}
-
-function toggleBarLoop() {
-  const nextLength = activeLoopLength() === 1 ? 0 : 1;
-  setLoopPlayback(nextLength);
-  status.textContent = nextLength
-    ? `Looping bar ${loopRangeLabel(state.loopBarIndex, 1)}`
-    : "Bar loop off";
-}
-
-function toggleTwoBarLoop() {
-  const nextLength = activeLoopLength() === 2 ? 0 : 2;
-  setLoopPlayback(nextLength);
-  status.textContent = nextLength
-    ? `Looping two bars ${loopRangeLabel(state.loopBarIndex, 2)}`
-    : "Two-bar loop off";
-}
-
-function playFullSong() {
-  setLoopPlayback(0);
-  status.textContent = `Playing full ${state.config.patterns.jazz.bars.length}-bar track`;
-}
-
-function restartPlayback() {
-  state.engine.stop();
-  state.engine = new RhythmEngine({ config: previewConfig(), style: "jazz", volume: 0.58 });
-  void reapplyTrackSamples();
-  if (state.playing) void startPlayback();
-  else status.textContent = "Restarted";
-}
-
-async function ensurePreviewPlayback() {
-  if (!state.playing) {
-    await startPlayback();
-  }
-  return state.playing;
-}
-
-async function previewDuckSound() {
-  if (!await ensurePreviewPlayback()) return;
-  state.engine.previewDuckHold();
-  status.textContent = "Preview: duck hold sound";
-}
-
-async function previewHitSound() {
-  if (!await ensurePreviewPlayback()) return;
-  state.engine.accentImpact();
-  status.textContent = "Preview: hit sound";
-}
-
-async function previewGameSound(kind) {
-  if (!await ensurePreviewPlayback()) return;
-  const previews = {
-    boss: ["boss landed sound", () => state.engine.accentBossLanded()],
-    wobble: ["funk wobble", () => state.engine.previewWobble()],
-    echo: ["echo ping", () => state.engine.previewEchoPing()],
-    "whale-down": ["duck wobble bend", () => state.engine.previewWhaleBend(-0.65)],
-    "whale-up": ["rising wobble bend", () => state.engine.previewWhaleBend(0.72)],
-    "space-drop": ["space drop", () => state.engine.previewSpaceDrop()],
-    "space-pickup": ["space pickup", () => state.engine.previewSpacePickup()]
-  };
-  const preview = previews[kind];
-  if (!preview) return;
-  preview[1]();
-  status.textContent = `Preview: ${preview[0]}`;
-}
-
-function startUiTimer() {
-  if (state.uiTimer) window.clearInterval(state.uiTimer);
-  state.uiTimer = window.setInterval(() => {
-    state.engine.update({
-      enabled: state.playing,
-      style: "jazz",
-      moving: true,
-      danger: state.intensity,
-      progress: state.intensity
-    });
-    updatePlayhead();
-  }, 70);
-}
-
-function clearPlayhead() {
-  stepGrid.querySelectorAll(".step-button").forEach((button) => {
-    button.classList.remove("is-playhead", "is-playhead-empty");
-  });
-  barTabs.querySelectorAll("button").forEach((button) => button.classList.remove("is-playhead-bar"));
-}
-
-function followPlaybackBar(phraseBar) {
-  if (phraseBar === state.activeBar) return;
-  const previousLoop = state.activeLoopIndex;
-  state.activeBar = phraseBar;
-  syncActiveLoopToBar();
-  if (state.activeLoopIndex !== previousLoop) {
-    buildLoopTabs();
-    buildBarTabs();
-  }
-  renderStepGrid();
-  if (state.selected) {
-    selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step");
-  }
-}
-
-function updatePlayhead() {
-  if (!state.playing) return;
-  clearPlayhead();
-  const playback = state.engine.getPlaybackState();
-  if (!playback.playing) return;
-  const step = (playback.step + 15) % 16;
-  const phraseBar = playback.phraseBar % state.config.patterns.jazz.bars.length;
-  const displayBar = phraseBar;
-  state.playheadStep = step;
-  followPlaybackBar(displayBar);
-  if (state.selected?.mode === "row") {
-    const selectedStep = soundingStepForRow(state.selected.hit, step, displayBar);
-    selectStep(state.selected.hit, selectedStep, "row", displayBar, playback.activeBarIntensity);
-    renderStepGrid();
-  }
-  stepGrid.querySelectorAll(`.step-button[data-step="${step}"]`).forEach((button) => {
-    const hitData = getHitData(button.dataset.hit, step, displayBar);
-    button.classList.add(hitData.velocity > 0.005 ? "is-playhead" : "is-playhead-empty");
-  });
-  const barButton = barTabs.querySelector(`button[data-bar="${displayBar}"]`);
-  if (barButton) barButton.classList.add("is-playhead-bar");
-  if (state.selected?.hit === "bass") {
-    syncSelectedPitchDisplay(displayBar);
-  }
-}
-
-function downloadConfigFallback(content) {
-  const blob = new Blob([content], { type: "application/json" });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = "kamorebi-rhythm-sequence.json";
-  link.click();
-  URL.revokeObjectURL(link.href);
-}
-
-async function downloadConfig() {
-  state.config = normalizeEditorConfig(state.config);
-  syncJson();
-  const content = JSON.stringify(state.config, null, 2) + "\n";
-  if (runningFromFile) {
-    downloadConfigFallback(content);
-    status.textContent = "Downloaded rhythm JSON; open the localhost version to save into the game";
-    return;
-  }
-  try {
-    const response = await fetch("/api/save-game-asset", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        fileName: "rhythm-sequence.json",
-        content
-      })
-    });
-    const result = await response.json();
-    if (!response.ok || !result.ok) {
-      throw new Error(result.error || "Save failed");
-    }
-    status.textContent = result.backupPath
-      ? `Saved game rhythm and backup ${result.backupPath}`
-      : "Saved game rhythm";
-  } catch (error) {
-    console.error("Rhythm save failed", error);
-    downloadConfigFallback(content);
-    status.textContent = "Project save failed; downloaded JSON fallback";
-  }
-}
-
-async function loadConfigFile(file) {
-  const text = await file.text();
-  state.config = normalizeEditorConfig(JSON.parse(text));
-  state.activeBar = 0;
-  state.activeLoopIndex = 0;
-  state.twoBarClipboard = null;
-  state.trackClipboard = null;
-  reconcileGridTracks();
-  resetSelectedPanel();
-  applyConfig();
-  buildLoopTabs();
-  buildBarTabs();
+function applySegments(count) {
+  const n = Math.max(1, Math.min(16, Math.round(count) || 2));
+  state.segmentsCount = n;
+  const input = /** @type {HTMLInputElement|null} */ ($("#segments-count"));
+  if (input) input.value = String(n);
   buildStepGrid();
-  renderTrackExplorer();
-  renderTrackInspector();
-  void reapplyTrackSamples();
-  updateTwoBarClipboardButtons();
-  updateTrackClipboardButtons();
-  status.textContent = `Loaded ${file.name}`;
 }
 
-async function loadSavedRhythmConfig() {
-  if (runningFromFile) return;
-  try {
-    const response = await fetch(SAVED_RHYTHM_URL, { cache: "no-store" });
-    if (!response.ok) throw new Error(String(response.status));
-    state.config = normalizeEditorConfig(await response.json());
-    state.activeBar = 0;
-    state.activeLoopIndex = 0;
-    state.twoBarClipboard = null;
-    state.trackClipboard = null;
-    reconcileGridTracks();
-    resetSelectedPanel();
-    applyConfig();
-    buildLoopTabs();
-    buildBarTabs();
-    buildStepGrid();
-    renderTrackExplorer();
-    renderTrackInspector();
-    void reapplyTrackSamples();
-    updateTwoBarClipboardButtons();
-    updateTrackClipboardButtons();
-    status.textContent = "Loaded game rhythm";
-  } catch (error) {
-    console.warn("Using sequencer defaults", error);
-  }
+function applyTimeSig(value) {
+  state.timeSig = value || "4/4";
+  const [num] = (value || "4/4").split("/").map(Number);
+  stepGrid.dataset.timeSig = value;
+  // Mark beat accents based on numerator
+  stepGrid.querySelectorAll(".step-button").forEach((btn) => {
+    const step = Number(btn.dataset.step);
+    btn.dataset.beat = step % num === 0 ? "1" : "0";
+  });
+  const sel = /** @type {HTMLSelectElement|null} */ ($("#time-sig-select"));
+  if (sel) sel.value = state.timeSig;
 }
+function syncJson() { return configSync.syncJson(); }
+function applyConfig() { return configSync.applyConfig(); }
+
+// ══ Transport / playback controller ════════════════════════════════════════
+// Play/stop, loop-playback modes (bar / two-bar / full song), restart, the
+// sound-preview triggers, and the playhead UI loop live in their own
+// controller. The editor keeps hoisted wrappers so existing call sites and the
+// UI-timer callback (which reference these by name) are unchanged.
+const transport = createTransport({
+  $,
+  state,
+  setStatus: (msg) => { status.textContent = msg; },
+  runningFromFile,
+  stepGrid,
+  barTabs,
+  RhythmEngine,
+  barLabel,
+  loopRangeLabel,
+  activeLoopLength,
+  clampLoopStart,
+  previewConfig,
+  refreshLoopBarButton,
+  reapplyTrackSamples,
+  syncActiveLoopToBar,
+  buildLoopTabs,
+  buildBarTabs,
+  renderStepGrid,
+  selectStep,
+  soundingStepForRow,
+  getHitData,
+  syncSelectedPitchDisplay
+});
+
+function startPlayback() { return transport.startPlayback(); }
+function stopPlayback() { return transport.stopPlayback(); }
+function setLoopPlayback(length) { return transport.setLoopPlayback(length); }
+function toggleBarLoop() { return transport.toggleBarLoop(); }
+function toggleTwoBarLoop() { return transport.toggleTwoBarLoop(); }
+function playFullSong() { return transport.playFullSong(); }
+function restartPlayback() { return transport.restartPlayback(); }
+function previewDuckSound() { return transport.previewDuckSound(); }
+function previewHitSound() { return transport.previewHitSound(); }
+function previewGameSound(kind) { return transport.previewGameSound(kind); }
+function clearPlayhead() { return transport.clearPlayhead(); }
+function updatePlayhead() { return transport.updatePlayhead(); }
+
+// ══ Config file load/save controller ═══════════════════════════════════════
+// "Save File", "Load File", and the saved-game auto-load live in their own
+// controller. The editor keeps hoisted wrappers so existing call sites
+// (Save/Load buttons, bootstrap) are unchanged.
+const configFile = createConfigFile({
+  state,
+  setStatus: (msg) => { status.textContent = msg; },
+  runningFromFile,
+  SAVED_RHYTHM_URL,
+  normalizeEditorConfig,
+  syncJson,
+  applyConfig,
+  downloadJsonFile,
+  saveGameAsset,
+  fetchSavedConfig,
+  reconcileGridTracks,
+  resetSelectedPanel,
+  buildLoopTabs,
+  buildBarTabs,
+  buildStepGrid,
+  renderTrackExplorer,
+  renderTrackInspector,
+  reapplyTrackSamples,
+  updateTwoBarClipboardButtons,
+  updateTrackClipboardButtons
+});
+
+function downloadConfig() { return configFile.downloadConfig(); }
+function applyLoadedConfig(nextConfig) { return configFile.applyLoadedConfig(nextConfig); }
+function loadConfigFile(file) { return configFile.loadConfigFile(file); }
+function loadSavedRhythmConfig() { return configFile.loadSavedRhythmConfig(); }
 
 function wireEvents() {
-  $("#play-toggle").addEventListener("click", () => {
-    if (state.playing) stopPlayback();
-    else void startPlayback();
+  const wiring = createEventWiring({
+    $,
+    state,
+    clamp,
+    status,
+    loopCountInput,
+    setPathValue,
+    applyZoom,
+    wireNumberControl,
+    startPlayback, stopPlayback, restartPlayback,
+    playFullSong, toggleBarLoop, toggleTwoBarLoop,
+    duplicateCurrentLoop, deleteCurrentLoop,
+    copyTwoBars, pasteTwoBars, fillRestWithTwoBars,
+    copyTrackTwoBars, pasteTrackTwoBars, fillRestWithTrackTwoBars,
+    setLoopCount,
+    applySegments, applyTimeSig,
+    previewDuckSound, previewHitSound, previewGameSound,
+    toggleSolo, clearSolo,
+    setSelectedVelocityFromControl, setSelectedOptionFromControl,
+    setSelectedDubEchoFromControl,
+    clearSelection,
+    downloadConfig, loadConfigFile,
+    applyConfig, buildLoopTabs, buildBarTabs, buildStepGrid,
+    renderTrackExplorer, renderTrackInspector,
+    updateTwoBarClipboardButtons, updateTrackClipboardButtons,
+    resetSelectedPanel,
+    normalizeEditorConfig, clone, DEFAULT_RHYTHM_CONFIG,
+    renderAddTrackDialog,
+    openGlobalMixView, closeGlobalMixView, resetMasterEq,
+    sampleRootSelect, sampleBrowser,
+    closeContextMenu,
+    loopPanel,
+    selectedVelocity, selectedVelocityNumber,
+    selectedPitch, selectedPitchNumber,
+    selectedOffset, selectedOffsetNumber,
+    selectedAttack, selectedAttackNumber,
+    selectedDelay, selectedDelayNumber,
+    selectedWobble, selectedWobbleNumber,
+    selectedDubEcho, selectedDubEchoNumber,
+    selectedNoteDelaySend, selectedNoteDelaySendNumber,
+    selectedNoteReverbSend, selectedNoteReverbSendNumber
   });
-  $("#restart").addEventListener("click", restartPlayback);
-  $("#play-song").addEventListener("click", playFullSong);
-  $("#loop-bar").addEventListener("click", toggleBarLoop);
-  $("#loop-two-bars").addEventListener("click", toggleTwoBarLoop);
-  $("#duplicate-loop").addEventListener("click", duplicateCurrentLoop);
-  $("#delete-loop").addEventListener("click", deleteCurrentLoop);
-  $("#copy-two-bars").addEventListener("click", copyTwoBars);
-  $("#paste-two-bars").addEventListener("click", pasteTwoBars);
-  $("#fill-rest-two-bars").addEventListener("click", fillRestWithTwoBars);
-  $("#copy-track-two-bars").addEventListener("click", copyTrackTwoBars);
-  $("#paste-track-two-bars").addEventListener("click", pasteTrackTwoBars);
-  $("#fill-rest-track").addEventListener("click", fillRestWithTrackTwoBars);
-  loopCountInput.addEventListener("change", () => setLoopCount(loopCountInput.value));
-  loopCountInput.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    setLoopCount(loopCountInput.value);
-    loopCountInput.blur();
-  });
-  $("#space-throw").addEventListener("click", () => {
-    if (!state.playing) void startPlayback().then(() => state.engine.triggerDubThrow());
-    else state.engine.triggerDubThrow();
-  });
-  $("#duck-sound").addEventListener("click", () => {
-    void previewDuckSound();
-  });
-  $("#hit-sound").addEventListener("click", () => {
-    void previewHitSound();
-  });
-  document.querySelectorAll("[data-preview-sound]").forEach((button) => {
-    button.addEventListener("click", () => {
-      void previewGameSound(button.dataset.previewSound);
-    });
-  });
-  $("#intensity").addEventListener("input", (event) => {
-    state.intensity = Number(event.target.value);
-    $("#intensity-value").textContent = state.intensity.toFixed(2);
-  });
-  document.querySelectorAll("[data-config]").forEach((input) => {
-    input.addEventListener("input", () => setPathValue(input.dataset.config, input.value));
-  });
-  // Transport BPM widget
-  const transportBpm = $("#transport-bpm");
-  const transportBpmNumber = $("#transport-bpm-number");
-  const transportBpmValue = $("#transport-bpm-value");
-  function applyTransportBpm(value) {
-    const bpm = Math.round(clamp(value, 40, 220, 118));
-    setPathValue("patterns.jazz.bpm", bpm);
-    if (transportBpm) transportBpm.value = String(bpm);
-    if (transportBpmNumber) transportBpmNumber.value = String(bpm);
-    if (transportBpmValue) transportBpmValue.textContent = String(bpm);
-    // also sync the mix panel slider
-    const mixBpmSlider = document.querySelector('[data-config="patterns.jazz.bpm"]');
-    if (mixBpmSlider) {
-      mixBpmSlider.value = String(bpm);
-      if (mixBpmSlider.nextElementSibling) mixBpmSlider.nextElementSibling.textContent = String(bpm);
-    }
-  }
-  if (transportBpm) {
-    transportBpm.addEventListener("input", () => applyTransportBpm(transportBpm.value));
-  }
-  if (transportBpmNumber) {
-    wireNumberControl(transportBpmNumber, applyTransportBpm);
-  }
-  // Zoom buttons
-  document.querySelectorAll(".zoom-btn").forEach((btn) => {
-    btn.addEventListener("click", () => applyZoom(Number(btn.dataset.zoom)));
-  });
-  document.querySelectorAll(".control-panel [data-solo-track]").forEach((button) => {
-    button.addEventListener("click", () => toggleSolo(button.dataset.soloTrack));
-  });
-  document.querySelectorAll("[data-solo-clear]").forEach((button) => {
-    button.addEventListener("click", clearSolo);
-  });
-  selectedVelocity.addEventListener("input", () => setSelectedVelocityFromControl());
-  wireNumberControl(selectedVelocityNumber, setSelectedVelocityFromControl);
-  selectedPitch.addEventListener("input", () => setSelectedOptionFromControl("pitch", selectedPitch.value));
-  wireNumberControl(selectedPitchNumber, (value) => setSelectedOptionFromControl("pitch", value));
-  selectedOffset.addEventListener("input", () => setSelectedOptionFromControl("offsetMs", selectedOffset.value));
-  wireNumberControl(selectedOffsetNumber, (value) => setSelectedOptionFromControl("offsetMs", value));
-  selectedAttack.addEventListener("input", () => setSelectedOptionFromControl("attackMs", selectedAttack.value));
-  wireNumberControl(selectedAttackNumber, (value) => setSelectedOptionFromControl("attackMs", value));
-  selectedDelay.addEventListener("input", () => setSelectedOptionFromControl("delayMs", selectedDelay.value));
-  wireNumberControl(selectedDelayNumber, (value) => setSelectedOptionFromControl("delayMs", value));
-  selectedWobble.addEventListener("input", () => setSelectedOptionFromControl("wobble", selectedWobble.value));
-  wireNumberControl(selectedWobbleNumber, (value) => setSelectedOptionFromControl("wobble", value));
-  selectedDubEcho.addEventListener("input", () => setSelectedDubEchoFromControl());
-  wireNumberControl(selectedDubEchoNumber, setSelectedDubEchoFromControl);
-  selectedNoteDelaySend.addEventListener("input", () => setSelectedOptionFromControl("delaySend", selectedNoteDelaySend.value));
-  wireNumberControl(selectedNoteDelaySendNumber, (value) => setSelectedOptionFromControl("delaySend", value));
-  selectedNoteReverbSend.addEventListener("input", () => setSelectedOptionFromControl("reverbSend", selectedNoteReverbSend.value));
-  wireNumberControl(selectedNoteReverbSendNumber, (value) => setSelectedOptionFromControl("reverbSend", value));
-  selectedBusSend.addEventListener("input", () => setSelectedBusSendFromControl());
-  wireNumberControl(selectedBusSendNumber, setSelectedBusSendFromControl);
-  selectedReverbSend.addEventListener("input", () => setSelectedReverbSendFromControl());
-  wireNumberControl(selectedReverbSendNumber, setSelectedReverbSendFromControl);
-  selectedTrackLevel.addEventListener("input", () => setSelectedTrackLevelFromControl());
-  wireNumberControl(selectedTrackLevelNumber, setSelectedTrackLevelFromControl);
-  selectedTrackPan.addEventListener("input", () => setSelectedTrackPanFromControl());
-  wireNumberControl(selectedTrackPanNumber, setSelectedTrackPanFromControl);
-  $("#clear-selected").addEventListener("click", clearSelection);
-  $("#save-file").addEventListener("click", downloadConfig);
-  $("#copy-json").addEventListener("click", async () => {
-    await navigator.clipboard.writeText(JSON.stringify(state.config, null, 2));
-    status.textContent = "Copied rhythm JSON";
-  });
-  $("#reset-defaults").addEventListener("click", () => {
-    state.config = normalizeEditorConfig(clone(DEFAULT_RHYTHM_CONFIG));
-    state.activeBar = 0;
-    state.activeLoopIndex = 0;
-    state.twoBarClipboard = null;
-    state.trackClipboard = null;
-    resetSelectedPanel();
-    applyConfig();
-    buildLoopTabs();
-    buildBarTabs();
-    buildStepGrid();
-    renderTrackExplorer();
-    renderTrackInspector();
-    updateTwoBarClipboardButtons();
-    updateTrackClipboardButtons();
-    status.textContent = "Reset to defaults";
-  });
-  $("#load-file").addEventListener("click", () => $("#load-input").click());
-  $("#load-input").addEventListener("change", (event) => {
-    const file = event.target.files?.[0];
-    if (file) void loadConfigFile(file);
-    event.target.value = "";
-  });
-
-  // ── Loop Track UI ──────────────────────────────────────────
-  $("#add-loop-track-btn")?.addEventListener("click", () => {
-    const dialog = /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"));
-    if (dialog) dialog.showModal();
-  });
-  // ── Add Track (registry) UI ────────────────────────────────
-  $("#add-track-btn")?.addEventListener("click", () => {
-    renderAddTrackDialog();
-    /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.showModal();
-  });
-  $("#add-track-cancel")?.addEventListener("click", () => {
-    /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.close();
-  });
-
-  // ── Right-side panels: Track Explorer / Inspector / Sample Browser ──
-  $("#add-track-btn-panel")?.addEventListener("click", () => {
-    renderAddTrackDialog();
-    /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.showModal();
-  });
-  $("#manage-groups-btn")?.addEventListener("click", () => {
-    renderAddTrackDialog();
-    /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.showModal();
-  });
-  $("#track-sample-audition")?.addEventListener("click", () => {
-    void auditionSelectedTrack();
-  });
-  $("#track-sample-clear")?.addEventListener("click", () => {
-    if (state.selected?.hit) clearTrackSample(state.selected.hit);
-  });
-  sampleRootSelect?.addEventListener("change", () => {
-    void browseSampleRoot(sampleRootSelect.value, "");
-  });
-
-  $("#add-loop-cancel")?.addEventListener("click", () => {
-    /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"))?.close();
-  });
-  $("#add-loop-form")?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const nameInput = /** @type {HTMLInputElement} */ ($("#loop-track-name"));
-    const fileInput = /** @type {HTMLInputElement} */ ($("#loop-track-file"));
-    const barsInput = /** @type {HTMLInputElement} */ ($("#loop-track-bars"));
-    const name = nameInput?.value.trim();
-    const file = fileInput?.files?.[0];
-    const barsInFile = Math.max(1, Math.round(Number(barsInput?.value) || 4));
-    if (!name || !file) return;
-    void addLoopTrack(name, file, barsInFile);
-    /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"))?.close();
-    if (nameInput) nameInput.value = "";
-    if (fileInput) fileInput.value = "";
-    if (barsInput) barsInput.value = "4";
-  });
-
-  // Loop region panel controls
-  $("#loop-region-start")?.addEventListener("change", () => updateSelectedLoopRegion());
-  $("#loop-region-len")?.addEventListener("change", () => updateSelectedLoopRegion());
-  $("#loop-region-chops")?.addEventListener("change", () => updateSelectedLoopRegion());
-  $("#loop-region-gain")?.addEventListener("input", () => {
-    const val = Number(/** @type {HTMLInputElement} */ ($("#loop-region-gain"))?.value ?? 1);
-    const out = /** @type {HTMLElement} */ ($("#loop-region-gain-value"));
-    if (out) out.textContent = val.toFixed(2);
-    updateSelectedLoopRegion();
-  });
-  $("#loop-region-delete")?.addEventListener("click", () => deleteSelectedLoopRegion());
+  wiring.wireAll();
 }
 
 window.rhythmEditorSetSelectedVelocity = setSelectedVelocityFromControl;
 window.rhythmEditorSetSelectedOption = setSelectedOptionFromControl;
-window.rhythmEditorSetSelectedBusSend = setSelectedBusSendFromControl;
-window.rhythmEditorSetSelectedReverbSend = setSelectedReverbSendFromControl;
-window.rhythmEditorSetSelectedTrackLevel = setSelectedTrackLevelFromControl;
-window.rhythmEditorSetSelectedTrackPan = setSelectedTrackPanFromControl;
+window.rhythmEditorSetTrackBusSend = setTrackBusSend;
+window.rhythmEditorSetTrackReverbSend = setTrackReverbSend;
+window.rhythmEditorSetTrackLevel = setTrackLevel;
+window.rhythmEditorSetTrackPan = setTrackPan;
 
-// ══ Loop Track Data Model ══════════════════════════════════════
+// ══ Loop Track Lane Panel ══════════════════════════════════════
+// The loop-track lane feature (audio loops dropped onto horizontal lanes in
+// the step grid, chopped into resizable regions) lives in its own controller.
+const loopPanel = createLoopTrackPanel({
+  stepGrid,
+  $,
+  getBarsLength: () => bars().length,
+  setStatus: (msg) => { status.textContent = msg; }
+});
 
-/**
- * @typedef {{ bar: number, len: number, gain: number, chops: number }} LoopRegion
- * @typedef {{ id: string, name: string, barsInFile: number, audioUrl: string, regions: LoopRegion[], selected: boolean }} LoopTrack
- */
+// ══ Track panels controller (grid mgmt + Add-Track + Explorer + Inspector) ══
+// The right-side track UI cluster lives in its own controller; the editor keeps
+// thin, hoisted wrappers so the rest of the file calls these by their old names.
+const trackPanels = createTrackPanels({
+  $,
+  state,
+  trackExplorerList,
+  trackInspectorPanels,
+  trackInspectorTemplate,
+  trackInspectorName,
+  trackInspectorMultiHint,
+  runningFromFile,
+  clamp,
+  formatPan,
+  TRACK_REGISTRY,
+  TRACK_GROUPS,
+  TRACK_BY_ID,
+  TRACK_LABELS,
+  DEFAULT_GRID_TRACK_IDS,
+  getTrackDef,
+  isInstanceId,
+  baseTrackId,
+  makeInstanceId,
+  tracksByGroup,
+  orderGridTrackIdsBase,
+  reconcileGridTrackIdsBase,
+  instanceLabelFor,
+  removeTrackFromConfigMaps,
+  TRACK_SHAPE_FIELDS,
+  globalShapeValueBase,
+  resolvedShapeValueBase,
+  formatShapeValue,
+  setTrackShapeFieldBase,
+  clearTrackShape,
+  wireNumberControl,
+  mix: {
+    getLevel: selectedTrackLevelFor,
+    setLevel: setTrackLevel,
+    getPan: selectedTrackPanFor,
+    setPan: setTrackPan,
+    getBusSend: selectedTrackBusSend,
+    setBusSend: setTrackBusSend,
+    getReverbSend: selectedTrackReverbSend,
+    setReverbSend: setTrackReverbSend
+  },
+  applyConfig,
+  buildStepGrid,
+  renderStepGrid,
+  syncJson,
+  setStatus: (msg) => { status.textContent = msg; },
+  resetSelectedPanel,
+  selectRow,
+  selectRowWithModifiers,
+  orderBySelectedGrid,
+  toggleSolo,
+  previewConfig,
+  getEngine: () => state.engine
+});
 
-/** @type {LoopTrack[]} */
-const loopTracks = [];
-/** @type {{ trackId: string, regionIdx: number } | null} */
-let selectedLoopRegion = null;
+// Hoisted wrappers around the controller API (preserve the original names that
+// the rest of the editor and the global-mix panel call).
+function reconcileGridTracks() { return trackPanels.reconcileGridTracks(); }
+function addGridTrack(trackId) { return trackPanels.addGridTrack(trackId); }
+function addTrackInstance(baseId, opts) { return trackPanels.addTrackInstance(baseId, opts); }
+function removeGridTrack(trackId) { return trackPanels.removeGridTrack(trackId); }
+function instanceLabel(id) { return trackPanels.instanceLabel(id); }
+function renderAddTrackDialog() { return trackPanels.renderAddTrackDialog(); }
+function renderTrackExplorer() { return trackPanels.renderTrackExplorer(); }
+function renderTrackInspector() { return trackPanels.renderTrackInspector(); }
+function trackSupportsShape(hit) { return trackPanels.trackSupportsShape(hit); }
+function renderTrackShapeControls(hit, container) { return trackPanels.renderTrackShapeControls(hit, container); }
+function assignSampleToTrack(hit, sample) { return trackPanels.assignSampleToTrack(hit, sample); }
+function clearTrackSample(hit) { return trackPanels.clearTrackSample(hit); }
+function reapplyTrackSamples() { return trackPanels.reapplyTrackSamples(); }
 
-// ── Registry-driven grid track management ───────────────────
-
-/** Ensure every bar carries an array for the given track id (for new tracks). */
-function ensureTrackColumn(trackId) {
-  bars().forEach((bar) => {
-    if (!Array.isArray(bar[trackId])) bar[trackId] = [];
-  });
-}
-
-/**
- * After loading a project, show the default tracks plus any registry track that
- * actually has notes in the loaded bars (so saved projects with extra tracks
- * come back with those rows visible), in registry order.
- */
-function reconcileGridTracks() {
-  const registryOrder = TRACK_REGISTRY.map((t) => t.id);
-  const wanted = new Set(DEFAULT_GRID_TRACK_IDS);
-  const loadedBars = state.config?.patterns?.jazz?.bars ?? [];
-  registryOrder.forEach((id) => {
-    const hasNotes = loadedBars.some((bar) => Array.isArray(bar?.[id]) && bar[id].length > 0);
-    if (hasNotes) wanted.add(id);
-  });
-  state.gridTrackIds = registryOrder.filter((id) => wanted.has(id));
-}
-
-/** Add a registry track to the grid (if not already present). */
-function addGridTrack(trackId) {
-  if (!getTrackDef(trackId)) return;
-  if (state.gridTrackIds.includes(trackId)) return;
-  // Insert in registry order so groups stay together visually.
-  const registryOrder = TRACK_REGISTRY.map((t) => t.id);
-  const next = [...state.gridTrackIds, trackId].sort(
-    (a, b) => registryOrder.indexOf(a) - registryOrder.indexOf(b)
-  );
-  state.gridTrackIds = next;
-  ensureTrackColumn(trackId);
-  renderStepGrid();
-  renderTrackExplorer();
-  syncJson();
-  status.textContent = `Added ${TRACK_LABELS[trackId] || trackId} track`;
-}
-
-/** Remove a registry track from the grid (core tracks can't be removed). */
-function removeGridTrack(trackId) {
-  const def = getTrackDef(trackId);
-  if (!def || !def.removable) return;
-  state.gridTrackIds = state.gridTrackIds.filter((id) => id !== trackId);
-  if (state.selected?.hit === trackId) state.selected = null;
-  state.soloTracks.delete(trackId);
-  state.engine.setConfig(previewConfig());
-  renderStepGrid();
-  renderTrackExplorer();
-  renderTrackInspector();
-  syncJson();
-  status.textContent = `Removed ${def.label} track`;
-}
-
-/** Build the grouped checkbox list inside the Add Track dialog. */
-function renderAddTrackDialog() {
-  const host = $("#add-track-groups");
-  if (!host) return;
-  host.innerHTML = "";
-  tracksByGroup().forEach(({ group, tracks }) => {
-    const section = document.createElement("div");
-    section.className = "add-track-group";
-    const heading = document.createElement("div");
-    heading.className = "add-track-group-heading";
-    heading.textContent = group.label;
-    if (group.accent) heading.style.setProperty("--group-accent", group.accent);
-    section.appendChild(heading);
-
-    const list = document.createElement("div");
-    list.className = "add-track-group-list";
-    tracks.forEach((track) => {
-      const onGrid = state.gridTrackIds.includes(track.id);
-      const item = document.createElement("button");
-      item.type = "button";
-      item.className = `add-track-chip ${onGrid ? "is-on-grid" : ""}`;
-      item.textContent = onGrid ? `✓ ${track.label}` : `+ ${track.label}`;
-      item.disabled = onGrid && !track.removable;
-      item.title = onGrid
-        ? (track.removable ? `Remove ${track.label}` : `${track.label} is always on`)
-        : `Add ${track.label}`;
-      item.addEventListener("click", () => {
-        if (state.gridTrackIds.includes(track.id)) {
-          if (track.removable) removeGridTrack(track.id);
-        } else {
-          addGridTrack(track.id);
-        }
-        renderAddTrackDialog();
-      });
-      list.appendChild(item);
-    });
-    section.appendChild(list);
-    host.appendChild(section);
-  });
-}
-
-// ── Track Explorer (right-side track list) ──────────────────
-
-/** Re-render the grouped track list in the right-side Track Explorer. */
-function renderTrackExplorer() {
-  if (!trackExplorerList) return;
-  trackExplorerList.innerHTML = "";
-  const selectedHit = state.selected?.hit || null;
-  TRACK_GROUPS.forEach((group) => {
-    const groupTrackIds = state.gridTrackIds.filter((id) => getTrackDef(id)?.group === group.id);
-    if (groupTrackIds.length === 0) return;
-    const groupEl = document.createElement("div");
-    groupEl.className = "track-explorer-group";
-    const heading = document.createElement("div");
-    heading.className = "track-explorer-group-heading";
-    heading.textContent = group.label;
-    if (group.accent) heading.style.setProperty("--group-accent", group.accent);
-    groupEl.appendChild(heading);
-
-    groupTrackIds.forEach((id) => {
-      const def = getTrackDef(id);
-      const row = document.createElement("div");
-      row.className = `track-explorer-row ${selectedHit === id ? "is-selected" : ""}`;
-      row.dataset.trackId = id;
-
-      const name = document.createElement("button");
-      name.type = "button";
-      name.className = "track-explorer-name";
-      name.textContent = def?.label || id;
-      const hasSample = Boolean(state.config.trackSamples?.[id]);
-      if (hasSample) {
-        const dot = document.createElement("span");
-        dot.className = "track-explorer-sample-dot";
-        dot.title = `Custom sample: ${state.config.trackSamples[id].label}`;
-        name.appendChild(dot);
-      }
-      name.addEventListener("click", () => {
-        if (state.selected?.hit === id && state.selected?.mode === "row") {
-          resetSelectedPanel();
-        } else {
-          selectRow(id);
-        }
-        renderStepGrid();
-      });
-
-      const soloBtn = document.createElement("button");
-      soloBtn.type = "button";
-      soloBtn.className = `track-explorer-solo ${state.soloTracks.has(id) ? "is-active" : ""}`;
-      soloBtn.textContent = "S";
-      soloBtn.title = `Solo ${def?.label || id}`;
-      soloBtn.addEventListener("click", (event) => {
-        event.stopPropagation();
-        toggleSolo(id);
-        renderTrackExplorer();
-      });
-
-      row.append(name, soloBtn);
-
-      if (def?.removable) {
-        const removeBtn = document.createElement("button");
-        removeBtn.type = "button";
-        removeBtn.className = "track-explorer-remove";
-        removeBtn.textContent = "×";
-        removeBtn.title = `Remove ${def.label}`;
-        removeBtn.addEventListener("click", (event) => {
-          event.stopPropagation();
-          removeGridTrack(id);
-        });
-        row.append(removeBtn);
-      }
-
-      groupEl.appendChild(row);
-    });
-    trackExplorerList.appendChild(groupEl);
-  });
-  if (!trackExplorerList.children.length) {
-    const empty = document.createElement("p");
-    empty.className = "track-explorer-empty";
-    empty.textContent = "No tracks yet. Use “+ Track”.";
-    trackExplorerList.appendChild(empty);
+// ══ Global Mix view (dedicated full-screen track-level mixer) ════════════════
+// The overlay (live spectrum + mastering EQ + per-track mixer strips) lives in
+// its own controller; the editor supplies state-aware accessors/callbacks.
+const globalMixPanel = createGlobalMixPanel({
+  $,
+  getEngine: () => state.engine,
+  getConfig: () => state.config,
+  applyConfig,
+  setStatus: (msg) => { status.textContent = msg; },
+  clamp,
+  formatPan,
+  trackGroups: TRACK_GROUPS,
+  getTrackDef,
+  isInstanceId,
+  instanceLabel,
+  getGridTrackIds: () => state.gridTrackIds,
+  mix: {
+    getLevel: selectedTrackLevelFor,
+    setLevel: setTrackLevel,
+    getPan: selectedTrackPanFor,
+    setPan: setTrackPan,
+    getBusSend: selectedTrackBusSend,
+    setBusSend: setTrackBusSend,
+    getReverbSend: selectedTrackReverbSend,
+    setReverbSend: setTrackReverbSend
+  },
+  trackSupportsShape,
+  renderTrackShapeControls,
+  onInspect: (hit) => {
+    selectRow(hit);
+    renderStepGrid();
   }
-}
-
-// ── Track Inspector header (sample row) ─────────────────────
-
-/** Refresh the inspector's name + sample row for the current selection. */
-function renderTrackInspector() {
-  const hit = state.selected?.hit || null;
-  const def = hit ? getTrackDef(hit) : null;
-  if (trackInspectorName) {
-    trackInspectorName.textContent = def ? def.label : "No track selected";
-  }
-  if (trackInspectorBody) {
-    trackInspectorBody.hidden = !hit;
-  }
-  if (trackSampleName) {
-    const assigned = hit ? state.config.trackSamples?.[hit] : null;
-    trackSampleName.textContent = assigned ? assigned.label : "— built-in —";
-    trackSampleName.classList.toggle("is-custom", Boolean(assigned));
-  }
-}
-
-/** Apply a custom sample to a track (config + engine) and refresh UI. */
-async function assignSampleToTrack(hit, sample) {
-  if (!hit) return;
-  state.config.trackSamples = {
-    ...(state.config.trackSamples || {}),
-    [hit]: { url: sample.url, label: sample.label, root: sample.root ?? null, path: sample.path ?? null }
-  };
-  const ok = await state.engine.setTrackSample(hit, sample.url);
-  if (!ok) {
-    status.textContent = `Could not load ${sample.label}`;
-    return;
-  }
-  renderTrackInspector();
-  renderTrackExplorer();
-  syncJson();
-  status.textContent = `Loaded ${sample.label} into ${TRACK_LABELS[hit] || hit}`;
-}
-
-/** Clear a track's custom sample, reverting to the built-in voice. */
-function clearTrackSample(hit) {
-  if (!hit) return;
-  if (state.config.trackSamples?.[hit]) {
-    const next = { ...state.config.trackSamples };
-    delete next[hit];
-    state.config.trackSamples = next;
-  }
-  state.engine.clearTrackSample(hit);
-  renderTrackInspector();
-  renderTrackExplorer();
-  syncJson();
-  status.textContent = `${TRACK_LABELS[hit] || hit} reset to built-in voice`;
-}
-
-/** Re-apply all saved custom samples to the engine (after load). */
-async function reapplyTrackSamples() {
-  const samples = state.config.trackSamples || {};
-  // Drop any engine samples that the loaded config no longer references.
-  (state.engine.customSampleUrls ? Array.from(state.engine.customSampleUrls.keys()) : [])
-    .filter((hit) => !samples[hit])
-    .forEach((hit) => state.engine.clearTrackSample(hit));
-  await Promise.all(Object.entries(samples).map(([hit, entry]) =>
-    state.engine.setTrackSample(hit, entry.url).catch(() => false)
-  ));
-}
-
-async function auditionSelectedTrack() {
-  const hit = state.selected?.hit;
-  if (!hit) {
-    status.textContent = "Select a track first";
-    return;
-  }
-  if (runningFromFile) {
-    status.textContent = "Open the localhost version for audio";
-    return;
-  }
-  await state.engine.auditionTrack(hit, { gain: 0.7 });
-  status.textContent = `Auditioned ${TRACK_LABELS[hit] || hit}`;
-}
+});
+const openGlobalMixView = () => globalMixPanel.open();
+const closeGlobalMixView = () => globalMixPanel.close();
+const resetMasterEq = () => globalMixPanel.reset();
 
 // ── Sample Browser ──────────────────────────────────────────
-
-const sampleBrowserState = {
-  roots: [],
-  rootId: null,
-  path: "",
-  dirs: [],
-  files: []
-};
-
-async function loadSampleRoots() {
-  if (!sampleRootSelect) return;
-  if (runningFromFile) {
-    sampleRootSelect.innerHTML = `<option value="">Run on localhost</option>`;
-    if (sampleBrowserList) {
-      sampleBrowserList.innerHTML = `<p class="sample-browser-empty">Sample browsing needs the dev server (npm run dev).</p>`;
-    }
-    return;
-  }
-  try {
-    const response = await fetch("/api/sample-roots", { cache: "no-store" });
-    const data = await response.json();
-    sampleBrowserState.roots = Array.isArray(data?.roots) ? data.roots : [];
-    sampleRootSelect.innerHTML = "";
-    if (!sampleBrowserState.roots.length) {
-      sampleRootSelect.innerHTML = `<option value="">No sample roots</option>`;
-      if (sampleBrowserList) {
-        sampleBrowserList.innerHTML = `<p class="sample-browser-empty">Add a root in <code>sample-library.json</code>.</p>`;
-      }
-      return;
-    }
-    sampleBrowserState.roots.forEach((root) => {
-      const option = document.createElement("option");
-      option.value = root.id;
-      option.textContent = root.available ? root.label : `${root.label} (missing)`;
-      option.disabled = !root.available;
-      sampleRootSelect.appendChild(option);
-    });
-    const firstAvailable = sampleBrowserState.roots.find((r) => r.available);
-    if (firstAvailable) {
-      sampleRootSelect.value = firstAvailable.id;
-      await browseSampleRoot(firstAvailable.id, "");
-    }
-  } catch (error) {
-    console.warn("Sample roots failed to load", error);
-    if (sampleBrowserList) {
-      sampleBrowserList.innerHTML = `<p class="sample-browser-empty">Sample API unavailable.</p>`;
-    }
-  }
-}
-
-async function browseSampleRoot(rootId, path = "") {
-  if (!rootId) return;
-  sampleBrowserState.rootId = rootId;
-  sampleBrowserState.path = path;
-  try {
-    const url = `/api/sample-browse?root=${encodeURIComponent(rootId)}&path=${encodeURIComponent(path)}`;
-    const response = await fetch(url, { cache: "no-store" });
-    const data = await response.json();
-    sampleBrowserState.dirs = Array.isArray(data?.dirs) ? data.dirs : [];
-    sampleBrowserState.files = Array.isArray(data?.files) ? data.files : [];
-    renderSampleBrowser();
-  } catch (error) {
-    console.warn("Sample browse failed", error);
-    if (sampleBrowserList) {
-      sampleBrowserList.innerHTML = `<p class="sample-browser-empty">Could not list this folder.</p>`;
-    }
-  }
-}
-
-function renderSampleBreadcrumb() {
-  if (!sampleBreadcrumb) return;
-  sampleBreadcrumb.innerHTML = "";
-  const parts = sampleBrowserState.path ? sampleBrowserState.path.split("/").filter(Boolean) : [];
-  const rootBtn = document.createElement("button");
-  rootBtn.type = "button";
-  rootBtn.className = "sample-crumb";
-  rootBtn.textContent = "root";
-  rootBtn.addEventListener("click", () => browseSampleRoot(sampleBrowserState.rootId, ""));
-  sampleBreadcrumb.appendChild(rootBtn);
-  let acc = "";
-  parts.forEach((part) => {
-    acc = acc ? `${acc}/${part}` : part;
-    const sep = document.createElement("span");
-    sep.className = "sample-crumb-sep";
-    sep.textContent = "/";
-    const crumbPath = acc;
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "sample-crumb";
-    btn.textContent = part;
-    btn.addEventListener("click", () => browseSampleRoot(sampleBrowserState.rootId, crumbPath));
-    sampleBreadcrumb.append(sep, btn);
-  });
-}
-
-function renderSampleBrowser() {
-  renderSampleBreadcrumb();
-  if (!sampleBrowserList) return;
-  sampleBrowserList.innerHTML = "";
-
-  // Up one level
-  if (sampleBrowserState.path) {
-    const up = document.createElement("button");
-    up.type = "button";
-    up.className = "sample-row sample-row-dir";
-    up.innerHTML = `<span class="sample-row-icon">↩</span><span class="sample-row-name">..</span>`;
-    up.addEventListener("click", () => {
-      const parent = sampleBrowserState.path.split("/").slice(0, -1).join("/");
-      browseSampleRoot(sampleBrowserState.rootId, parent);
-    });
-    sampleBrowserList.appendChild(up);
-  }
-
-  sampleBrowserState.dirs.forEach((dir) => {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "sample-row sample-row-dir";
-    row.innerHTML = `<span class="sample-row-icon">📁</span><span class="sample-row-name"></span>`;
-    row.querySelector(".sample-row-name").textContent = dir.name ?? dir;
-    const next = dir.rel ?? (sampleBrowserState.path ? `${sampleBrowserState.path}/${dir.name ?? dir}` : (dir.name ?? dir));
-    row.addEventListener("click", () => browseSampleRoot(sampleBrowserState.rootId, next));
-    sampleBrowserList.appendChild(row);
-  });
-
-  sampleBrowserState.files.forEach((file) => {
-    const row = document.createElement("div");
-    row.className = "sample-row sample-row-file";
-    const name = document.createElement("span");
-    name.className = "sample-row-name";
-    name.textContent = file.name;
-
-    const auditionBtn = document.createElement("button");
-    auditionBtn.type = "button";
-    auditionBtn.className = "sample-row-action";
-    auditionBtn.textContent = "▶";
-    auditionBtn.title = `Audition ${file.name}`;
-    auditionBtn.addEventListener("click", () => auditionSampleFile(file));
-
-    const loadBtn = document.createElement("button");
-    loadBtn.type = "button";
-    loadBtn.className = "sample-row-action sample-row-load";
-    loadBtn.textContent = "＋";
-    loadBtn.title = "Load into selected track";
-    loadBtn.disabled = !state.selected?.hit;
-    loadBtn.addEventListener("click", () => {
-      if (!state.selected?.hit) {
-        status.textContent = "Select a track first";
-        return;
-      }
-      void assignSampleToTrack(state.selected.hit, {
-        url: sampleFileUrl(file),
-        label: file.name,
-        root: sampleBrowserState.rootId,
-        path: file.rel
-      });
-    });
-
-    row.append(name, auditionBtn, loadBtn);
-    sampleBrowserList.appendChild(row);
-  });
-
-  if (!sampleBrowserState.dirs.length && !sampleBrowserState.files.length && !sampleBrowserState.path) {
-    const empty = document.createElement("p");
-    empty.className = "sample-browser-empty";
-    empty.textContent = "This root is empty.";
-    sampleBrowserList.appendChild(empty);
-  }
-}
-
-function sampleFileUrl(file) {
-  if (file.url) return file.url;
-  return `/api/sample-file?root=${encodeURIComponent(sampleBrowserState.rootId)}&path=${encodeURIComponent(file.rel)}`;
-}
-
-let sampleAuditionEl = null;
-function auditionSampleFile(file) {
-  if (runningFromFile) {
-    status.textContent = "Open the localhost version for audio";
-    return;
-  }
-  if (!sampleAuditionEl) sampleAuditionEl = new Audio();
-  sampleAuditionEl.src = sampleFileUrl(file);
-  sampleAuditionEl.currentTime = 0;
-  void sampleAuditionEl.play().catch(() => {
-    status.textContent = "Could not play sample";
-  });
-  status.textContent = `Auditioning ${file.name}`;
-}
-
-function loopTrackById(id) {
-  return loopTracks.find((t) => t.id === id) ?? null;
-}
-
-async function addLoopTrack(name, file, barsInFile) {
-  const audioUrl = URL.createObjectURL(file);
-  const id = `loop_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  /** @type {LoopTrack} */
-  const track = { id, name, barsInFile, audioUrl, regions: [], selected: false };
-  loopTracks.push(track);
-  renderLoopTrackList();
-  rebuildStepGridLoopRows();
-  status.textContent = `Added loop track "${name}"`;
-}
-
-function removeLoopTrack(id) {
-  const idx = loopTracks.findIndex((t) => t.id === id);
-  if (idx < 0) return;
-  const track = loopTracks[idx];
-  URL.revokeObjectURL(track.audioUrl);
-  loopTracks.splice(idx, 1);
-  if (selectedLoopRegion?.trackId === id) {
-    selectedLoopRegion = null;
-    syncLoopRegionPanel();
-  }
-  renderLoopTrackList();
-  rebuildStepGridLoopRows();
-  status.textContent = `Removed loop track "${track.name}"`;
-}
-
-function selectLoopRegionInPanel(trackId, regionIdx) {
-  selectedLoopRegion = { trackId, regionIdx };
-  syncLoopRegionPanel();
-}
-
-function syncLoopRegionPanel() {
-  const panel = $("#loop-region-panel");
-  if (!panel) return;
-  if (!selectedLoopRegion) {
-    panel.hidden = true;
-    return;
-  }
-  const track = loopTrackById(selectedLoopRegion.trackId);
-  const region = track?.regions[selectedLoopRegion.regionIdx];
-  if (!region) { panel.hidden = true; return; }
-  panel.hidden = false;
-  const startEl = /** @type {HTMLInputElement} */ ($("#loop-region-start"));
-  const lenEl   = /** @type {HTMLInputElement} */ ($("#loop-region-len"));
-  const chopsEl = /** @type {HTMLInputElement} */ ($("#loop-region-chops"));
-  const gainEl  = /** @type {HTMLInputElement} */ ($("#loop-region-gain"));
-  const gainOut = /** @type {HTMLElement}      */ ($("#loop-region-gain-value"));
-  if (startEl) startEl.value = String(region.bar);
-  if (lenEl)   lenEl.value   = String(region.len);
-  if (chopsEl) chopsEl.value = String(region.chops);
-  if (gainEl)  gainEl.value  = String(region.gain);
-  if (gainOut) gainOut.textContent = region.gain.toFixed(2);
-}
-
-function updateSelectedLoopRegion() {
-  if (!selectedLoopRegion) return;
-  const track = loopTrackById(selectedLoopRegion.trackId);
-  const region = track?.regions[selectedLoopRegion.regionIdx];
-  if (!region) return;
-  const startEl = /** @type {HTMLInputElement} */ ($("#loop-region-start"));
-  const lenEl   = /** @type {HTMLInputElement} */ ($("#loop-region-len"));
-  const chopsEl = /** @type {HTMLInputElement} */ ($("#loop-region-chops"));
-  const gainEl  = /** @type {HTMLInputElement} */ ($("#loop-region-gain"));
-  region.bar   = Math.max(0, Math.round(Number(startEl?.value) || 0));
-  region.len   = Math.max(1, Math.round(Number(lenEl?.value)   || 1));
-  region.chops = Math.max(1, Math.min(32, Math.round(Number(chopsEl?.value) || 4)));
-  region.gain  = Math.max(0, Math.min(2, Number(gainEl?.value) || 1));
-  renderLoopLane(selectedLoopRegion.trackId);
-}
-
-function deleteSelectedLoopRegion() {
-  if (!selectedLoopRegion) return;
-  const track = loopTrackById(selectedLoopRegion.trackId);
-  if (!track) return;
-  track.regions.splice(selectedLoopRegion.regionIdx, 1);
-  selectedLoopRegion = null;
-  syncLoopRegionPanel();
-  renderLoopLane(track.id);
-}
-
-// ── Rendering ────────────────────────────────────────────────
-
-function renderLoopTrackList() {
-  const list = $("#loop-track-list");
-  if (!list) return;
-  list.innerHTML = "";
-  loopTracks.forEach((track) => {
-    const item = document.createElement("div");
-    item.className = `loop-track-item${track.selected ? " is-selected" : ""}`;
-    item.dataset.loopTrackId = track.id;
-
-    const name = document.createElement("span");
-    name.className = "loop-track-item-name";
-    name.textContent = `${track.name} (${track.barsInFile} bars)`;
-
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "loop-track-item-remove";
-    removeBtn.textContent = "×";
-    removeBtn.title = `Remove "${track.name}"`;
-    removeBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      removeLoopTrack(track.id);
-    });
-
-    item.append(name, removeBtn);
-    item.addEventListener("click", () => {
-      loopTracks.forEach((t) => { t.selected = false; });
-      track.selected = true;
-      renderLoopTrackList();
-    });
-    list.appendChild(item);
-  });
-}
-
-/** Pixel width of one bar in the step grid (based on 16 steps × cell width) */
-function barPixelWidth() {
-  const firstBtn = stepGrid.querySelector(".step-button");
-  if (!firstBtn) return 32 * 16; // fallback
-  return firstBtn.getBoundingClientRect().width * 16;
-}
-
-function renderLoopLane(trackId) {
-  const lane = stepGrid.querySelector(`.loop-lane[data-loop-track="${trackId}"]`);
-  if (!lane) return;
-  const track = loopTrackById(trackId);
-  if (!track) return;
-
-  lane.innerHTML = "";
-
-  const laneWidth = lane.clientWidth || lane.offsetWidth || 1;
-  const totalBars = Math.max(1, bars().length);
-  const pxPerBar = laneWidth / totalBars;
-
-  track.regions.forEach((region, regionIdx) => {
-    const isSelected = selectedLoopRegion?.trackId === trackId && selectedLoopRegion?.regionIdx === regionIdx;
-
-    const el = document.createElement("div");
-    el.className = `loop-region${isSelected ? " is-selected" : ""}`;
-    el.style.left  = `${(region.bar / totalBars) * 100}%`;
-    el.style.width = `${(region.len / totalBars) * 100}%`;
-
-    const label = document.createElement("span");
-    label.className = "loop-region-label";
-    label.textContent = `${track.name} ×${region.chops}`;
-    el.appendChild(label);
-
-    // Chop lines
-    for (let c = 1; c < region.chops; c += 1) {
-      const line = document.createElement("div");
-      line.className = "loop-chop-line";
-      line.style.left = `${(c / region.chops) * 100}%`;
-      el.appendChild(line);
-    }
-
-    // Resize handle
-    const resizeHandle = document.createElement("div");
-    resizeHandle.className = "loop-region-resize";
-    resizeHandle.title = "Drag to resize";
-    el.appendChild(resizeHandle);
-
-    // Click to select
-    el.addEventListener("mousedown", (e) => {
-      if (e.target === resizeHandle) return; // handled separately
-      e.stopPropagation();
-      selectLoopRegionInPanel(trackId, regionIdx);
-      renderLoopLane(trackId);
-    });
-
-    // Drag to move
-    el.addEventListener("mousedown", (e) => {
-      if (e.target === resizeHandle) return;
-      const startX = e.clientX;
-      const startBar = region.bar;
-      const onMove = (moveEvent) => {
-        const dx = moveEvent.clientX - startX;
-        const barDelta = Math.round(dx / Math.max(1, pxPerBar));
-        region.bar = Math.max(0, Math.min(totalBars - region.len, startBar + barDelta));
-        renderLoopLane(trackId);
-        syncLoopRegionPanel();
-      };
-      const onUp = () => {
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-      };
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    });
-
-    // Drag to resize
-    resizeHandle.addEventListener("mousedown", (e) => {
-      e.stopPropagation();
-      const startX = e.clientX;
-      const startLen = region.len;
-      const onMove = (moveEvent) => {
-        const dx = moveEvent.clientX - startX;
-        const barDelta = Math.round(dx / Math.max(1, pxPerBar));
-        region.len = Math.max(1, Math.min(totalBars - region.bar, startLen + barDelta));
-        renderLoopLane(trackId);
-        syncLoopRegionPanel();
-      };
-      const onUp = () => {
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-      };
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    });
-
-    lane.appendChild(el);
-  });
-}
-
-function rebuildStepGridLoopRows() {
-  // Remove existing loop rows
-  stepGrid.querySelectorAll(".loop-lane-row-label, .loop-lane").forEach((el) => el.remove());
-
-  loopTracks.forEach((track) => {
-    const label = document.createElement("div");
-    label.className = "track-label loop-lane-row-label";
-    label.textContent = track.name;
-    label.dataset.loopTrackId = track.id;
-
-    const lane = document.createElement("div");
-    lane.className = "loop-lane";
-    lane.dataset.loopTrack = track.id;
-    lane.title = `Click to add a region to "${track.name}"`;
-
-    // Click empty space → create region
-    lane.addEventListener("click", (e) => {
-      if ((e.target instanceof Element) && e.target.closest(".loop-region")) return;
-      const rect = lane.getBoundingClientRect();
-      const totalBars = Math.max(1, bars().length);
-      const clickBar = Math.floor(((e.clientX - rect.left) / rect.width) * totalBars);
-      const newRegion = {
-        bar: Math.max(0, Math.min(totalBars - 1, clickBar)),
-        len: Math.min(track.barsInFile, totalBars),
-        gain: 1,
-        chops: 4
-      };
-      track.regions.push(newRegion);
-      const newIdx = track.regions.length - 1;
-      selectLoopRegionInPanel(track.id, newIdx);
-      renderLoopLane(track.id);
-    });
-
-    stepGrid.appendChild(label);
-    stepGrid.appendChild(lane);
-
-    renderLoopLane(track.id);
-  });
-}
+// The browse/audition/load flow lives in a self-contained controller; the
+// editor only wires it to its DOM elements and supplies the few hooks it needs
+// (status line, current selection, and the "load into track" action).
+const sampleBrowser = createSampleBrowser({
+  rootSelect: sampleRootSelect,
+  breadcrumb: sampleBreadcrumb,
+  list: sampleBrowserList,
+  offline: runningFromFile,
+  setStatus: (text) => { status.textContent = text; },
+  getSelectedHit: () => state.selected?.hit ?? null,
+  assignSample: (hit, sample) => assignSampleToTrack(hit, sample)
+});
 
 buildLoopTabs();
 buildBarTabs();
 buildStepGrid();
 wireEvents();
+applyZoom(8);
+applySegments(2);
 refreshLoopBarButton();
+
+// ── Bottom-panel resize handle ──────────────────────────────────────────────
+{
+  const handle = $("#selected-step-resize-handle");
+  const panel = $("#selected-step-panel");
+  if (handle && panel) {
+    let startY = 0;
+    let startHeight = 0;
+    handle.addEventListener("mousedown", (e) => {
+      startY = e.clientY;
+      startHeight = panel.getBoundingClientRect().height;
+      handle.classList.add("is-dragging");
+      const onMove = (me) => {
+        const delta = startY - me.clientY;
+        panel.style.height = `${Math.max(60, startHeight + delta)}px`;
+      };
+      const onUp = () => {
+        handle.classList.remove("is-dragging");
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+  }
+}
+// Register every inspector slider/number input so setPairedControl never
+// clobbers a value while the user is actively dragging or typing.
+selectedControls.forEach(registerInteractiveInput);
+
 syncSliders();
 syncJson();
 renderTrackExplorer();
 renderTrackInspector();
-void loadSampleRoots();
+void sampleBrowser.loadRoots();
 void loadSavedRhythmConfig();
