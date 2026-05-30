@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rhythm API Demo</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; background: #14131a; color: #eee; margin: 0; padding: 2rem; }
+      h1 { font-size: 1.2rem; }
+      button { font: inherit; padding: 0.5rem 1rem; margin: 0.25rem; border: 1px solid #4a4760;
+               background: #232133; color: #eee; border-radius: 6px; cursor: pointer; }
+      button:hover { background: #2e2c42; }
+      .row { margin: 1rem 0; }
+      label { display: inline-flex; align-items: center; gap: 0.5rem; margin-right: 1rem; }
+      #log { margin-top: 1rem; padding: 0.75rem; background: #0d0c12; border-radius: 6px;
+             height: 220px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; }
+      .meter { display: inline-block; width: 220px; height: 10px; background: #2a2840; border-radius: 5px; overflow: hidden; vertical-align: middle; }
+      .meter > span { display: block; height: 100%; background: linear-gradient(90deg,#5ad,#fa6); width: 0; }
+    </style>
+  </head>
+  <body>
+    <h1>Kamorebi Cats — Rhythm API smoke test</h1>
+    <p>Demonstrates <code>createRhythmAPI()</code>, timeline events, intensity, and the layer mixer.</p>
+
+    <div class="row">
+      <button id="start">▶ Start</button>
+      <button id="stop">■ Stop</button>
+      <button id="dub">Dub Throw</button>
+      <button id="boss">Boss Landed</button>
+      <button id="hit">Hit Impact</button>
+    </div>
+
+    <div class="row">
+      <label>Danger <input id="danger" type="range" min="0" max="1" step="0.01" value="0" /></label>
+      <label>Progress <input id="progress" type="range" min="0" max="1" step="0.01" value="0" /></label>
+      <label><input id="moving" type="checkbox" /> Moving</label>
+    </div>
+
+    <div class="row">
+      Intensity: <span class="meter"><span id="intensity-bar"></span></span>
+      &nbsp; BPM: <strong id="bpm">–</strong>
+      &nbsp; Bar: <strong id="bar">–</strong>
+    </div>
+
+    <div id="log"></div>
+
+    <script type="module">
+      import { createRhythmAPI } from "./src/audio/rhythm-api.js";
+
+      const music = createRhythmAPI({ volume: 0.6 });
+      const logEl = document.getElementById("log");
+      const log = (m) => {
+        logEl.textContent = `${new Date().toLocaleTimeString()}  ${m}\n` + logEl.textContent;
+      };
+
+      music.on("play",    () => log("▶ play"));
+      music.on("stop",    () => log("■ stop"));
+      music.on("section", ({ from, to }) => log(`section ${from} → ${to}`));
+      music.on("phrase",  ({ phraseBar }) => log(`phrase start (bar ${phraseBar})`));
+      music.on("bar", ({ phraseBar, bpm }) => {
+        document.getElementById("bar").textContent = phraseBar;
+        document.getElementById("bpm").textContent = Math.round(bpm);
+      });
+
+      document.getElementById("start").onclick = () => music.start();
+      document.getElementById("stop").onclick  = () => music.stop();
+      document.getElementById("dub").onclick   = () => music.triggerDubThrow();
+      document.getElementById("boss").onclick  = () => music.triggerBossLanded();
+      document.getElementById("hit").onclick   = () => music.triggerHitImpact();
+
+      const danger = document.getElementById("danger");
+      const progress = document.getElementById("progress");
+      const moving = document.getElementById("moving");
+      const intensityBar = document.getElementById("intensity-bar");
+
+      function frame() {
+        music.update({
+          moving: moving.checked,
+          danger: Number(danger.value),
+          progress: Number(progress.value)
+        });
+        const { intensity } = music.getState();
+        intensityBar.style.width = `${Math.round(intensity * 100)}%`;
+        requestAnimationFrame(frame);
+      }
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>

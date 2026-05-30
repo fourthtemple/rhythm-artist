@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rhythm Artist</title>
+    <link rel="stylesheet" href="./src/rhythm-sequence-editor.css" />
+  </head>
+  <body>
+    <main class="sequencer-app">
+      <aside id="server-warning" class="server-warning" hidden>
+        <strong>Audio needs the local server.</strong>
+        <span>Run <code>npm run dev</code> and open from localhost.</span>
+        <a href="http://127.0.0.1:3000/">Open server version</a>
+      </aside>
+
+      <header class="topbar">
+        <div>
+          <p>Rhythm Artist</p>
+          <h1>Beat Sequencer</h1>
+        </div>
+        <nav>
+          <a href="./rhythm-api-demo.html">API Demo</a>
+        </nav>
+      </header>
+
+      <section class="transport" aria-label="Transport">
+        <button id="play-toggle" type="button">Play</button>
+        <button id="restart" type="button">Restart</button>
+        <button id="play-song" type="button">Full Song</button>
+        <button id="loop-bar" type="button">Loop Bar</button>
+        <button id="loop-two-bars" type="button">Loop 2 Bars</button>
+        <button id="space-throw" type="button">Dub Throw</button>
+        <button id="duck-sound" type="button">Duck Sound</button>
+        <button id="hit-sound" type="button">Hit Sound</button>
+        <label class="transport-bpm-label">
+          <span>BPM</span>
+          <input id="transport-bpm" type="range" min="40" max="220" step="1" value="118" />
+          <output id="transport-bpm-value">118</output>
+          <input id="transport-bpm-number" class="transport-number" type="number" min="40" max="220" step="1" value="118" />
+        </label>
+        <label>
+          <span>Intensity</span>
+          <input id="intensity" type="range" min="0" max="1" step="0.01" value="0.45" />
+          <output id="intensity-value">0.45</output>
+        </label>
+        <p id="status">Ready</p>
+      </section>
+
+      <section class="workspace">
+        <section class="sequencer-panel" aria-label="Step sequencer">
+          <div class="loop-toolbar" aria-label="32-bar loop controls">
+            <div class="loop-tabs" role="tablist" aria-label="Song loops"></div>
+            <label>
+              <span>Loops</span>
+              <input id="loop-count" type="number" min="1" max="8" step="1" value="1" />
+            </label>
+            <button id="duplicate-loop" type="button">Duplicate Loop</button>
+            <button id="delete-loop" type="button">Delete Loop</button>
+            <div class="loop-actions" aria-label="Two-bar copy actions">
+              <button id="copy-two-bars" type="button">Copy 2 Bars</button>
+              <button id="paste-two-bars" type="button" disabled>Paste 2 Bars</button>
+              <button id="fill-rest-two-bars" type="button">Fill Rest</button>
+            </div>
+            <div class="loop-actions track-actions" aria-label="Selected track copy actions">
+              <span>Track</span>
+              <button id="copy-track-two-bars" type="button">Copy 2 Bars</button>
+              <button id="paste-track-two-bars" type="button" disabled>Paste 2 Bars</button>
+              <button id="fill-rest-track" type="button" disabled>Fill Rest</button>
+            </div>
+            <div class="zoom-controls" aria-label="Grid zoom">
+              <span>Zoom</span>
+              <button type="button" class="zoom-btn is-active" data-zoom="1">1×</button>
+              <button type="button" class="zoom-btn" data-zoom="2">2×</button>
+              <button type="button" class="zoom-btn" data-zoom="4">4×</button>
+              <button type="button" class="zoom-btn" data-zoom="8">8×</button>
+            </div>
+          </div>
+          <div class="bar-tabs" role="tablist" aria-label="Pattern bars"></div>
+          <div id="step-grid" class="step-grid"></div>
+          <section class="selected-step">
+            <div>
+              <span class="panel-label">Selected</span>
+              <strong id="selected-label">none</strong>
+            </div>
+            <div class="selected-controls">
+              <label>
+                <span>Volume</span>
+                <input id="selected-velocity" type="range" min="0" max="0.9" step="0.01" value="0" disabled />
+                <output id="selected-velocity-value">0.00</output>
+                <input id="selected-velocity-number" class="selected-number" type="number" min="0" max="0.9" step="0.01" value="0" disabled />
+              </label>
+              <label class="pitch-control">
+                <span>Pitch</span>
+                <input id="selected-pitch" type="range" min="-24" max="48" step="1" value="0" disabled />
+                <output id="selected-pitch-value">0</output>
+                <input id="selected-pitch-number" class="selected-number" type="number" min="-24" max="48" step="1" value="0" disabled />
+                <div id="selected-piano" class="selected-piano" aria-label="Selected note piano"></div>
+              </label>
+              <label>
+                <span>Offset</span>
+                <input id="selected-offset" type="range" min="-120" max="120" step="1" value="0" disabled />
+                <output id="selected-offset-value">0ms</output>
+                <input id="selected-offset-number" class="selected-number" type="number" min="-120" max="120" step="1" value="0" disabled />
+              </label>
+              <label>
+                <span>Attack</span>
+                <input id="selected-attack" type="range" min="0" max="220" step="1" value="18" disabled />
+                <output id="selected-attack-value">18ms</output>
+                <input id="selected-attack-number" class="selected-number" type="number" min="0" max="220" step="1" value="18" disabled />
+              </label>
+              <label>
+                <span>Delay</span>
+                <input id="selected-delay" type="range" min="0" max="520" step="1" value="0" disabled />
+                <output id="selected-delay-value">0ms</output>
+                <input id="selected-delay-number" class="selected-number" type="number" min="0" max="520" step="1" value="0" disabled />
+              </label>
+              <label>
+                <span>LFO</span>
+                <input id="selected-wobble" type="range" min="0" max="4" step="0.01" value="0" disabled />
+                <output id="selected-wobble-value">0.00</output>
+                <input id="selected-wobble-number" class="selected-number" type="number" min="0" max="4" step="0.01" value="0" disabled />
+              </label>
+              <label>
+                <span>Dub Echo</span>
+                <input id="selected-dub-echo" type="range" min="0" max="1" step="0.01" value="0" disabled />
+                <output id="selected-dub-echo-value">0.00</output>
+                <input id="selected-dub-echo-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
+              </label>
+              <label>
+                <span>Note Delay</span>
+                <input id="selected-note-delay-send" type="range" min="0" max="1" step="0.01" value="0" disabled />
+                <output id="selected-note-delay-send-value">0.00</output>
+                <input id="selected-note-delay-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
+              </label>
+              <label>
+                <span>Note Verb</span>
+                <input id="selected-note-reverb-send" type="range" min="0" max="1" step="0.01" value="0" disabled />
+                <output id="selected-note-reverb-send-value">0.00</output>
+                <input id="selected-note-reverb-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
+              </label>
+              <label>
+                <span>Track Delay</span>
+                <input id="selected-bus-send" type="range" min="0" max="1" step="0.01" value="0" disabled />
+                <output id="selected-bus-send-value">0.00</output>
+                <input id="selected-bus-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
+              </label>
+              <label>
+                <span>Track Verb</span>
+                <input id="selected-reverb-send" type="range" min="0" max="1" step="0.01" value="0" disabled />
+                <output id="selected-reverb-send-value">0.00</output>
+                <input id="selected-reverb-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
+              </label>
+            </div>
+            <div class="selected-actions">
+              <button id="clear-selected" type="button">Clear</button>
+            </div>
+          </section>
+        </section>
+
+        <aside class="control-panel" aria-label="Rhythm controls">
+          <section>
+            <span class="panel-label">Groove</span>              <label>
+                <span>BPM</span>
+                <input data-config="patterns.jazz.bpm" type="range" min="40" max="220" step="1" />
+                <output></output>
+              </label>
+            <label>
+              <span>Swing</span>
+              <input data-config="patterns.jazz.swing" type="range" min="0" max="0.42" step="0.01" />
+              <output></output>
+            </label>
+          </section>
+
+          <section>
+            <span class="panel-label">Mix</span>
+            <label>
+              <span>Drum Bus</span>
+              <input data-config="drumBusGain" type="range" min="0" max="1.2" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>Drum Cap</span>
+              <input data-config="drumGainCap" type="range" min="0.1" max="1" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>Drum Lift</span>
+              <input data-config="drumLift" type="range" min="0.2" max="1.2" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>Synths</span>
+              <input data-config="synthLevel" type="range" min="0" max="3" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>Bass</span>
+              <input data-config="bassLevel" type="range" min="0" max="2.5" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>Bass Tone</span>
+              <input data-config="bassTone" type="range" min="0" max="1" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>808 Layer</span>
+              <input data-config="eightOhEightLevel" type="range" min="0" max="2" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>808 Tune</span>
+              <input data-config="eightOhEightTune" type="range" min="-12" max="12" step="1" />
+              <output></output>
+            </label>
+            <label>
+              <span>Auto LFO</span>
+              <input data-config="whaleAutoAmount" type="range" min="0" max="1" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>Duck LFO</span>
+              <input data-config="duckWhaleAmount" type="range" min="0" max="1.5" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>Hit Impact</span>
+              <input data-config="hitImpactAmount" type="range" min="0" max="1.5" step="0.01" />
+              <output></output>
+            </label>
+          </section>
+
+          <section>
+            <span class="panel-label">Generated Parts</span>
+            <label>
+              <span>Pluck Offset</span>
+              <input data-config="generatedPluckOffsetMs" type="range" min="-120" max="120" step="1" />
+              <output></output>
+            </label>
+            <label>
+              <span>Funk Offset</span>
+              <input data-config="generatedFunkOffsetMs" type="range" min="-120" max="120" step="1" />
+              <output></output>
+            </label>
+            <label>
+              <span>Pad Offset</span>
+              <input data-config="generatedPadOffsetMs" type="range" min="-240" max="240" step="1" />
+              <output></output>
+            </label>
+            <label>
+              <span>LFO Offset</span>
+              <input data-config="generatedWhaleOffsetMs" type="range" min="-240" max="240" step="1" />
+              <output></output>
+            </label>
+          </section>
+
+          <section>
+            <span class="panel-label">Auto Echo</span>
+            <label>
+              <span>Enabled</span>
+              <input data-config="autoEchoEnabled" type="range" min="0" max="1" step="1" />
+              <output></output>
+            </label>
+            <label>
+              <span>Amount</span>
+              <input data-config="autoEchoAmount" type="range" min="0" max="1" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>Downbeat</span>
+              <input data-config="downbeatEchoAmount" type="range" min="0" max="1" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>Accent</span>
+              <input data-config="accentEchoAmount" type="range" min="0" max="1" step="0.01" />
+              <output></output>
+            </label>
+          </section>
+
+          <section>
+            <span class="panel-label">Solo</span>
+            <div class="solo-strip">
+              <button type="button" data-solo-track="bass">Bass</button>
+              <button type="button" data-solo-track="kick">Kick</button>
+              <button type="button" data-solo-track="snare">Snare</button>
+              <button type="button" data-solo-track="hat">Hat</button>
+              <button type="button" data-solo-track="rim">Rim</button>
+              <button type="button" data-solo-track="pluck">Pluck</button>
+              <button type="button" data-solo-track="funk">Funk</button>
+              <button type="button" data-solo-track="pad">Pad</button>
+              <button type="button" data-solo-track="whale">LFO</button>
+              <button type="button" data-solo-track="echo">Echo</button>
+              <button type="button" data-solo-clear>All</button>
+            </div>
+          </section>
+
+          <section>
+            <span class="panel-label">Dub Space</span>
+            <label>
+              <span>FX Send</span>
+              <input data-config="fxSendBase" type="range" min="0" max="1" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>Feedback</span>
+              <input data-config="delayFeedbackBase" type="range" min="0" max="0.8" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>Echo Wet</span>
+              <input data-config="echoWetBase" type="range" min="0" max="1" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>Reverb Wet</span>
+              <input data-config="reverbWetBase" type="range" min="0" max="1" step="0.01" />
+              <output></output>
+            </label>
+            <label>
+              <span>Dub Throw</span>
+              <input data-config="dubThrowAmount" type="range" min="0" max="1.2" step="0.01" />
+              <output></output>
+            </label>
+          </section>
+
+          <section>
+            <span class="panel-label">Sound Finder</span>
+            <div class="sound-actions">
+              <button type="button" data-preview-sound="boss">Boss Landed</button>
+              <button type="button" data-preview-sound="wobble">Wobble</button>
+              <button type="button" data-preview-sound="echo">Echo Ping</button>
+              <button type="button" data-preview-sound="whale-down">Down Bend</button>
+              <button type="button" data-preview-sound="whale-up">Rise Bend</button>
+              <button type="button" data-preview-sound="space-drop">Space Drop</button>
+              <button type="button" data-preview-sound="space-pickup">Pickup</button>
+            </div>
+          </section>
+
+          <section>
+            <span class="panel-label">Files</span>
+            <div class="file-actions">
+              <button id="save-file" type="button">Save File</button>
+              <button id="load-file" type="button">Load File</button>
+              <button id="copy-json" type="button">Copy JSON</button>
+              <button id="reset-defaults" type="button">Reset</button>
+            </div>
+            <input id="load-input" type="file" accept=".json,application/json" hidden />
+          </section>
+
+          <!-- ── Loop Tracks ─────────────────────────────── -->
+          <section id="loop-tracks-section">
+            <div class="loop-tracks-header">
+              <span class="panel-label">Loop Tracks</span>
+              <button id="add-loop-track-btn" type="button" class="add-track-btn">+ Add Loop</button>
+            </div>
+            <div id="loop-track-list" class="loop-track-list"></div>
+          </section>
+
+          <!-- ── Loop Region Panel ──────────────────────── -->
+          <section id="loop-region-panel" class="loop-region-panel" hidden>
+            <span class="panel-label">Loop Region</span>
+            <div class="loop-region-controls">
+              <label>
+                <span>Start Bar</span>
+                <input id="loop-region-start" type="number" min="0" step="1" value="0" />
+              </label>
+              <label>
+                <span>Length (bars)</span>
+                <input id="loop-region-len" type="number" min="1" step="1" value="2" />
+              </label>
+              <label>
+                <span>Chops</span>
+                <input id="loop-region-chops" type="number" min="1" max="32" step="1" value="4" />
+              </label>
+              <label>
+                <span>Gain</span>
+                <input id="loop-region-gain" type="range" min="0" max="2" step="0.01" value="1" />
+                <output id="loop-region-gain-value">1.00</output>
+              </label>
+            </div>
+            <div class="loop-region-actions">
+              <button id="loop-region-delete" type="button" class="btn-danger">Delete Region</button>
+            </div>
+          </section>
+        </aside>
+      </section>
+
+      <section class="json-panel">
+        <span class="panel-label">Current JSON</span>
+        <textarea id="json-output" spellcheck="false"></textarea>
+      </section>
+    </main>
+    <script>
+      if (window.location.protocol === "file:") {
+        window.addEventListener("DOMContentLoaded", () => {
+          const warning = document.getElementById("server-warning");
+          if (warning) warning.hidden = false;
+        });
+      }
+    </script>
+
+    <!-- ── Add Loop Track Modal ──────────────────────────── -->
+    <dialog id="add-loop-dialog" class="add-track-dialog">
+      <form method="dialog" id="add-loop-form">
+        <h2>Add Loop Track</h2>
+        <label>
+          <span>Name</span>
+          <input id="loop-track-name" type="text" placeholder="e.g. Break Loop" required maxlength="32" />
+        </label>
+        <label>
+          <span>Audio File</span>
+          <input id="loop-track-file" type="file" accept=".wav,.mp3,.ogg,.flac" required />
+          <em class="add-track-hint">Drop a .wav / .mp3 audio loop here</em>
+        </label>
+        <label>
+          <span>Bars in file</span>
+          <input id="loop-track-bars" type="number" min="1" max="64" step="1" value="4" />
+          <em class="add-track-hint">How many bars the audio file represents</em>
+        </label>
+        <div class="add-track-dialog-actions">
+          <button type="button" id="add-loop-cancel">Cancel</button>
+          <button type="submit" id="add-loop-confirm">Add Loop</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="./src/rhythm-sequence-editor.js"></script>
+  </body>
+</html>
