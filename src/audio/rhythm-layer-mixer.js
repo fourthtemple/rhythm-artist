@@ -132,6 +132,9 @@ export class RhythmLayerMixer {
     }
     src.connect(layer.gainNode);
     src.onended = () => {
+      try {
+        src.disconnect();
+      } catch (_) { /* already disconnected */ }
       if (layer.sourceNode === src) {
         layer.playing = false;
         layer.sourceNode = null;

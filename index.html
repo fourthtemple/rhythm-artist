@@ -75,6 +75,9 @@
               <button type="button" class="zoom-btn" data-zoom="4">4×</button>
               <button type="button" class="zoom-btn" data-zoom="8">8×</button>
             </div>
+            <div class="track-toolbar-actions" aria-label="Track management">
+              <button id="add-track-btn" type="button" class="add-track-btn">+ Add Track</button>
+            </div>
           </div>
           <div class="bar-tabs" role="tablist" aria-label="Pattern bars"></div>
           <div id="step-grid" class="step-grid"></div>
@@ -150,6 +153,18 @@
                 <input id="selected-reverb-send" type="range" min="0" max="1" step="0.01" value="0" disabled />
                 <output id="selected-reverb-send-value">0.00</output>
                 <input id="selected-reverb-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
+              </label>
+              <label>
+                <span>Track Level</span>
+                <input id="selected-track-level" type="range" min="0" max="2" step="0.01" value="1" disabled />
+                <output id="selected-track-level-value">1.00</output>
+                <input id="selected-track-level-number" class="selected-number" type="number" min="0" max="2" step="0.01" value="1" disabled />
+              </label>
+              <label>
+                <span>Track Pan</span>
+                <input id="selected-track-pan" type="range" min="-1" max="1" step="0.01" value="0" disabled />
+                <output id="selected-track-pan-value">C</output>
+                <input id="selected-track-pan-number" class="selected-number" type="number" min="-1" max="1" step="0.01" value="0" disabled />
               </label>
             </div>
             <div class="selected-actions">
@@ -227,30 +242,6 @@
             <label>
               <span>Hit Impact</span>
               <input data-config="hitImpactAmount" type="range" min="0" max="1.5" step="0.01" />
-              <output></output>
-            </label>
-          </section>
-
-          <section>
-            <span class="panel-label">Generated Parts</span>
-            <label>
-              <span>Pluck Offset</span>
-              <input data-config="generatedPluckOffsetMs" type="range" min="-120" max="120" step="1" />
-              <output></output>
-            </label>
-            <label>
-              <span>Funk Offset</span>
-              <input data-config="generatedFunkOffsetMs" type="range" min="-120" max="120" step="1" />
-              <output></output>
-            </label>
-            <label>
-              <span>Pad Offset</span>
-              <input data-config="generatedPadOffsetMs" type="range" min="-240" max="240" step="1" />
-              <output></output>
-            </label>
-            <label>
-              <span>LFO Offset</span>
-              <input data-config="generatedWhaleOffsetMs" type="range" min="-240" max="240" step="1" />
               <output></output>
             </label>
           </section>
@@ -422,6 +413,18 @@
         <div class="add-track-dialog-actions">
           <button type="button" id="add-loop-cancel">Cancel</button>
           <button type="submit" id="add-loop-confirm">Add Loop</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- ── Add Track Modal (registry-driven) ─────────────── -->
+    <dialog id="add-track-dialog" class="add-track-dialog">
+      <form method="dialog" id="add-track-form">
+        <h2>Add Track</h2>
+        <p class="add-track-hint">Pick instruments to add to the grid. Grouped by kit.</p>
+        <div id="add-track-groups" class="add-track-groups"></div>
+        <div class="add-track-dialog-actions">
+          <button type="button" id="add-track-cancel">Close</button>
         </div>
       </form>
     </dialog>

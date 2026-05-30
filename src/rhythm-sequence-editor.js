@@ -10,28 +10,33 @@ import {
   SYNTH_SCALE,
   sequencedBassPitchForStep
 } from "./audio/rhythm-config.js";
+import {
+  TRACK_REGISTRY,
+  TRACK_GROUPS,
+  TRACK_BY_ID,
+  getTrackDef,
+  DEFAULT_GRID_TRACK_IDS,
+  PATTERN_TRACK_IDS,
+  TRACK_LABELS,
+  TRACK_DEFAULT_VELOCITY,
+  tracksByGroup
+} from "./audio/rhythm-track-registry.js";
 import { RhythmEngine } from "./audio/rhythm-engine.js";
 
-const GRID_ROWS = [
-  { id: "bass", label: "Bass", type: "pattern" },
-  { id: "kick", label: "Kick", type: "pattern" },
-  { id: "snare", label: "Snare", type: "pattern" },
-  { id: "hat", label: "Hat", type: "pattern" },
-  { id: "rim", label: "Rim", type: "pattern" },
-  { id: "pluck", label: "Pluck", type: "generated" },
-  { id: "funk", label: "Funk", type: "generated" },
-  { id: "pad", label: "Pad", type: "generated" },
-  { id: "whale", label: "LFO", type: "generated" },
-  { id: "eightOhEightKick", label: "808 Kick", type: "generated" },
-  { id: "eightOhEightSnare", label: "808 Snare", type: "generated" },
-  { id: "eightOhEightHat", label: "808 Hat", type: "generated" },
-  { id: "eightOhEightClick", label: "808 Click", type: "generated" },
-  { id: "echo", label: "Echo", type: "generated" },
-  { id: "space", label: "Space", type: "generated" }
-];
-const PATTERN_ROW_IDS = new Set(GRID_ROWS.filter((row) => row.type === "pattern").map((row) => row.id));
-const GENERATED_ROW_IDS = GRID_ROWS.filter((row) => row.type === "generated").map((row) => row.id);
-const ROW_LABELS = Object.fromEntries(GRID_ROWS.map((row) => [row.id, row.label]));
+// The grid is now driven by `state.gridTrackIds` (a list of registry ids).
+// These helpers turn that id list into the row descriptors the renderer wants.
+const trackRowDescriptor = (id) => {
+  const def = getTrackDef(id);
+  return {
+    id,
+    label: def?.label || id,
+    type: def?.kind === "pattern" ? "pattern" : "generated"
+  };
+};
+const gridRows = () => state.gridTrackIds.map(trackRowDescriptor);
+const PATTERN_ROW_IDS = new Set(PATTERN_TRACK_IDS);
+const ROW_LABELS = TRACK_LABELS;
+const DEFAULT_VELOCITY = TRACK_DEFAULT_VELOCITY;
 
 const LOOP_BAR_COUNT = PHRASE_BARS;
 const MAX_LOOP_COUNT = Math.floor(MAX_SEQUENCE_BARS / LOOP_BAR_COUNT);
@@ -40,23 +45,6 @@ const PITCH_SLIDER_MAX = 48;
 const A1_MIDI_NOTE = 33;
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const BLACK_NOTE_PITCH_CLASSES = new Set([1, 3, 6, 8, 10]);
-const DEFAULT_VELOCITY = {
-  bass: 0.68,
-  kick: 0.46,
-  snare: 0.34,
-  hat: 0.16,
-  rim: 0.12,
-  pluck: 0.18,
-  funk: 0.22,
-  pad: 0.2,
-  whale: 0.24,
-  eightOhEightKick: 0.32,
-  eightOhEightSnare: 0.24,
-  eightOhEightHat: 0.16,
-  eightOhEightClick: 0.16,
-  echo: 0.3,
-  space: 0.4
-};
 const SAVED_RHYTHM_URL = "./assets/game/rhythm-sequence.json";
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const $ = (selector) => document.querySelector(selector);
@@ -81,7 +69,9 @@ const state = {
   trackClipboard: null,
   playheadStep: 0,
   uiTimer: null,
-  zoomLevel: 1
+  zoomLevel: 1,
+  // Registry-driven list of track ids shown in the grid (order = render order).
+  gridTrackIds: [...DEFAULT_GRID_TRACK_IDS]
 };
 
 const stepGrid = $("#step-grid");
@@ -125,6 +115,12 @@ const selectedBusSendNumber = $("#selected-bus-send-number");
 const selectedReverbSend = $("#selected-reverb-send");
 const selectedReverbSendValue = $("#selected-reverb-send-value");
 const selectedReverbSendNumber = $("#selected-reverb-send-number");
+const selectedTrackLevel = $("#selected-track-level");
+const selectedTrackLevelValue = $("#selected-track-level-value");
+const selectedTrackLevelNumber = $("#selected-track-level-number");
+const selectedTrackPan = $("#selected-track-pan");
+const selectedTrackPanValue = $("#selected-track-pan-value");
+const selectedTrackPanNumber = $("#selected-track-pan-number");
 const runningFromFile = window.location.protocol === "file:";
 const selectedControls = [
   selectedVelocity,
@@ -148,7 +144,11 @@ const selectedControls = [
   selectedNoteDelaySendNumber,
   selectedNoteReverbSendNumber,
   selectedBusSendNumber,
-  selectedReverbSendNumber
+  selectedReverbSendNumber,
+  selectedTrackLevel,
+  selectedTrackLevelNumber,
+  selectedTrackPan,
+  selectedTrackPanNumber
 ];
 
 const selectedOptionControls = {
@@ -703,6 +703,22 @@ function selectedTrackReverbSend(hit = state.selected?.hit) {
   return clamp(state.config.trackReverbSends?.[hit], 0, 1, 0);
 }
 
+function selectedTrackLevelFor(hit = state.selected?.hit) {
+  return clamp(state.config.trackLevels?.[hit], 0, 2, 1);
+}
+
+function selectedTrackPanFor(hit = state.selected?.hit) {
+  return clamp(state.config.trackPans?.[hit], -1, 1, 0);
+}
+
+/** Format a pan value (-1..1) as L/C/R with magnitude for the inspector. */
+function formatPan(value) {
+  const pan = clamp(value, -1, 1, 0);
+  if (Math.abs(pan) < 0.005) return "C";
+  const side = pan < 0 ? "L" : "R";
+  return `${side}${Math.round(Math.abs(pan) * 100)}`;
+}
+
 function renderSelectedPiano(displayedPitch = null, basePitch = null) {
   if (!selectedPiano) return;
   selectedPiano.innerHTML = "";
@@ -803,6 +819,10 @@ function syncSelectedBusSendDisplay() {
   setPairedControl(selectedBusSend, selectedBusSendNumber, selectedBusSendValue, send, (next) => next.toFixed(2));
   const reverbSend = selectedTrackReverbSend();
   setPairedControl(selectedReverbSend, selectedReverbSendNumber, selectedReverbSendValue, reverbSend, (next) => next.toFixed(2));
+  const level = selectedTrackLevelFor();
+  setPairedControl(selectedTrackLevel, selectedTrackLevelNumber, selectedTrackLevelValue, level, (next) => next.toFixed(2));
+  const pan = selectedTrackPanFor();
+  setPairedControl(selectedTrackPan, selectedTrackPanNumber, selectedTrackPanValue, pan, formatPan);
 }
 
 function syncSelectedPitchDisplay(barIndex = state.activeBar) {
@@ -1013,6 +1033,28 @@ function setSelectedReverbSendFromControl(value = selectedReverbSend.value) {
   applyConfig();
 }
 
+function setSelectedTrackLevelFromControl(value = selectedTrackLevel.value) {
+  if (!ensureSelectedFromDom()) return;
+  const level = clamp(value, 0, 2, 1);
+  state.config.trackLevels = {
+    ...(state.config.trackLevels || {}),
+    [state.selected.hit]: level
+  };
+  setPairedControl(selectedTrackLevel, selectedTrackLevelNumber, selectedTrackLevelValue, Number(level.toFixed(2)), (next) => next.toFixed(2));
+  applyConfig();
+}
+
+function setSelectedTrackPanFromControl(value = selectedTrackPan.value) {
+  if (!ensureSelectedFromDom()) return;
+  const pan = clamp(value, -1, 1, 0);
+  state.config.trackPans = {
+    ...(state.config.trackPans || {}),
+    [state.selected.hit]: pan
+  };
+  setPairedControl(selectedTrackPan, selectedTrackPanNumber, selectedTrackPanValue, Number(pan.toFixed(2)), formatPan);
+  applyConfig();
+}
+
 function buildStepGrid() {
   stepGrid.innerHTML = "";
   stepGrid.appendChild(Object.assign(document.createElement("div"), {
@@ -1025,7 +1067,7 @@ function buildStepGrid() {
     header.textContent = String(step + 1).padStart(2, "0");
     stepGrid.appendChild(header);
   }
-  GRID_ROWS.forEach(({ id: hit, label, type }) => {
+  gridRows().forEach(({ id: hit, label, type }) => {
     const rowLabel = document.createElement("div");
     rowLabel.className = `track-label ${type === "generated" ? "is-generated" : ""}`;
     rowLabel.dataset.hit = hit;
@@ -1055,6 +1097,19 @@ function buildStepGrid() {
       renderStepGrid();
     });
     rowLabel.append(rowText, soloButton);
+    // Removable (non-core) tracks get an inline "×" to drop them from the grid.
+    if (getTrackDef(hit)?.removable) {
+      const removeButton = document.createElement("button");
+      removeButton.type = "button";
+      removeButton.className = "track-remove-button";
+      removeButton.textContent = "×";
+      removeButton.title = `Remove ${label} from grid`;
+      removeButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        removeGridTrack(hit);
+      });
+      rowLabel.append(removeButton);
+    }
     stepGrid.appendChild(rowLabel);
     for (let step = 0; step < 16; step += 1) {
       const button = document.createElement("button");
@@ -1261,6 +1316,8 @@ function resetSelectedPanel() {
   setPairedControl(selectedNoteReverbSend, selectedNoteReverbSendNumber, selectedNoteReverbSendValue, 0, (next) => next.toFixed(2));
   setPairedControl(selectedBusSend, selectedBusSendNumber, selectedBusSendValue, 0, (next) => next.toFixed(2));
   setPairedControl(selectedReverbSend, selectedReverbSendNumber, selectedReverbSendValue, 0, (next) => next.toFixed(2));
+  setPairedControl(selectedTrackLevel, selectedTrackLevelNumber, selectedTrackLevelValue, 1, (next) => next.toFixed(2));
+  setPairedControl(selectedTrackPan, selectedTrackPanNumber, selectedTrackPanValue, 0, formatPan);
   updateTrackClipboardButtons();
 }
 
@@ -1570,6 +1627,7 @@ async function loadConfigFile(file) {
   state.activeLoopIndex = 0;
   state.twoBarClipboard = null;
   state.trackClipboard = null;
+  reconcileGridTracks();
   resetSelectedPanel();
   applyConfig();
   buildLoopTabs();
@@ -1590,6 +1648,7 @@ async function loadSavedRhythmConfig() {
     state.activeLoopIndex = 0;
     state.twoBarClipboard = null;
     state.trackClipboard = null;
+    reconcileGridTracks();
     resetSelectedPanel();
     applyConfig();
     buildLoopTabs();
@@ -1704,6 +1763,10 @@ function wireEvents() {
   wireNumberControl(selectedBusSendNumber, setSelectedBusSendFromControl);
   selectedReverbSend.addEventListener("input", () => setSelectedReverbSendFromControl());
   wireNumberControl(selectedReverbSendNumber, setSelectedReverbSendFromControl);
+  selectedTrackLevel.addEventListener("input", () => setSelectedTrackLevelFromControl());
+  wireNumberControl(selectedTrackLevelNumber, setSelectedTrackLevelFromControl);
+  selectedTrackPan.addEventListener("input", () => setSelectedTrackPanFromControl());
+  wireNumberControl(selectedTrackPanNumber, setSelectedTrackPanFromControl);
   $("#clear-selected").addEventListener("click", clearSelection);
   $("#save-file").addEventListener("click", downloadConfig);
   $("#copy-json").addEventListener("click", async () => {
@@ -1736,6 +1799,14 @@ function wireEvents() {
   $("#add-loop-track-btn")?.addEventListener("click", () => {
     const dialog = /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"));
     if (dialog) dialog.showModal();
+  });
+  // ── Add Track (registry) UI ────────────────────────────────
+  $("#add-track-btn")?.addEventListener("click", () => {
+    renderAddTrackDialog();
+    /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.showModal();
+  });
+  $("#add-track-cancel")?.addEventListener("click", () => {
+    /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.close();
   });
   $("#add-loop-cancel")?.addEventListener("click", () => {
     /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"))?.close();
@@ -1773,6 +1844,8 @@ window.rhythmEditorSetSelectedVelocity = setSelectedVelocityFromControl;
 window.rhythmEditorSetSelectedOption = setSelectedOptionFromControl;
 window.rhythmEditorSetSelectedBusSend = setSelectedBusSendFromControl;
 window.rhythmEditorSetSelectedReverbSend = setSelectedReverbSendFromControl;
+window.rhythmEditorSetSelectedTrackLevel = setSelectedTrackLevelFromControl;
+window.rhythmEditorSetSelectedTrackPan = setSelectedTrackPanFromControl;
 
 // ══ Loop Track Data Model ══════════════════════════════════════
 
@@ -1785,6 +1858,101 @@ window.rhythmEditorSetSelectedReverbSend = setSelectedReverbSendFromControl;
 const loopTracks = [];
 /** @type {{ trackId: string, regionIdx: number } | null} */
 let selectedLoopRegion = null;
+
+// ── Registry-driven grid track management ───────────────────
+
+/** Ensure every bar carries an array for the given track id (for new tracks). */
+function ensureTrackColumn(trackId) {
+  bars().forEach((bar) => {
+    if (!Array.isArray(bar[trackId])) bar[trackId] = [];
+  });
+}
+
+/**
+ * After loading a project, show the default tracks plus any registry track that
+ * actually has notes in the loaded bars (so saved projects with extra tracks
+ * come back with those rows visible), in registry order.
+ */
+function reconcileGridTracks() {
+  const registryOrder = TRACK_REGISTRY.map((t) => t.id);
+  const wanted = new Set(DEFAULT_GRID_TRACK_IDS);
+  const loadedBars = state.config?.patterns?.jazz?.bars ?? [];
+  registryOrder.forEach((id) => {
+    const hasNotes = loadedBars.some((bar) => Array.isArray(bar?.[id]) && bar[id].length > 0);
+    if (hasNotes) wanted.add(id);
+  });
+  state.gridTrackIds = registryOrder.filter((id) => wanted.has(id));
+}
+
+/** Add a registry track to the grid (if not already present). */
+function addGridTrack(trackId) {
+  if (!getTrackDef(trackId)) return;
+  if (state.gridTrackIds.includes(trackId)) return;
+  // Insert in registry order so groups stay together visually.
+  const registryOrder = TRACK_REGISTRY.map((t) => t.id);
+  const next = [...state.gridTrackIds, trackId].sort(
+    (a, b) => registryOrder.indexOf(a) - registryOrder.indexOf(b)
+  );
+  state.gridTrackIds = next;
+  ensureTrackColumn(trackId);
+  renderStepGrid();
+  syncJson();
+  status.textContent = `Added ${TRACK_LABELS[trackId] || trackId} track`;
+}
+
+/** Remove a registry track from the grid (core tracks can't be removed). */
+function removeGridTrack(trackId) {
+  const def = getTrackDef(trackId);
+  if (!def || !def.removable) return;
+  state.gridTrackIds = state.gridTrackIds.filter((id) => id !== trackId);
+  if (state.selected?.hit === trackId) state.selected = null;
+  state.soloTracks.delete(trackId);
+  state.engine.setConfig(previewConfig());
+  renderStepGrid();
+  syncJson();
+  status.textContent = `Removed ${def.label} track`;
+}
+
+/** Build the grouped checkbox list inside the Add Track dialog. */
+function renderAddTrackDialog() {
+  const host = $("#add-track-groups");
+  if (!host) return;
+  host.innerHTML = "";
+  tracksByGroup().forEach(({ group, tracks }) => {
+    const section = document.createElement("div");
+    section.className = "add-track-group";
+    const heading = document.createElement("div");
+    heading.className = "add-track-group-heading";
+    heading.textContent = group.label;
+    if (group.accent) heading.style.setProperty("--group-accent", group.accent);
+    section.appendChild(heading);
+
+    const list = document.createElement("div");
+    list.className = "add-track-group-list";
+    tracks.forEach((track) => {
+      const onGrid = state.gridTrackIds.includes(track.id);
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = `add-track-chip ${onGrid ? "is-on-grid" : ""}`;
+      item.textContent = onGrid ? `✓ ${track.label}` : `+ ${track.label}`;
+      item.disabled = onGrid && !track.removable;
+      item.title = onGrid
+        ? (track.removable ? `Remove ${track.label}` : `${track.label} is always on`)
+        : `Add ${track.label}`;
+      item.addEventListener("click", () => {
+        if (state.gridTrackIds.includes(track.id)) {
+          if (track.removable) removeGridTrack(track.id);
+        } else {
+          addGridTrack(track.id);
+        }
+        renderAddTrackDialog();
+      });
+      list.appendChild(item);
+    });
+    section.appendChild(list);
+    host.appendChild(section);
+  });
+}
 
 function loopTrackById(id) {
   return loopTracks.find((t) => t.id === id) ?? null;

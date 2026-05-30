@@ -2,6 +2,8 @@ import {
   DEFAULT_RHYTHM_CONFIG,
   DEFAULT_TRACK_BUS_SENDS,
   DEFAULT_TRACK_REVERB_SENDS,
+  DEFAULT_TRACK_LEVELS,
+  DEFAULT_TRACK_PANS,
   DUCK_SOUND_REARM_SECONDS,
   EDITABLE_GENERATED_ROWS,
   PHRASE_BARS,
@@ -759,7 +761,48 @@ export class RhythmEngine {
     return clamp01(this.config.trackReverbSends?.[track] ?? DEFAULT_TRACK_REVERB_SENDS[track] ?? 0);
   }
 
-  connectSend(source, destination, amount) {
+  /** Per-track output level / gain trim (0..2, unity = 1). */
+  trackLevel(track) {
+    const value = this.config.trackLevels?.[track] ?? DEFAULT_TRACK_LEVELS[track] ?? 1;
+    return Math.max(0, Math.min(2, finiteNumber(value, 1)));
+  }
+
+  /** Per-track stereo pan (-1 left .. 1 right). */
+  trackPan(track) {
+    const value = this.config.trackPans?.[track] ?? DEFAULT_TRACK_PANS[track] ?? 0;
+    return Math.max(-1, Math.min(1, finiteNumber(value, 0)));
+  }
+
+  /**
+   * Connect a voice's final (dry) gain node to `destination`, inserting a
+   * per-track level trim and stereo panner when the track config asks for
+   * them. Any nodes created are pushed onto `collector` so the per-voice
+   * cleanup releases them. This is the single choke point that applies the
+   * per-track Level + Pan config from the inspector.
+   */
+  connectTrackOutput(source, track, destination, collector = null) {
+    if (!this.context || !source || !destination) return;
+    let node = source;
+    const level = this.trackLevel(track);
+    if (Math.abs(level - 1) > 0.001) {
+      const trim = this.context.createGain();
+      trim.gain.value = level;
+      node.connect(trim);
+      if (collector) collector.push(trim);
+      node = trim;
+    }
+    const pan = this.trackPan(track);
+    if (Math.abs(pan) > 0.001 && typeof this.context.createStereoPanner === "function") {
+      const panner = this.context.createStereoPanner();
+      panner.pan.value = pan;
+      node.connect(panner);
+      if (collector) collector.push(panner);
+      node = panner;
+    }
+    node.connect(destination);
+  }
+
+  connectSend(source, destination, amount, collector = null) {
     if (!this.context || !destination) return;
     const send = clamp01(amount);
     if (send <= 0.001) return;
@@ -771,12 +814,63 @@ export class RhythmEngine {
     sendGain.gain.value = send;
     source.connect(sendGain);
     sendGain.connect(destination);
+    if (collector) collector.push(sendGain);
   }
 
-  connectTrackBus(source, track, options = {}) {
+  connectTrackBus(source, track, options = {}, collector = null) {
     const dubEcho = clamp01(options.dubEcho);
-    this.connectSend(source, this.fxSend, this.trackBusSend(track) + clamp01(options.delaySend) + dubEcho * 0.74);
-    this.connectSend(source, this.reverbSend, this.trackReverbSend(track) + clamp01(options.reverbSend) + dubEcho * 0.22);
+    this.connectSend(source, this.fxSend, this.trackBusSend(track) + clamp01(options.delaySend) + dubEcho * 0.74, collector);
+    this.connectSend(source, this.reverbSend, this.trackReverbSend(track) + clamp01(options.reverbSend) + dubEcho * 0.22, collector);
+  }
+
+  /**
+   * Disconnect a list of Web Audio nodes, ignoring errors from nodes that are
+   * already disconnected. Used to release per-voice node chains so the audio
+   * graph does not accumulate dead tail nodes (the source of the memory leak).
+   */
+  disconnectNodes(nodes) {
+    if (!nodes) return;
+    for (let index = 0; index < nodes.length; index += 1) {
+      const node = nodes[index];
+      if (!node) continue;
+      try {
+        node.disconnect();
+      } catch (_) {
+        /* node was already disconnected */
+      }
+    }
+  }
+
+  /**
+   * Schedule cleanup of every node in `nodes` once all of the scheduled source
+   * nodes in `sources` have finished playing. Each per-voice helper builds a
+   * collector array of every node it creates (including send gains and panners)
+   * and passes the longest-lived source(s) here so the whole chain is released
+   * on `onended`. This prevents unbounded audio-graph growth over long sessions.
+   */
+  scheduleVoiceCleanup(sources, nodes) {
+    if (!sources || sources.length === 0) {
+      // No scheduled source to hang cleanup on; nothing to do.
+      return;
+    }
+    let remaining = sources.length;
+    const cleanup = () => this.disconnectNodes(nodes);
+    for (let index = 0; index < sources.length; index += 1) {
+      const source = sources[index];
+      if (!source) {
+        remaining -= 1;
+        continue;
+      }
+      source.onended = () => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          cleanup();
+        }
+      };
+    }
+    if (remaining <= 0) {
+      cleanup();
+    }
   }
 
   triggerDubEchoTail(time, amount = 0) {
@@ -915,6 +1009,22 @@ export class RhythmEngine {
           this.play808Hat(hitTime, gain * this.config.eightOhEightLevel * 0.52, track, options);
         } else if (track === "eightOhEightClick") {
           this.play808Click(hitTime, gain * this.config.eightOhEightLevel * 0.42, track, options);
+        } else if (track === "eightOhEightClap") {
+          this.play808Clap(hitTime, gain * this.config.eightOhEightLevel * 0.7, track, options);
+        } else if (track === "eightOhEightTomLow") {
+          this.play808Tom(hitTime, gain * this.config.eightOhEightLevel * 0.72, options.pitch - 7, track, options);
+        } else if (track === "eightOhEightTomMid") {
+          this.play808Tom(hitTime, gain * this.config.eightOhEightLevel * 0.72, options.pitch, track, options);
+        } else if (track === "eightOhEightTomHigh") {
+          this.play808Tom(hitTime, gain * this.config.eightOhEightLevel * 0.72, options.pitch + 7, track, options);
+        } else if (track === "eightOhEightCowbell") {
+          this.play808Cowbell(hitTime, gain * this.config.eightOhEightLevel * 0.6, track, options);
+        } else if (track === "eightOhEightConga") {
+          this.play808Conga(hitTime, gain * this.config.eightOhEightLevel * 0.7, options.pitch, track, options);
+        } else if (track === "eightOhEightMaraca") {
+          this.play808Maraca(hitTime, gain * this.config.eightOhEightLevel * 0.5, track, options);
+        } else if (track === "eightOhEightCymbal") {
+          this.play808Cymbal(hitTime, gain * this.config.eightOhEightLevel * 0.55, track, options);
         } else if (track === "echo") {
           this.playEchoPingSynth(hitTime + 0.01, {
             gain,
@@ -1235,9 +1345,11 @@ export class RhythmEngine {
     source.playbackRate.value = playbackRate;
     hitGain.gain.value = Math.max(0, gain);
     source.connect(hitGain);
-    hitGain.connect(this.drumBus || this.masterGain);
-    this.connectTrackBus(hitGain, hit, options);
+    const nodes = [source, hitGain];
+    this.connectTrackOutput(hitGain, hit, this.drumBus || this.masterGain, nodes);
+    this.connectTrackBus(hitGain, hit, options, nodes);
     source.start(Math.max(this.context.currentTime, time));
+    this.scheduleVoiceCleanup([source], nodes);
   }
 
   play808Overlay(hit, time, gain = 0.4) {
@@ -1281,12 +1393,13 @@ export class RhythmEngine {
     body.connect(filter);
     filter.connect(drive);
     drive.connect(kickGain);
-    kickGain.connect(this.drumBus || this.masterGain);
-    this.connectTrackBus(kickGain, track, options);
-    oscillator.start(now);
+    const nodes = [oscillator, body, filter, drive, kickGain];
+    this.connectTrackOutput(kickGain, track, this.drumBus || this.masterGain, nodes);
+    this.connectTrackBus(kickGain, track, options, nodes);    oscillator.start(now);
     body.start(now);
     oscillator.stop(now + 0.82);
     body.stop(now + 0.82);
+    this.scheduleVoiceCleanup([oscillator, body], nodes);
   }
 
   play808Snare(time, amount, track = "snare", options = {}) {
@@ -1309,13 +1422,17 @@ export class RhythmEngine {
     noise.connect(filter);
     filter.connect(noiseGain);
     tone.connect(toneGain);
-    noiseGain.connect(this.drumBus || this.masterGain);
-    toneGain.connect(this.drumBus || this.masterGain);
-    this.connectTrackBus(noiseGain, track, options);
+    const snareOut = this.context.createGain();
+    noiseGain.connect(snareOut);
+    toneGain.connect(snareOut);
+    const nodes = [noise, filter, noiseGain, tone, toneGain, snareOut];
+    this.connectTrackOutput(snareOut, track, this.drumBus || this.masterGain, nodes);
+    this.connectTrackBus(snareOut, track, options, nodes);
     noise.start(now);
     tone.start(now);
     noise.stop(now + 0.18);
     tone.stop(now + 0.14);
+    this.scheduleVoiceCleanup([noise, tone], nodes);
   }
 
   play808Hat(time, amount, track = "eightOhEightHat", options = {}) {
@@ -1331,10 +1448,12 @@ export class RhythmEngine {
     hatGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.055);
     noise.connect(filter);
     filter.connect(hatGain);
-    hatGain.connect(this.drumBus || this.masterGain);
-    this.connectTrackBus(hatGain, track, options);
+    const nodes = [noise, filter, hatGain];
+    this.connectTrackOutput(hatGain, track, this.drumBus || this.masterGain, nodes);
+    this.connectTrackBus(hatGain, track, options, nodes);
     noise.start(now);
     noise.stop(now + 0.07);
+    this.scheduleVoiceCleanup([noise], nodes);
   }
 
   play808Click(time, amount, track = "eightOhEightClick", options = {}) {
@@ -1349,10 +1468,159 @@ export class RhythmEngine {
     clickGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.026);
     noise.connect(filter);
     filter.connect(clickGain);
-    clickGain.connect(this.drumBus || this.masterGain);
-    this.connectTrackBus(clickGain, track, options);
+    const nodes = [noise, filter, clickGain];
+    this.connectTrackOutput(clickGain, track, this.drumBus || this.masterGain, nodes);
+    this.connectTrackBus(clickGain, track, options, nodes);
     noise.start(now);
     noise.stop(now + 0.04);
+    this.scheduleVoiceCleanup([noise], nodes);
+  }
+
+  play808Clap(time, amount, track = "eightOhEightClap", options = {}) {
+    const now = Math.max(this.context.currentTime, time);
+    const filter = this.context.createBiquadFilter();
+    const clapGain = this.context.createGain();
+    filter.type = "bandpass";
+    filter.frequency.setValueAtTime(1100, now);
+    filter.Q.setValueAtTime(1.3, now);
+    filter.connect(clapGain);
+    const nodes = [filter, clapGain];
+    this.connectTrackOutput(clapGain, track, this.drumBus || this.masterGain, nodes);
+    // Three quick noise bursts to imitate the 808 clap's stacked transients.
+    const bursts = [0, 0.009, 0.018, 0.04];
+    const sources = [];
+    bursts.forEach((offset, index) => {
+      const noise = this.context.createBufferSource();
+      const burstGain = this.context.createGain();
+      noise.buffer = this.getNoiseBuffer();
+      const peak = Math.max(0.0001, Math.min(0.12, amount * (index === bursts.length - 1 ? 0.16 : 0.1)));
+      const start = now + offset;
+      burstGain.gain.setValueAtTime(peak, start);
+      burstGain.gain.exponentialRampToValueAtTime(0.0001, start + (index === bursts.length - 1 ? 0.16 : 0.03));
+      noise.connect(burstGain);
+      burstGain.connect(filter);
+      noise.start(start);
+      noise.stop(start + (index === bursts.length - 1 ? 0.18 : 0.04));
+      nodes.push(noise, burstGain);
+      sources.push(noise);
+    });
+    this.connectTrackBus(clapGain, track, options, nodes);
+    this.scheduleVoiceCleanup(sources, nodes);
+  }
+
+  play808Tom(time, amount, tuneOffset = 0, track = "eightOhEightTomMid", options = {}) {
+    const now = Math.max(this.context.currentTime, time);
+    const tune = 2 ** ((this.config.eightOhEightTune + finiteNumber(tuneOffset, 0)) / 12);
+    const oscillator = this.context.createOscillator();
+    const filter = this.context.createBiquadFilter();
+    const tomGain = this.context.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(180 * tune, now);
+    oscillator.frequency.exponentialRampToValueAtTime(92 * tune, now + 0.26);
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(420, now);
+    filter.Q.setValueAtTime(1.1, now);
+    tomGain.gain.setValueAtTime(0.0001, now);
+    tomGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, Math.min(0.34, amount * 0.7)), now + 0.012);
+    tomGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
+    oscillator.connect(filter);
+    filter.connect(tomGain);
+    const nodes = [oscillator, filter, tomGain];
+    this.connectTrackOutput(tomGain, track, this.drumBus || this.masterGain, nodes);
+    this.connectTrackBus(tomGain, track, options, nodes);
+    oscillator.start(now);
+    oscillator.stop(now + 0.46);
+    this.scheduleVoiceCleanup([oscillator], nodes);
+  }
+
+  play808Cowbell(time, amount, track = "eightOhEightCowbell", options = {}) {
+    const now = Math.max(this.context.currentTime, time);
+    const oscA = this.context.createOscillator();
+    const oscB = this.context.createOscillator();
+    const filter = this.context.createBiquadFilter();
+    const bellGain = this.context.createGain();
+    oscA.type = "square";
+    oscB.type = "square";
+    oscA.frequency.setValueAtTime(540, now);
+    oscB.frequency.setValueAtTime(800, now);
+    filter.type = "bandpass";
+    filter.frequency.setValueAtTime(2640, now);
+    filter.Q.setValueAtTime(1.6, now);
+    bellGain.gain.setValueAtTime(0.0001, now);
+    bellGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, Math.min(0.18, amount * 0.32)), now + 0.006);
+    bellGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.32);
+    oscA.connect(filter);
+    oscB.connect(filter);
+    filter.connect(bellGain);
+    const nodes = [oscA, oscB, filter, bellGain];
+    this.connectTrackOutput(bellGain, track, this.drumBus || this.masterGain, nodes);
+    this.connectTrackBus(bellGain, track, options, nodes);
+    oscA.start(now);
+    oscB.start(now);
+    oscA.stop(now + 0.34);
+    oscB.stop(now + 0.34);
+    this.scheduleVoiceCleanup([oscA, oscB], nodes);
+  }
+
+  play808Conga(time, amount, tuneOffset = 0, track = "eightOhEightConga", options = {}) {
+    const now = Math.max(this.context.currentTime, time);
+    const tune = 2 ** ((this.config.eightOhEightTune + finiteNumber(tuneOffset, 0)) / 12);
+    const oscillator = this.context.createOscillator();
+    const congaGain = this.context.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(360 * tune, now);
+    oscillator.frequency.exponentialRampToValueAtTime(300 * tune, now + 0.12);
+    congaGain.gain.setValueAtTime(0.0001, now);
+    congaGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, Math.min(0.26, amount * 0.5)), now + 0.008);
+    congaGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+    oscillator.connect(congaGain);
+    const nodes = [oscillator, congaGain];
+    this.connectTrackOutput(congaGain, track, this.drumBus || this.masterGain, nodes);
+    this.connectTrackBus(congaGain, track, options, nodes);
+    oscillator.start(now);
+    oscillator.stop(now + 0.26);
+    this.scheduleVoiceCleanup([oscillator], nodes);
+  }
+
+  play808Maraca(time, amount, track = "eightOhEightMaraca", options = {}) {
+    const now = Math.max(this.context.currentTime, time);
+    const noise = this.context.createBufferSource();
+    const filter = this.context.createBiquadFilter();
+    const maracaGain = this.context.createGain();
+    noise.buffer = this.getNoiseBuffer();
+    filter.type = "highpass";
+    filter.frequency.setValueAtTime(9000, now);
+    maracaGain.gain.setValueAtTime(Math.max(0.0001, Math.min(0.04, amount * 0.09)), now);
+    maracaGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.04);
+    noise.connect(filter);
+    filter.connect(maracaGain);
+    const nodes = [noise, filter, maracaGain];
+    this.connectTrackOutput(maracaGain, track, this.drumBus || this.masterGain, nodes);
+    this.connectTrackBus(maracaGain, track, options, nodes);
+    noise.start(now);
+    noise.stop(now + 0.05);
+    this.scheduleVoiceCleanup([noise], nodes);
+  }
+
+  play808Cymbal(time, amount, track = "eightOhEightCymbal", options = {}) {
+    const now = Math.max(this.context.currentTime, time);
+    const noise = this.context.createBufferSource();
+    const filter = this.context.createBiquadFilter();
+    const cymbalGain = this.context.createGain();
+    noise.buffer = this.getNoiseBuffer();
+    filter.type = "highpass";
+    filter.frequency.setValueAtTime(7800, now);
+    filter.Q.setValueAtTime(0.5, now);
+    cymbalGain.gain.setValueAtTime(Math.max(0.0001, Math.min(0.05, amount * 0.07)), now);
+    cymbalGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.9);
+    noise.connect(filter);
+    filter.connect(cymbalGain);
+    const nodes = [noise, filter, cymbalGain];
+    this.connectTrackOutput(cymbalGain, track, this.drumBus || this.masterGain, nodes);
+    this.connectTrackBus(cymbalGain, track, options, nodes);
+    noise.start(now);
+    noise.stop(now + 0.95);
+    this.scheduleVoiceCleanup([noise], nodes);
   }
 
   getNoiseBuffer() {
@@ -1383,6 +1651,7 @@ export class RhythmEngine {
     source.connect(hitGain);
     hitGain.connect(this.fxSend);
     source.start(Math.max(this.context.currentTime, time));
+    this.scheduleVoiceCleanup([source], [source, hitGain]);
     this.playDubDelayTaps(hit, time, gain, playbackRate, { taps, spacing });
   }
 
@@ -1422,6 +1691,9 @@ export class RhythmEngine {
       tapGain.connect(this.masterGain);
       if (this.fxSend && index <= 2) tapGain.connect(this.fxSend);
       source.start(tapTime);
+      const tapNodes = [source, tapFilter, tapGain];
+      if (panner) tapNodes.push(panner);
+      this.scheduleVoiceCleanup([source], tapNodes);
     }
   }
 
@@ -1465,10 +1737,13 @@ export class RhythmEngine {
     oscillator.connect(filter);
     sub.connect(filter);
     filter.connect(bassGain);
-    bassGain.connect(this.masterGain);
+    const bassOut = this.context.createGain();
+    bassGain.connect(bassOut);
     accent.connect(accentGain);
-    accentGain.connect(this.masterGain);
-    this.connectTrackBus(bassGain, "bass", { delaySend, reverbSend, dubEcho });
+    accentGain.connect(bassOut);
+    const nodes = [oscillator, sub, accent, filter, bassGain, accentGain, bassOut];
+    this.connectTrackOutput(bassOut, "bass", this.masterGain, nodes);
+    this.connectTrackBus(bassGain, "bass", { delaySend, reverbSend, dubEcho }, nodes);
     const echoAmount = Math.max(clamp01(delaySend), clamp01(dubEcho));
     if (echoAmount > 0.001) {
       this.pushDubFx(now + Math.max(0, finiteNumber(delayMs, 0) / 1000), echoAmount * 0.7, {
@@ -1481,6 +1756,7 @@ export class RhythmEngine {
     oscillator.stop(now + safeDuration + 0.02);
     sub.stop(now + safeDuration + 0.02);
     accent.stop(now + 0.07);
+    this.scheduleVoiceCleanup([oscillator, sub, accent], nodes);
   }
 
   playPluckSynth(time, frequency, {
@@ -1532,12 +1808,17 @@ export class RhythmEngine {
     } else {
       filter.connect(pluckGain);
     }
-    pluckGain.connect(this.masterGain);
-    this.connectTrackBus(pluckGain, "pluck", { delaySend, reverbSend, dubEcho });
+    const nodes = [oscillator, filter, pluckGain];
+    if (panner) nodes.push(panner);
+    if (lfo) nodes.push(lfo);
+    if (lfoGain) nodes.push(lfoGain);
+    this.connectTrackOutput(pluckGain, "pluck", this.masterGain, nodes);
+    this.connectTrackBus(pluckGain, "pluck", { delaySend, reverbSend, dubEcho }, nodes);
     oscillator.start(now);
     if (lfo) lfo.start(now);
     oscillator.stop(now + safeDuration + 0.02);
     if (lfo) lfo.stop(now + safeDuration + 0.02);
+    this.scheduleVoiceCleanup([oscillator], nodes);
   }
 
   playFunkSynth(time, frequency, {
@@ -1599,12 +1880,17 @@ export class RhythmEngine {
     } else {
       filter.connect(funkGain);
     }
-    funkGain.connect(this.masterGain);
-    this.connectTrackBus(funkGain, "funk", { delaySend, reverbSend, dubEcho });
-    oscillator.start(now);
+    const nodes = [oscillator, filter, funkGain];
+    if (panner) nodes.push(panner);
+    if (lfo) nodes.push(lfo);
+    if (lfoGain) nodes.push(lfoGain);
+    if (filterLfoGain) nodes.push(filterLfoGain);
+    this.connectTrackOutput(funkGain, "funk", this.masterGain, nodes);
+    this.connectTrackBus(funkGain, "funk", { delaySend, reverbSend, dubEcho }, nodes);    oscillator.start(now);
     if (lfo) lfo.start(now);
     oscillator.stop(now + safeDuration + 0.03);
     if (lfo) lfo.stop(now + safeDuration + 0.03);
+    this.scheduleVoiceCleanup([oscillator], nodes);
   }
 
   playEchoPingSynth(time, {
@@ -1642,13 +1928,16 @@ export class RhythmEngine {
     } else {
       filter.connect(pingGain);
     }
+    const nodes = [oscillator, filter, pingGain];
+    if (panner) nodes.push(panner);
     if (this.fxSend) {
-      this.connectTrackBus(pingGain, "echo", { delaySend, reverbSend, dubEcho });
+      this.connectTrackBus(pingGain, "echo", { delaySend, reverbSend, dubEcho }, nodes);
     } else {
       pingGain.connect(this.masterGain);
     }
     oscillator.start(now);
     oscillator.stop(now + safeDuration + 0.03);
+    this.scheduleVoiceCleanup([oscillator], nodes);
   }
 
   playPadSynth(time, frequencies, {
@@ -1665,6 +1954,7 @@ export class RhythmEngine {
     const safeDuration = Math.max(0.2, duration);
     const filter = this.context.createBiquadFilter();
     const padGain = this.context.createGain();
+    const oscillators = [];
     const wobbleAmount = Math.max(0, Math.min(4, finiteNumber(wobble, 0)));
     let lfo = null;
     let detuneGain = null;
@@ -1699,14 +1989,19 @@ export class RhythmEngine {
       oscillator.connect(filter);
       oscillator.start(now);
       oscillator.stop(now + safeDuration + 0.04);
+      oscillators.push(oscillator);
     });
     filter.connect(padGain);
-    padGain.connect(this.masterGain);
-    this.connectTrackBus(padGain, "pad", { delaySend, reverbSend, dubEcho });
-    if (lfo) {
+    const nodes = [filter, padGain, ...oscillators];
+    if (lfo) nodes.push(lfo);
+    if (detuneGain) nodes.push(detuneGain);
+    if (filterLfoGain) nodes.push(filterLfoGain);
+    this.connectTrackOutput(padGain, "pad", this.masterGain, nodes);
+    this.connectTrackBus(padGain, "pad", { delaySend, reverbSend, dubEcho }, nodes);    if (lfo) {
       lfo.start(now);
       lfo.stop(now + safeDuration + 0.04);
     }
+    this.scheduleVoiceCleanup(lfo ? [...oscillators, lfo] : oscillators, nodes);
   }
 
   scheduleWhaleLayer(time, style) {
@@ -1799,14 +2094,16 @@ export class RhythmEngine {
     lfoDepth.connect(second.frequency);
     oscillator.connect(filter);
     second.connect(filter);
-    voiceGain.connect(this.masterGain);
-    this.connectTrackBus(voiceGain, "whale", { delaySend, reverbSend, dubEcho });
-    oscillator.start(now);
+    const nodes = [oscillator, second, lfo, lfoDepth, filter, voiceGain];
+    if (panner) nodes.push(panner);
+    this.connectTrackOutput(voiceGain, "whale", this.masterGain, nodes);
+    this.connectTrackBus(voiceGain, "whale", { delaySend, reverbSend, dubEcho }, nodes);    oscillator.start(now);
     second.start(now);
     lfo.start(now);
     oscillator.stop(now + safeDuration + 0.05);
     second.stop(now + safeDuration + 0.05);
     lfo.stop(now + safeDuration + 0.05);
+    this.scheduleVoiceCleanup([oscillator, second, lfo], nodes);
   }
 
   playSynthFallback(hit, time, gain) {
@@ -1819,9 +2116,11 @@ export class RhythmEngine {
     hitGain.gain.exponentialRampToValueAtTime(0.001, now + (hit === "kick" ? 0.22 : 0.08));
     oscillator.connect(hitGain);
     hitGain.connect(this.drumBus || this.masterGain);
-    this.connectTrackBus(hitGain, hit);
+    const nodes = [oscillator, hitGain];
+    this.connectTrackBus(hitGain, hit, {}, nodes);
     oscillator.start(now);
     oscillator.stop(now + 0.24);
+    this.scheduleVoiceCleanup([oscillator], nodes);
   }
 
   createReverbImpulse(duration = 1.4, decay = 2.4) {

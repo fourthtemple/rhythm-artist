@@ -5,43 +5,40 @@ export const SECTION_BARS = 8;
 export const SYNTH_ROOT_HZ = 55;
 export const SYNTH_SCALE = [0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24];
 export const SEQUENCED_BASS_PHRASE = [0, 3, 5, 2, 7, 5, 3, 10];
-export const EIGHT_OH_EIGHT_ROWS = ["eightOhEightKick", "eightOhEightSnare", "eightOhEightHat", "eightOhEightClick"];
-export const EDITABLE_GENERATED_ROWS = ["pluck", "funk", "pad", "whale", ...EIGHT_OH_EIGHT_ROWS, "echo", "space"];
-export const RHYTHM_TRACKS = ["bass", "kick", "snare", "hat", "rim", ...EDITABLE_GENERATED_ROWS];
-export const DEFAULT_TRACK_BUS_SENDS = {
-  bass: 0.28,
-  kick: 0.18,
-  snare: 0.34,
-  hat: 0.18,
-  rim: 0.4,
-  pluck: 0.45,
-  funk: 0.38,
-  pad: 0.62,
-  whale: 0.58,
-  eightOhEightKick: 0.22,
-  eightOhEightSnare: 0.2,
-  eightOhEightHat: 0.12,
-  eightOhEightClick: 0.18,
-  echo: 1,
-  space: 1
-};
-export const DEFAULT_TRACK_REVERB_SENDS = {
-  bass: 0.16,
-  kick: 0.08,
-  snare: 0.24,
-  hat: 0.14,
-  rim: 0.3,
-  pluck: 0.32,
-  funk: 0.24,
-  pad: 0.62,
-  whale: 0.46,
-  eightOhEightKick: 0.08,
-  eightOhEightSnare: 0.1,
-  eightOhEightHat: 0.06,
-  eightOhEightClick: 0.08,
-  echo: 0.42,
-  space: 1
-};
+
+import {
+  ALL_TRACK_IDS,
+  EIGHT_OH_EIGHT_DEFAULT_IDS,
+  GENERATED_TRACK_IDS,
+  PATTERN_TRACK_IDS,
+  TRACK_BUS_SENDS,
+  TRACK_LEVELS,
+  TRACK_PANS,
+  TRACK_REGISTRY,
+  TRACK_REVERB_SENDS
+} from "./rhythm-track-registry.js";
+
+export {
+  TRACK_GROUPS,
+  TRACK_REGISTRY,
+  TRACK_BY_ID,
+  GROUP_BY_ID,
+  getTrackDef,
+  getGroupDef,
+  DEFAULT_GRID_TRACK_IDS,
+  TRACK_LABELS,
+  TRACK_DEFAULT_VELOCITY,
+  tracksByGroup
+} from "./rhythm-track-registry.js";
+
+// Back-compat aliases — these names are imported across the engine/editor.
+export const EIGHT_OH_EIGHT_ROWS = EIGHT_OH_EIGHT_DEFAULT_IDS;
+export const EDITABLE_GENERATED_ROWS = GENERATED_TRACK_IDS;
+export const RHYTHM_TRACKS = ALL_TRACK_IDS;
+export const DEFAULT_TRACK_BUS_SENDS = TRACK_BUS_SENDS;
+export const DEFAULT_TRACK_REVERB_SENDS = TRACK_REVERB_SENDS;
+export const DEFAULT_TRACK_LEVELS = TRACK_LEVELS;
+export const DEFAULT_TRACK_PANS = TRACK_PANS;
 export const DEFAULT_SYNTH_LEVEL = 1.45;
 export const DUCK_SOUND_REARM_SECONDS = 0.18;
 
@@ -133,6 +130,8 @@ export const DEFAULT_RHYTHM_CONFIG = {
   dubThrowAmount: 0.56,
   trackBusSends: DEFAULT_TRACK_BUS_SENDS,
   trackReverbSends: DEFAULT_TRACK_REVERB_SENDS,
+  trackLevels: DEFAULT_TRACK_LEVELS,
+  trackPans: DEFAULT_TRACK_PANS,
   generatedRowsEditable: 0,
   soloTracks: [],
   patterns: {
@@ -167,23 +166,29 @@ const normalizePatternHits = (hits) => Array.isArray(hits)
       .filter(([step, velocity]) => Number.isFinite(step) && velocity > 0)
   : [];
 
-const normalizePatternBar = (bar = {}) => ({
-  bass: normalizePatternHits(bar.bass),
-  kick: normalizePatternHits(bar.kick),
-  snare: normalizePatternHits(bar.snare),
-  hat: normalizePatternHits(bar.hat),
-  rim: normalizePatternHits(bar.rim),
-  pluck: normalizePatternHits(bar.pluck),
-  funk: normalizePatternHits(bar.funk),
-  pad: normalizePatternHits(bar.pad),
-  whale: normalizePatternHits(bar.whale),
-  eightOhEightKick: normalizePatternHits(bar.eightOhEightKick),
-  eightOhEightSnare: normalizePatternHits(bar.eightOhEightSnare),
-  eightOhEightHat: normalizePatternHits(bar.eightOhEightHat),
-  eightOhEightClick: normalizePatternHits(bar.eightOhEightClick),
-  echo: normalizePatternHits(bar.echo),
-  space: normalizePatternHits(bar.space)
-});
+const normalizePatternBar = (bar = {}) => {
+  const out = {};
+  // Core pattern tracks are always present so the engine can rely on them.
+  PATTERN_TRACK_IDS.forEach((id) => {
+    out[id] = normalizePatternHits(bar[id]);
+  });
+  // Generated/registry tracks: keep whatever the saved bar carried, plus the
+  // default generated set, so adding a track round-trips through save/load.
+  TRACK_REGISTRY.forEach((track) => {
+    if (out[track.id] !== undefined) return;
+    if (track.kind === "generated" && (track.addByDefault || Array.isArray(bar[track.id]))) {
+      out[track.id] = normalizePatternHits(bar[track.id]);
+    }
+  });
+  // Preserve any extra ids present in the saved bar that aren't in the registry
+  // (forward-compat: a project saved with a track we don't know about yet).
+  Object.keys(bar || {}).forEach((id) => {
+    if (out[id] === undefined && Array.isArray(bar[id])) {
+      out[id] = normalizePatternHits(bar[id]);
+    }
+  });
+  return out;
+};
 
 const normalizePatternBars = (bars) => {
   const source = Array.isArray(bars) && bars.length
@@ -243,6 +248,16 @@ export const normalizeRhythmConfig = (config = {}) => {
   merged.trackReverbSends = Object.fromEntries(RHYTHM_TRACKS.map((track) => [
     track,
     Math.max(0, Math.min(1, finiteNumber(sourceReverbSends[track], DEFAULT_TRACK_REVERB_SENDS[track] ?? 0.2)))
+  ]));
+  const sourceLevels = merged.trackLevels && typeof merged.trackLevels === "object" ? merged.trackLevels : {};
+  merged.trackLevels = Object.fromEntries(RHYTHM_TRACKS.map((track) => [
+    track,
+    Math.max(0, Math.min(2, finiteNumber(sourceLevels[track], DEFAULT_TRACK_LEVELS[track] ?? 1)))
+  ]));
+  const sourcePans = merged.trackPans && typeof merged.trackPans === "object" ? merged.trackPans : {};
+  merged.trackPans = Object.fromEntries(RHYTHM_TRACKS.map((track) => [
+    track,
+    Math.max(-1, Math.min(1, finiteNumber(sourcePans[track], DEFAULT_TRACK_PANS[track] ?? 0)))
   ]));
   merged.generatedRowsEditable = finiteNumber(merged.generatedRowsEditable, DEFAULT_RHYTHM_CONFIG.generatedRowsEditable) >= 0.5 ? 1 : 0;
   merged.soloTracks = Array.isArray(merged.soloTracks)

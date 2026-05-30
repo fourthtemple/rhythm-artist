@@ -1004,3 +1004,92 @@ input[type="range"] {
   color: #181825;
   font-weight: 700;
 }
+
+/* ── Add Track dialog (registry-driven) ─────────────────────── */
+.add-track-dialog.add-track-dialog { max-width: 520px; }
+
+.add-track-groups {
+  display: grid;
+  gap: 14px;
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.add-track-group-heading {
+  --group-accent: #7dd3fc;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--group-accent);
+  border-left: 3px solid var(--group-accent);
+  padding-left: 8px;
+  margin-bottom: 8px;
+}
+
+.add-track-group-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.add-track-chip {
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid #345;
+  background: #0c1118;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.add-track-chip:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: #16202c;
+}
+
+.add-track-chip.is-on-grid {
+  background: #1c2c20;
+  border-color: #2f6;
+  color: #9f9;
+}
+
+.add-track-chip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Inline remove "×" on grid track labels */
+.track-remove-button {
+  margin-left: 4px;
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid #445;
+  background: transparent;
+  color: #889;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.track-label:hover .track-remove-button,
+.track-label:focus-within .track-remove-button {
+  opacity: 1;
+}
+
+.track-remove-button:hover {
+  color: #f88;
+  border-color: #f55;
+}
+
+.track-toolbar-actions {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
