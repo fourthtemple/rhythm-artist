@@ -204,6 +204,13 @@ export function createTransport(deps) {
 
   function followPlaybackBar(phraseBar) {
     const segments = state.segmentsCount ?? 1;
+    // When a loop is active, any bar outside the loop range is a transient
+    // engine state (the tick just before the loop wraps back). Discard it so
+    // the view never snaps away from the loop window.
+    if (state.loopBar && state.loopBarLength > 0) {
+      const loopEnd = state.loopBarIndex + state.loopBarLength;
+      if (phraseBar < state.loopBarIndex || phraseBar >= loopEnd) return;
+    }
     // Snap the view anchor to segment boundaries — only shift when phraseBar
     // leaves the current window [activeBar, activeBar + segments).
     const inWindow = phraseBar >= state.activeBar && phraseBar < state.activeBar + segments;
@@ -242,6 +249,12 @@ export function createTransport(deps) {
       displayBar = rawBar;
     }
     state.playheadStep = displayStep;
+    // When looping, clamp displayBar to the loop range to avoid out-of-range
+    // transient states from briefly flickering the view.
+    if (state.loopBar && state.loopBarLength > 0) {
+      const loopEnd = state.loopBarIndex + state.loopBarLength;
+      if (displayBar < state.loopBarIndex || displayBar >= loopEnd) return;
+    }
     followPlaybackBar(displayBar);
     // Which segment column is the playhead in?
     const seg = displayBar - state.activeBar;

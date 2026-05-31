@@ -33,6 +33,7 @@ import {
 } from "./audio/grid-tracks.js";
 import { RhythmEngine } from "./audio/rhythm-engine.js";
 import { createGlobalMixPanel } from "./ui/global-mix-panel.js";
+import { createProjectManager } from "./ui/project-manager.js";
 import { showContextMenu, closeContextMenu } from "./ui/context-menu.js";
 import { createSampleBrowser } from "./ui/sample-browser.js";
 import { createLoopTrackPanel } from "./ui/loop-track-panel.js";
@@ -802,6 +803,7 @@ function wireEvents() {
     normalizeEditorConfig, clone, DEFAULT_RHYTHM_CONFIG,
     renderAddTrackDialog,
     openGlobalMixView, closeGlobalMixView, resetMasterEq,
+    projectManager,
     sampleBrowser,
     closeContextMenu,
     loopPanel,
@@ -946,6 +948,16 @@ const globalMixPanel = createGlobalMixPanel({
 const openGlobalMixView = () => globalMixPanel.open();
 const closeGlobalMixView = () => globalMixPanel.close();
 const resetMasterEq = () => globalMixPanel.reset();
+
+// ── Project Manager (save/load slots + WAV export) ─────────────────────────
+const projectManager = createProjectManager({
+  getConfig: () => clone(state.config),
+  applyLoadedConfig,
+  getEngine: () => state.engine,
+  startPlayback,
+  stopPlayback,
+  setStatus: (msg) => { status.textContent = msg; }
+});
 
 // ── Sample Browser ──────────────────────────────────────────
 // The browse/audition/load flow lives in a self-contained controller; the

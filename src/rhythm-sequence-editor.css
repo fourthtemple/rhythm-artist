@@ -1748,6 +1748,223 @@ input[type="range"] {
   font-size: 11px;
 }
 
+/* ── Project Manager overlay ────────────────────────────────────────────── */
+.project-manager-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 950;
+  background: rgba(0,0,0,0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pm-window {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  width: min(700px, 96vw);
+  height: min(520px, 90vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.8);
+}
+
+/* ── Title bar ── */
+.pm-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px 9px 16px;
+  background: rgba(0,0,0,0.25);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.pm-titlebar-icon { font-size: 1rem; opacity: 0.65; }
+.pm-titlebar-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  flex: 1;
+}
+.pm-titlebar-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 5px;
+  min-height: unset;
+}
+.pm-titlebar-close:hover { background: rgba(255,255,255,0.1); color: var(--text); border-color: transparent; }
+
+/* ── Toolbar ── */
+.pm-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-soft);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.pm-toolbar-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--line);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+.pm-toolbar-spacer { flex: 1; }
+
+/* ── Body ── */
+.pm-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Explorer pane ── */
+.pm-explorer {
+  width: 100%;
+  overflow-y: auto;
+}
+
+/* ── Column headers ── */
+.pm-col-header {
+  display: grid;
+  grid-template-columns: 1fr 150px;
+  padding: 5px 14px 5px 38px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(0,0,0,0.18);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.pm-col-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ── File rows ── */
+.pm-file-row {
+  display: grid;
+  grid-template-columns: 1fr 150px;
+  align-items: center;
+  padding: 8px 14px 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  user-select: none;
+  gap: 8px;
+  outline: none;
+}
+.pm-file-row:last-child { border-bottom: none; }
+.pm-file-row:hover { background: rgba(255,255,255,0.04); }
+.pm-file-row.is-selected { background: rgba(226,207,118,0.1); outline: 1px solid rgba(226,207,118,0.3); }
+.pm-file-row:focus-visible { outline: 2px solid var(--accent-2); }
+
+.pm-file-icon { font-size: 0.9rem; margin-right: 7px; opacity: 0.7; }
+.pm-file-name {
+  font-size: 0.82rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+}
+.pm-file-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-file-date { font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
+
+/* ── Empty state ── */
+.pm-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 60px 24px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+.pm-empty-icon { font-size: 2.5rem; opacity: 0.35; }
+
+/* ── Footer / status bar ── */
+.pm-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--line);
+  background: rgba(0,0,0,0.18);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.pm-footer-info {
+  font-size: 0.72rem;
+  color: var(--muted);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pm-dur-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.pm-dur-input {
+  width: 48px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 2px 5px;
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+/* ── Shared button ── */
+.pm-btn {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.76rem;
+  padding: 4px 10px;
+  white-space: nowrap;
+  min-height: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1.4;
+}
+.pm-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: rgba(226,207,118,0.07); }
+.pm-btn:disabled { opacity: 0.35; cursor: default; }
+.pm-btn-primary {
+  background: rgba(120,215,186,0.15);
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+}
+.pm-btn-primary:hover:not(:disabled) { background: rgba(120,215,186,0.25); }
+.pm-btn-danger { color: var(--danger); }
+.pm-btn-danger:hover:not(:disabled) { background: rgba(226,140,120,0.12); border-color: var(--danger); }
+
+
+
 /* ── Global Mix full-screen overlay ────────────────────────────────────── */
 .global-mix-view {
   position: fixed;

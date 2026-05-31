@@ -1,11 +1,53 @@
 // Sample-browser UI controller.
 //
-// Uses a hidden <input type="file" webkitdirectory> to let users pick a local
-// folder — works in Safari, Chrome, and Firefox with no server required.
+// Strategy:
+//   • Chrome/Edge: use File System Access API (showDirectoryPicker) so we can
+//     store the FileSystemDirectoryHandle in IndexedDB and re-use it across
+//     sessions without asking the user to pick again.
+//   • Safari / Firefox: fall back to <input type="file" webkitdirectory>.
+
+const FS_ACCESS = typeof window !== "undefined" && "showDirectoryPicker" in window;
+
+// ── Minimal IndexedDB key-value store (no deps) ─────────────────────────────
+const DB_NAME = "rhythm-artist";
+const DB_STORE = "kv";
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = (e) => e.target.result.createObjectStore(DB_STORE);
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror = (e) => reject(e.target.error);
+  });
+}
+
+async function idbGet(key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, "readonly");
+    const req = tx.objectStore(DB_STORE).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = (e) => reject(e.target.error);
+  });
+}
+
+async function idbSet(key, value) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, "readwrite");
+    const req = tx.objectStore(DB_STORE).put(value, key);
+    req.onsuccess = () => resolve();
+    req.onerror = (e) => reject(e.target.error);
+  });
+}
+
+const IDB_HANDLE_KEY = "sampleDirHandle";
+
+// ── Main export ──────────────────────────────────────────────────────────────
 
 export function createSampleBrowser({
   openBtn,   // now unused — the label/input are wired directly in HTML
-  fileInput, // <input type="file" webkitdirectory> element
+  fileInput, // <input type="file" webkitdirectory> element (fallback)
   breadcrumb,
   list,
   setStatus = () => {},
@@ -19,21 +61,23 @@ export function createSampleBrowser({
     return i >= 0 ? name.slice(i).toLowerCase() : "";
   }
 
-  // Tree node: { name, children: Map<name, node>, files: File[] }
+  // ── Virtual tree (shared between both paths) ─────────────────────────────
+
+  // Node: { name, children: Map<name,node>, files: Array<File|FileEntry> }
+  // For FS Access API we store { name, handle } in files instead of File
+  // objects; we materialise File on demand for audition/load.
+
   let rootNode = null;
-  // Stack of { name, node } for navigation
   let navStack = [];
   let auditionUrl = null;
   let auditionEl = null;
 
-  // Build a virtual folder tree from a flat FileList
-  function buildTree(fileList) {
+  // ── Build tree from flat FileList (webkitdirectory fallback) ─────────────
+  function buildTreeFromFileList(fileList) {
     const root = { name: "", children: new Map(), files: [] };
     for (const file of fileList) {
-      // webkitRelativePath = "rootFolder/sub/file.wav"
       const parts = file.webkitRelativePath.split("/");
       let node = root;
-      // parts[0] is the root folder name, skip it for tree structure
       for (let i = 1; i < parts.length - 1; i++) {
         const part = parts[i];
         if (!node.children.has(part)) {
@@ -43,15 +87,37 @@ export function createSampleBrowser({
       }
       const fileName = parts[parts.length - 1];
       if (!fileName.startsWith(".") && AUDIO_EXTS.has(ext(fileName))) {
-        node.files.push(file);
+        node.files.push({ name: fileName, file });
       }
     }
-    // The root folder name is parts[0] of first file
-    const rootName = fileList[0]?.webkitRelativePath?.split("/")[0] ?? "Folder";
-    root.name = rootName;
+    root.name = fileList[0]?.webkitRelativePath?.split("/")[0] ?? "Folder";
     return root;
   }
 
+  // ── Build tree from FileSystemDirectoryHandle (FS Access API) ───────────
+  async function buildTreeFromHandle(dirHandle, depth = 0) {
+    const node = { name: dirHandle.name, children: new Map(), files: [] };
+    for await (const [name, handle] of dirHandle.entries()) {
+      if (name.startsWith(".")) continue;
+      if (handle.kind === "directory") {
+        if (depth < 6) {
+          const child = await buildTreeFromHandle(handle, depth + 1);
+          node.children.set(name, child);
+        }
+      } else if (AUDIO_EXTS.has(ext(name))) {
+        node.files.push({ name, handle });
+      }
+    }
+    return node;
+  }
+
+  // ── Materialise a File from an entry (works for both paths) ─────────────
+  async function entryToFile(entry) {
+    if (entry.file instanceof File) return entry.file;
+    return entry.handle.getFile();
+  }
+
+  // ── Render ───────────────────────────────────────────────────────────────
   function renderBreadcrumb() {
     if (!breadcrumb) return;
     breadcrumb.innerHTML = "";
@@ -85,16 +151,12 @@ export function createSampleBrowser({
     const dirs = [...node.children.values()].sort((a, b) => a.name.localeCompare(b.name));
     const files = [...node.files].sort((a, b) => a.name.localeCompare(b.name));
 
-    // Up button
     if (navStack.length > 1) {
       const up = document.createElement("button");
       up.type = "button";
       up.className = "sample-row sample-row-dir";
       up.innerHTML = `<span class="sample-row-icon">↩</span><span class="sample-row-name">..</span>`;
-      up.addEventListener("click", () => {
-        navStack = navStack.slice(0, -1);
-        renderCurrent();
-      });
+      up.addEventListener("click", () => { navStack = navStack.slice(0, -1); renderCurrent(); });
       list.appendChild(up);
     }
 
@@ -104,26 +166,24 @@ export function createSampleBrowser({
       row.className = "sample-row sample-row-dir";
       row.innerHTML = `<span class="sample-row-icon">📁</span><span class="sample-row-name"></span>`;
       row.querySelector(".sample-row-name").textContent = child.name;
-      row.addEventListener("click", () => {
-        navStack.push({ name: child.name, node: child });
-        renderCurrent();
-      });
+      row.addEventListener("click", () => { navStack.push({ name: child.name, node: child }); renderCurrent(); });
       list.appendChild(row);
     });
 
-    files.forEach((file) => {
+    files.forEach((entry) => {
       const row = document.createElement("div");
       row.className = "sample-row sample-row-file";
+
       const nameEl = document.createElement("span");
       nameEl.className = "sample-row-name";
-      nameEl.textContent = file.name;
+      nameEl.textContent = entry.name;
 
       const auditionBtn = document.createElement("button");
       auditionBtn.type = "button";
       auditionBtn.className = "sample-row-action";
       auditionBtn.textContent = "▶";
-      auditionBtn.title = `Audition ${file.name}`;
-      auditionBtn.addEventListener("click", () => audition(file));
+      auditionBtn.title = `Audition ${entry.name}`;
+      auditionBtn.addEventListener("click", () => void audition(entry));
 
       const loadBtn = document.createElement("button");
       loadBtn.type = "button";
@@ -131,7 +191,7 @@ export function createSampleBrowser({
       loadBtn.textContent = "＋";
       loadBtn.title = "Load into selected track";
       loadBtn.disabled = !getSelectedHit();
-      loadBtn.addEventListener("click", () => void loadFile(file));
+      loadBtn.addEventListener("click", () => void loadEntry(entry));
 
       row.append(nameEl, auditionBtn, loadBtn);
       list.appendChild(row);
@@ -145,39 +205,109 @@ export function createSampleBrowser({
     }
   }
 
-  function audition(file) {
+  async function audition(entry) {
+    const file = await entryToFile(entry);
     if (auditionUrl) URL.revokeObjectURL(auditionUrl);
     auditionUrl = URL.createObjectURL(file);
     if (!auditionEl) auditionEl = new Audio();
     auditionEl.src = auditionUrl;
     auditionEl.currentTime = 0;
     void auditionEl.play().catch(() => setStatus("Could not play sample"));
-    setStatus(`Auditioning ${file.name}`);
+    setStatus(`Auditioning ${entry.name}`);
   }
 
-  async function loadFile(file) {
+  async function loadEntry(entry) {
     const hit = getSelectedHit();
     if (!hit) { setStatus("Select a track first"); return; }
+    const file = await entryToFile(entry);
     const url = URL.createObjectURL(file);
-    await assignSample(hit, { url, label: file.name, root: null, path: file.name });
+    await assignSample(hit, { url, label: entry.name, root: null, path: entry.name });
   }
 
-  function init() {
-    const input = fileInput;
-    if (!input) return;
-
-    input.addEventListener("change", () => {
-      const files = [...input.files].filter(f => AUDIO_EXTS.has(ext(f.name)));
-      if (!files.length) { setStatus("No audio files found in that folder"); return; }
-      rootNode = buildTree(input.files);
+  // ── Open folder (FS Access API path) ────────────────────────────────────
+  async function openWithFSAccess() {
+    let dirHandle;
+    try {
+      dirHandle = await window.showDirectoryPicker({ mode: "read" });
+    } catch {
+      return; // user cancelled
+    }
+    setStatus("Reading folder…");
+    try {
+      rootNode = await buildTreeFromHandle(dirHandle);
       navStack = [{ name: rootNode.name, node: rootNode }];
       renderCurrent();
-      input.value = "";
-    });
+      // Persist the handle so we can restore it next session
+      await idbSet(IDB_HANDLE_KEY, dirHandle);
+      setStatus(`Opened: ${rootNode.name}`);
+    } catch (err) {
+      console.error("Failed to read sample folder", err);
+      setStatus("Could not read folder");
+    }
   }
 
-  // API compatibility
-  async function loadRoots() { init(); }
+  // ── Restore persisted handle on load (Chrome only) ───────────────────────
+  async function tryRestoreHandle() {
+    if (!FS_ACCESS) return;
+    try {
+      const handle = await idbGet(IDB_HANDLE_KEY);
+      if (!handle) return;
+      // Re-request permission (Chrome requires a user gesture for this but
+      // queryPermission works without one to check status).
+      const perm = await handle.queryPermission({ mode: "read" });
+      if (perm === "granted") {
+        setStatus("Restoring sample folder…");
+        rootNode = await buildTreeFromHandle(handle);
+        navStack = [{ name: rootNode.name, node: rootNode }];
+        renderCurrent();
+        setStatus(`Sample folder: ${rootNode.name}`);
+      }
+      // If perm is "prompt", we'll re-ask next time the user clicks Open.
+    } catch {
+      // Silently ignore — stale or revoked handle
+    }
+  }
+
+  // ── Wire up the open button / input ─────────────────────────────────────
+  function init() {
+    if (FS_ACCESS) {
+      // Intercept clicks on the label/button so we use showDirectoryPicker
+      // instead of the file input.
+      const label = fileInput?.closest?.("label") ?? document.querySelector("label[for='sample-open-folder']");
+      if (label) {
+        label.addEventListener("click", (e) => {
+          e.preventDefault();
+          void openWithFSAccess();
+        });
+      } else {
+        // Fallback: wire any element with id sample-open-folder
+        const btn = document.getElementById("sample-open-folder");
+        if (btn) btn.addEventListener("click", (e) => { e.preventDefault(); void openWithFSAccess(); });
+      }
+      // Also wire a dedicated "change folder" button if present
+      const changeBtn = document.getElementById("sample-change-folder");
+      if (changeBtn) changeBtn.addEventListener("click", () => void openWithFSAccess());
+    } else {
+      // Safari/Firefox: use <input webkitdirectory>
+      const input = fileInput;
+      if (!input) return;
+      input.addEventListener("change", () => {
+        const files = [...input.files].filter(f => AUDIO_EXTS.has(ext(f.name)));
+        if (!files.length) { setStatus("No audio files found in that folder"); return; }
+        rootNode = buildTreeFromFileList(input.files);
+        navStack = [{ name: rootNode.name, node: rootNode }];
+        renderCurrent();
+        input.value = "";
+        setStatus(`Opened: ${rootNode.name}`);
+      });
+    }
+  }
+
+  async function loadRoots() {
+    init();
+    await tryRestoreHandle();
+  }
+
   async function browse() {}
   function render() {}
 

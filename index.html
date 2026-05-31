@@ -17,6 +17,7 @@
       <section class="transport" aria-label="Transport">
         <span class="transport-wordmark">rhythmartist</span>
         <button id="open-global-mix" type="button" class="topbar-view-btn">Mixer</button>
+        <button id="open-project-manager" type="button" class="topbar-view-btn">Projects</button>
         <a href="./rhythm-api-demo.html" class="transport-nav-link">API Demo</a>
         <span class="transport-divider"></span>
         <button id="play-toggle" type="button">Play</button>
@@ -234,46 +235,9 @@
             </label>
           </section>
 
-          <section>
-            <span class="panel-label">Solo</span>
-            <div class="solo-strip">
-              <button type="button" data-solo-track="bass">Bass</button>
-              <button type="button" data-solo-track="kick">Kick</button>
-              <button type="button" data-solo-track="snare">Snare</button>
-              <button type="button" data-solo-track="hat">Hat</button>
-              <button type="button" data-solo-track="rim">Rim</button>
-              <button type="button" data-solo-track="pluck">Pluck</button>
-              <button type="button" data-solo-track="funk">Funk</button>
-              <button type="button" data-solo-track="pad">Pad</button>
-              <button type="button" data-solo-track="whale">LFO</button>
-              <button type="button" data-solo-track="echo">Echo</button>
-              <button type="button" data-solo-clear>All</button>
-            </div>
-          </section>
 
-          <section>
-            <span class="panel-label">Sound Finder</span>
-            <div class="sound-actions">
-              <button type="button" data-preview-sound="boss">Boss Landed</button>
-              <button type="button" data-preview-sound="wobble">Wobble</button>
-              <button type="button" data-preview-sound="echo">Echo Ping</button>
-              <button type="button" data-preview-sound="whale-down">Down Bend</button>
-              <button type="button" data-preview-sound="whale-up">Rise Bend</button>
-              <button type="button" data-preview-sound="space-drop">Space Drop</button>
-              <button type="button" data-preview-sound="space-pickup">Pickup</button>
-            </div>
-          </section>
 
-          <section>
-            <span class="panel-label">Files</span>
-            <div class="file-actions">
-              <button id="save-file" type="button">Save File</button>
-              <button id="load-file" type="button">Load File</button>
-              <button id="copy-json" type="button">Copy JSON</button>
-              <button id="reset-defaults" type="button">Reset</button>
-            </div>
-            <input id="load-input" type="file" accept=".json,application/json" hidden />
-          </section>
+
 
           <!-- ── Loop Tracks ─────────────────────────────── -->
           <section id="loop-tracks-section">

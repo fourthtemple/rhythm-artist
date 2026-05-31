@@ -47,6 +47,7 @@ export function createEventWiring(deps) {
     // track panels
     renderAddTrackDialog,
     openGlobalMixView, closeGlobalMixView, resetMasterEq,
+    projectManager,
     sampleBrowser,
     closeContextMenu,
     // loop panel
@@ -159,35 +160,10 @@ export function createEventWiring(deps) {
   }
 
   // ── File / project actions ────────────────────────────────────────────────
+  // Legacy Save File / Load File / Copy JSON / Reset buttons have been removed
+  // from the HTML. Project save/load is now handled by the project manager overlay.
   function wireFileEvents() {
-    $("#save-file").addEventListener("click", downloadConfig);
-    $("#copy-json").addEventListener("click", async () => {
-      await navigator.clipboard.writeText(JSON.stringify(state.config, null, 2));
-      status.textContent = "Copied rhythm JSON";
-    });
-    $("#reset-defaults").addEventListener("click", () => {
-      state.config = normalizeEditorConfig(clone(DEFAULT_RHYTHM_CONFIG));
-      state.activeBar = 0;
-      state.activeLoopIndex = 0;
-      state.twoBarClipboard = null;
-      state.trackClipboard = null;
-      resetSelectedPanel();
-      applyConfig();
-      buildLoopTabs();
-      buildBarTabs();
-      buildStepGrid();
-      renderTrackExplorer();
-      renderTrackInspector();
-      updateTwoBarClipboardButtons();
-      updateTrackClipboardButtons();
-      status.textContent = "Reset to defaults";
-    });
-    $("#load-file").addEventListener("click", () => $("#load-input").click());
-    $("#load-input").addEventListener("change", (event) => {
-      const file = event.target.files?.[0];
-      if (file) void loadConfigFile(file);
-      event.target.value = "";
-    });
+    // nothing to wire here anymore
   }
 
   // ── Right-side track panels ───────────────────────────────────────────────
@@ -208,6 +184,7 @@ export function createEventWiring(deps) {
       /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.showModal();
     });
     $("#open-global-mix")?.addEventListener("click", openGlobalMixView);
+    $("#open-project-manager")?.addEventListener("click", () => projectManager.open());
     $("#close-global-mix")?.addEventListener("click", closeGlobalMixView);
     $("#master-eq-reset")?.addEventListener("click", resetMasterEq);
     document.addEventListener("keydown", (event) => {
