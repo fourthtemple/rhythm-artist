@@ -120,6 +120,9 @@ export function createTransport(deps) {
     const start = bars[0];
     const length = bars[bars.length - 1] - start + 1;
     setLoopPlayback(start, length);
+    // Seek the engine to the loop start so playback immediately jumps there
+    state.engine.seekToPhraseBar(start, 0);
+    state.playheadStep = 0;
     setStatus(length === 1
       ? `Looping bar ${start + 1}`
       : `Looping bars ${start + 1}–${start + length}`);
