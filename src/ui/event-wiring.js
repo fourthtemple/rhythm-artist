@@ -72,7 +72,6 @@ export function createEventWiring(deps) {
     $("#restart").addEventListener("click", restartPlayback);
     $("#play-song").addEventListener("click", playFullSong);
     $("#loop-bar").addEventListener("click", toggleBarLoop);
-    $("#loop-two-bars").addEventListener("click", toggleTwoBarLoop);
     $("#intensity").addEventListener("input", (event) => {
       state.intensity = Number(event.target.value);
       $("#intensity-value").textContent = state.intensity.toFixed(2);

@@ -95,31 +95,39 @@ export function createTransport(deps) {
     clearPlayhead();
   }
 
-  function setLoopPlayback(length) {
-    state.loopBarLength = Math.max(0, Math.min(2, Math.round(Number(length) || 0)));
-    state.loopBar = state.loopBarLength > 0;
+  function setLoopPlayback(start, length) {
+    length = Math.max(0, Math.round(Number(length) || 0));
+    state.loopBarLength = length;
+    state.loopBar = length > 0;
     if (state.loopBar) {
-      state.loopBarIndex = clampLoopStart(state.activeBar, state.loopBarLength);
+      state.loopBarIndex = start ?? clampLoopStart(state.activeBar, length);
     }
     state.engine.setConfig(previewConfig());
     refreshLoopBarButton();
   }
 
-  function toggleBarLoop() {
-    const nextLength = activeLoopLength() === 1 ? 0 : 1;
-    setLoopPlayback(nextLength);
-    setStatus(nextLength
-      ? `Looping bar ${loopRangeLabel(state.loopBarIndex, 1)}`
-      : "Bar loop off");
+  function toggleSelectedLoop() {
+    // If a loop is already active, turn it off
+    if (activeLoopLength() > 0) {
+      setLoopPlayback(null, 0);
+      setStatus("Loop off");
+      return;
+    }
+    // Use selectedBars if any are highlighted, otherwise just the active bar
+    const bars = state.selectedBars?.length
+      ? [...state.selectedBars].sort((a, b) => a - b)
+      : [state.activeBar];
+    const start = bars[0];
+    const length = bars[bars.length - 1] - start + 1;
+    setLoopPlayback(start, length);
+    setStatus(length === 1
+      ? `Looping bar ${start + 1}`
+      : `Looping bars ${start + 1}–${start + length}`);
   }
 
-  function toggleTwoBarLoop() {
-    const nextLength = activeLoopLength() === 2 ? 0 : 2;
-    setLoopPlayback(nextLength);
-    setStatus(nextLength
-      ? `Looping two bars ${loopRangeLabel(state.loopBarIndex, 2)}`
-      : "Two-bar loop off");
-  }
+  // Keep these for any call sites that still reference them
+  function toggleBarLoop() { toggleSelectedLoop(); }
+  function toggleTwoBarLoop() { toggleSelectedLoop(); }
 
   function playFullSong() {
     setLoopPlayback(0);
@@ -256,6 +264,7 @@ export function createTransport(deps) {
     startPlayback,
     stopPlayback,
     setLoopPlayback,
+    toggleSelectedLoop,
     toggleBarLoop,
     toggleTwoBarLoop,
     playFullSong,

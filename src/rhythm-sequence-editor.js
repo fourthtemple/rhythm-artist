@@ -525,14 +525,17 @@ function previewConfig() {
 function refreshLoopBarButton() {
   const loopLength = activeLoopLength();
   const loopButton = $("#loop-bar");
-  const twoBarButton = $("#loop-two-bars");
   if (loopButton) {
-    loopButton.classList.toggle("is-active", loopLength === 1);
-    loopButton.textContent = loopLength === 1 ? `Loop Bar ${loopRangeLabel(state.loopBarIndex, 1)}` : "Loop Bar";
-  }
-  if (twoBarButton) {
-    twoBarButton.classList.toggle("is-active", loopLength === 2);
-    twoBarButton.textContent = loopLength === 2 ? `Loop 2 Bars ${loopRangeLabel(state.loopBarIndex, 2)}` : "Loop 2 Bars";
+    loopButton.classList.toggle("is-active", loopLength > 0);
+    if (loopLength > 0) {
+      const start = state.loopBarIndex + 1;
+      const end = state.loopBarIndex + loopLength;
+      loopButton.textContent = loopLength === 1
+        ? `Loop Bar ${start}`
+        : `Loop Bars ${start}–${end}`;
+    } else {
+      loopButton.textContent = "Loop Selected";
+    }
   }
   $("#play-song")?.classList.toggle("is-active", loopLength === 0);
 }
