@@ -314,7 +314,7 @@ function loopStartBar(loopIndex = state.activeLoopIndex) {
 
 function activeLoopLength() {
   if (!state.loopBar) return 0;
-  return Math.max(1, Math.min(2, Math.round(state.loopBarLength || 1)));
+  return Math.max(1, Math.round(state.loopBarLength || 1));
 }
 
 function clampLoopStart(start = state.activeBar, length = activeLoopLength() || 1) {
