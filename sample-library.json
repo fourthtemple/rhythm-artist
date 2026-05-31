@@ -1,9 +1,3 @@
 {
-  "roots": [
-    {
-      "id": "drummy",
-      "label": "Drummy Samples",
-      "path": "/Users/sethtenenbaum/Documents/repos/drummy/samples"
-    }
-  ]
+  "roots": []
 }

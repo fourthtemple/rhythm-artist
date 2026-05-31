@@ -193,7 +193,8 @@ const trackInspectorName = $("#track-inspector-name");
 const trackInspectorPanels = $("#track-inspector-panels");
 const trackInspectorTemplate = $("#track-inspector-template");
 const trackInspectorMultiHint = $("#track-inspector-multi-hint");
-const sampleRootSelect = $("#sample-root-select");
+const sampleRootSelect = null; // replaced by File System Access API
+const sampleOpenBtn = $("#sample-open-folder");
 const sampleBreadcrumb = $("#sample-breadcrumb");
 const sampleBrowserList = $("#sample-browser-list");
 const runningFromFile = window.location.protocol === "file:";
@@ -797,7 +798,7 @@ function wireEvents() {
     normalizeEditorConfig, clone, DEFAULT_RHYTHM_CONFIG,
     renderAddTrackDialog,
     openGlobalMixView, closeGlobalMixView, resetMasterEq,
-    sampleRootSelect, sampleBrowser,
+    sampleBrowser,
     closeContextMenu,
     loopPanel,
     selectedVelocity, selectedVelocityNumber,
@@ -947,10 +948,9 @@ const resetMasterEq = () => globalMixPanel.reset();
 // editor only wires it to its DOM elements and supplies the few hooks it needs
 // (status line, current selection, and the "load into track" action).
 const sampleBrowser = createSampleBrowser({
-  rootSelect: sampleRootSelect,
+  openBtn: sampleOpenBtn,
   breadcrumb: sampleBreadcrumb,
   list: sampleBrowserList,
-  offline: runningFromFile,
   setStatus: (text) => { status.textContent = text; },
   getSelectedHit: () => state.selected?.hit ?? null,
   assignSample: (hit, sample) => assignSampleToTrack(hit, sample)

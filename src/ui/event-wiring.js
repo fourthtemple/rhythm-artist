@@ -47,7 +47,7 @@ export function createEventWiring(deps) {
     // track panels
     renderAddTrackDialog,
     openGlobalMixView, closeGlobalMixView, resetMasterEq,
-    sampleRootSelect, sampleBrowser,
+    sampleBrowser,
     closeContextMenu,
     // loop panel
     loopPanel,
@@ -218,9 +218,7 @@ export function createEventWiring(deps) {
         closeContextMenu();
       }
     });
-    sampleRootSelect?.addEventListener("change", () => {
-      void sampleBrowser.browse(sampleRootSelect.value, "");
-    });
+    // sample browser wires its own open-folder button inside createSampleBrowser
   }
 
   // ── Loop-track lane ───────────────────────────────────────────────────────
