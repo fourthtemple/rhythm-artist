@@ -195,6 +195,7 @@ const trackInspectorTemplate = $("#track-inspector-template");
 const trackInspectorMultiHint = $("#track-inspector-multi-hint");
 const sampleRootSelect = null; // replaced by File System Access API
 const sampleOpenBtn = $("#sample-open-folder");
+const sampleFileInput = /** @type {HTMLInputElement} */ ($("#sample-open-folder"));
 const sampleBreadcrumb = $("#sample-breadcrumb");
 const sampleBrowserList = $("#sample-browser-list");
 const runningFromFile = window.location.protocol === "file:";
@@ -949,6 +950,7 @@ const resetMasterEq = () => globalMixPanel.reset();
 // (status line, current selection, and the "load into track" action).
 const sampleBrowser = createSampleBrowser({
   openBtn: sampleOpenBtn,
+  fileInput: sampleFileInput,
   breadcrumb: sampleBreadcrumb,
   list: sampleBrowserList,
   setStatus: (text) => { status.textContent = text; },

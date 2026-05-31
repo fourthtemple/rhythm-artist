@@ -212,7 +212,10 @@
           <section id="sample-browser-section" class="sample-browser-section">
             <div class="sample-browser-header">
               <span class="panel-label">Sample Browser</span>
-              <button type="button" id="sample-open-folder" class="sample-open-btn" title="Open a folder from your computer">📂 Open folder</button>
+              <label class="sample-open-btn" title="Open a folder from your computer">
+                📂 Open folder
+                <input id="sample-open-folder" type="file" webkitdirectory multiple style="display:none">
+              </label>
             </div>
             <div class="sample-browser-breadcrumb" id="sample-breadcrumb"></div>
             <div id="sample-browser-list" class="sample-browser-list" aria-label="Samples"></div>

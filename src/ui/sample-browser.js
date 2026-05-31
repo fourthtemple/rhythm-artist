@@ -4,7 +4,8 @@
 // folder — works in Safari, Chrome, and Firefox with no server required.
 
 export function createSampleBrowser({
-  openBtn,
+  openBtn,   // now unused — the label/input are wired directly in HTML
+  fileInput, // <input type="file" webkitdirectory> element
   breadcrumb,
   list,
   setStatus = () => {},
@@ -162,13 +163,8 @@ export function createSampleBrowser({
   }
 
   function init() {
-    // Create a hidden file input for folder picking
-    const input = document.createElement("input");
-    input.type = "file";
-    input.setAttribute("webkitdirectory", "");
-    input.setAttribute("multiple", "");
-    input.style.display = "none";
-    document.body.appendChild(input);
+    const input = fileInput;
+    if (!input) return;
 
     input.addEventListener("change", () => {
       const files = [...input.files].filter(f => AUDIO_EXTS.has(ext(f.name)));
@@ -178,8 +174,6 @@ export function createSampleBrowser({
       renderCurrent();
       input.value = "";
     });
-
-    if (openBtn) openBtn.addEventListener("click", () => input.click());
   }
 
   // API compatibility
