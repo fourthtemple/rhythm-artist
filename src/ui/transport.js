@@ -140,6 +140,8 @@ export function createTransport(deps) {
   function restartPlayback() {
     state.engine.stop();
     state.engine = new RhythmEngine({ config: previewConfig(), style: "jazz", volume: 0.58 });
+    // Re-subscribe loop track scheduler to the new engine instance
+    state.engine.on("play", () => deps.onEngineRestart?.());
     void reapplyTrackSamples();
     if (state.playing) void startPlayback();
     else setStatus("Restarted");

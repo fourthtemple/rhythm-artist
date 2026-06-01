@@ -296,6 +296,42 @@ export function createTrackPanels(deps) {
       section.appendChild(list);
       host.appendChild(section);
     });
+
+    // ── Samples section ─────────────────────────────────────────
+    // Not registry-driven: clicking "Add Sample Track" opens the
+    // add-loop dialog so the user can load a .wav/.mp3 waveform
+    // to timestretch, slice, and place on the timeline.
+    const sampleSection = document.createElement("div");
+    sampleSection.className = "add-track-group";
+    const sampleHeading = document.createElement("div");
+    sampleHeading.className = "add-track-group-heading";
+    sampleHeading.style.setProperty("--group-accent", "#c084fc");
+    sampleHeading.textContent = "Samples & Loops";
+    sampleSection.appendChild(sampleHeading);
+
+    const sampleDesc = document.createElement("p");
+    sampleDesc.className = "add-track-hint";
+    sampleDesc.style.cssText = "margin: 0 0 8px; font-size: 11px; color: #9eacb6;";
+    sampleDesc.textContent = "Load a .wav or .mp3 — it appears as a waveform lane below the drum grid. Drag to place regions, set chops to slice, adjust gain & length.";
+    sampleSection.appendChild(sampleDesc);
+
+    const sampleList = document.createElement("div");
+    sampleList.className = "add-track-group-list";
+
+    const sampleChip = document.createElement("button");
+    sampleChip.type = "button";
+    sampleChip.className = "add-track-chip";
+    sampleChip.textContent = "+ Add Sample Track";
+    sampleChip.title = "Load an audio file as a waveform lane — timestretch, slice, and arrange regions";
+    sampleChip.addEventListener("click", () => {
+      // Close the add-track dialog, open the add-loop (sample) dialog
+      /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.close();
+      const loopDialog = /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"));
+      if (loopDialog) loopDialog.showModal();
+    });
+    sampleList.appendChild(sampleChip);
+    sampleSection.appendChild(sampleList);
+    host.appendChild(sampleSection);
   }
 
   // ── Track Explorer (right-side track list) ──────────────────
@@ -325,8 +361,9 @@ export function createTrackPanels(deps) {
         const name = document.createElement("button");
         name.type = "button";
         name.className = "track-explorer-name";
-        name.textContent = isInstanceId(id) ? instanceLabel(id) : (def?.label || id);
-        name.title = "Click to select · Shift-click to add a range · ⌘/Ctrl-click to toggle";
+        const trackLabel = isInstanceId(id) ? instanceLabel(id) : (def?.label || id);
+        name.textContent = trackLabel;
+        name.title = `${trackLabel} — Click to select · Shift-click to add a range · ⌘/Ctrl-click to toggle`;
         const hasSample = Boolean(state.config.trackSamples?.[id]);
         if (hasSample) {
           const dot = document.createElement("span");

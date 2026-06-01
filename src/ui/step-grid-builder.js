@@ -47,6 +47,7 @@
  * @param {(event:MouseEvent, index:number) => void} deps.openBarContextMenu
  * @param {(event:MouseEvent, hit:string) => void} deps.openTrackContextMenu
  * @param {() => void} deps.resetSelectedPanel
+ * @param {() => void} [deps.onAfterBuild] Called after buildStepGrid rebuilds the DOM (e.g. to re-append loop lanes).
  */
 export function createStepGridBuilder(deps) {
   const {
@@ -87,6 +88,7 @@ export function createStepGridBuilder(deps) {
     openTrackContextMenu,
     resetSelectedPanel
   } = deps;
+  const onAfterBuild = deps.onAfterBuild ?? (() => {});
 
   function buildStepGrid() {
     const segments = state.segmentsCount ?? 2;
@@ -129,6 +131,7 @@ export function createStepGridBuilder(deps) {
       rowLabel.title = `Select ${label} row · Shift-click for a range · ⌘/Ctrl-click to toggle`;
       const rowText = document.createElement("span");
       rowText.textContent = label;
+      rowText.title = label;
       const soloButton = document.createElement("button");
       soloButton.type = "button";
       soloButton.className = "solo-button";
@@ -203,6 +206,7 @@ export function createStepGridBuilder(deps) {
       }
     });
     renderStepGrid();
+    onAfterBuild();
   }
 
   function buildLoopTabs() {
@@ -216,7 +220,7 @@ export function createStepGridBuilder(deps) {
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.loop = String(index);
-      button.textContent = `Loop ${index + 1}`;
+      button.textContent = `Verse ${index + 1}`;
       button.title = `Bars ${index * LOOP_BAR_COUNT + 1}-${(index + 1) * LOOP_BAR_COUNT} · Shift-click to multi-select · Right-click to copy/paste`;
       button.classList.toggle("is-active", index === state.activeLoopIndex);
       button.classList.toggle("is-multi-selected", state.selectedLoops.includes(index));

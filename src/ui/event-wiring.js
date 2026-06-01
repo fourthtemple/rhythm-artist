@@ -198,7 +198,108 @@ export function createEventWiring(deps) {
   }
 
   // ── Loop-track lane ───────────────────────────────────────────────────────
+  // ── BPM detector (autocorrelation on onset envelope) ─────────────────────
+  async function detectBpm(arrayBuffer) {
+    const ctx = new OfflineAudioContext(1, 1, 44100);
+    let buffer;
+    try {
+      buffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+    } catch { return null; }
+
+    const sr = buffer.sampleRate;
+    const mono = buffer.getChannelData(0);
+
+    // Downsample to ~200 Hz onset envelope using 10 ms RMS frames
+    const frameSize = Math.round(sr * 0.01);
+    const envelope = [];
+    for (let i = 0; i < mono.length - frameSize; i += frameSize) {
+      let sum = 0;
+      for (let j = 0; j < frameSize; j++) sum += mono[i + j] ** 2;
+      envelope.push(Math.sqrt(sum / frameSize));
+    }
+
+    // Half-wave rectified first difference (onset strength)
+    const onset = envelope.map((v, i) => i === 0 ? 0 : Math.max(0, v - envelope[i - 1]));
+
+    // Autocorrelation over lag range corresponding to 60-200 BPM
+    const fps = sr / frameSize; // frames per second (~100)
+    const lagMin = Math.round(fps * 60 / 200);
+    const lagMax = Math.round(fps * 60 / 60);
+    let bestLag = lagMin, bestScore = -Infinity;
+    for (let lag = lagMin; lag <= lagMax; lag++) {
+      let score = 0;
+      for (let i = 0; i < onset.length - lag; i++) score += onset[i] * onset[i + lag];
+      if (score > bestScore) { bestScore = score; bestLag = lag; }
+    }
+    const bpm = Math.round((fps / bestLag) * 60);
+    return { bpm, duration: buffer.duration };
+  }
+
   function wireLoopTrackEvents() {
+    let _analysisCtx = null;
+
+    // Auto-analyse when a file is picked
+    const fileInput = /** @type {HTMLInputElement} */ ($("#loop-track-file"));
+    if (fileInput) {
+      fileInput.addEventListener("change", async () => {
+        const file = fileInput.files?.[0];
+        const analysisEl = $("#loop-track-analysis");
+        const analyzingEl = $("#loop-track-analyzing");
+        const nameInput = /** @type {HTMLInputElement} */ ($("#loop-track-name"));
+        const barsInput = /** @type {HTMLInputElement} */ ($("#loop-track-bars"));
+        const bpmEl = $("#loop-detected-bpm");
+        const durEl = $("#loop-detected-dur");
+        const barsEl = $("#loop-detected-bars");
+        const noteEl = $("#loop-detected-note");
+
+        if (!file) return;
+
+        // Pre-fill name from filename (strip extension)
+        if (nameInput && !nameInput.value) {
+          nameInput.value = file.name.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+        }
+
+        if (analysisEl) analysisEl.hidden = true;
+        if (analyzingEl) analyzingEl.hidden = false;
+
+        let result = null;
+        try {
+          const arrayBuffer = await file.arrayBuffer();
+          result = await detectBpm(arrayBuffer);
+        } catch (err) {
+          console.warn("[loop] BPM analysis failed:", err);
+        } finally {
+          if (analyzingEl) analyzingEl.hidden = true;
+        }
+        if (!result) return;
+
+        const { bpm, duration } = result;
+        // Get project BPM from the BPM slider/input
+        const projectBpm = Number(state?.config?.patterns?.jazz?.bpm || 120);
+        // Bars = duration / (60 / bpm * beatsPerBar)
+        const secPerBeat = 60 / bpm;
+        const secPerBar = secPerBeat * 4;
+        const rawBars = duration / secPerBar;
+        const roundedBars = Math.max(1, Math.round(rawBars));
+
+        // How many bars would this be at the project BPM?
+        const projectSecPerBar = (60 / projectBpm) * 4;
+        const barsAtProject = Math.max(1, Math.round(duration / projectSecPerBar));
+
+        if (bpmEl) bpmEl.textContent = `${bpm} BPM`;
+        if (durEl) durEl.textContent = `${duration.toFixed(2)}s`;
+        if (barsEl) barsEl.textContent = String(barsAtProject);
+        if (noteEl) {
+          const diff = Math.abs(bpm - projectBpm);
+          noteEl.textContent = diff < 2
+            ? "✓ matches project tempo"
+            : `(file is ${bpm} BPM, project is ${projectBpm} BPM)`;
+        }
+        if (barsInput) barsInput.value = String(barsAtProject);
+        if (analysisEl) analysisEl.hidden = false;
+      });
+    }
+
     $("#add-loop-track-btn")?.addEventListener("click", () => {
       const dialog = /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"));
       if (dialog) dialog.showModal();
@@ -209,17 +310,22 @@ export function createEventWiring(deps) {
     $("#add-loop-form")?.addEventListener("submit", (event) => {
       event.preventDefault();
       const nameInput = /** @type {HTMLInputElement} */ ($("#loop-track-name"));
-      const fileInput = /** @type {HTMLInputElement} */ ($("#loop-track-file"));
+      const fileInput2 = /** @type {HTMLInputElement} */ ($("#loop-track-file"));
       const barsInput = /** @type {HTMLInputElement} */ ($("#loop-track-bars"));
       const name = nameInput?.value.trim();
-      const file = fileInput?.files?.[0];
+      const file = fileInput2?.files?.[0];
       const barsInFile = Math.max(1, Math.round(Number(barsInput?.value) || 4));
       if (!name || !file) return;
       void loopPanel.addTrack(name, file, barsInFile);
       /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"))?.close();
+      // Reset for next use
       if (nameInput) nameInput.value = "";
-      if (fileInput) fileInput.value = "";
+      if (fileInput2) fileInput2.value = "";
       if (barsInput) barsInput.value = "4";
+      const analysisEl = $("#loop-track-analysis");
+      const analyzingEl = $("#loop-track-analyzing");
+      if (analysisEl) analysisEl.hidden = true;
+      if (analyzingEl) analyzingEl.hidden = true;
     });
     $("#loop-region-start")?.addEventListener("change", () => loopPanel.updateSelectedRegion());
     $("#loop-region-len")?.addEventListener("change", () => loopPanel.updateSelectedRegion());
@@ -227,6 +333,12 @@ export function createEventWiring(deps) {
     $("#loop-region-gain")?.addEventListener("input", () => {
       const val = Number(/** @type {HTMLInputElement} */ ($("#loop-region-gain"))?.value ?? 1);
       const out = /** @type {HTMLElement} */ ($("#loop-region-gain-value"));
+      if (out) out.textContent = val.toFixed(2);
+      loopPanel.updateSelectedRegion();
+    });
+    $("#loop-region-slice-sensitivity")?.addEventListener("input", () => {
+      const val = Number(/** @type {HTMLInputElement} */ ($("#loop-region-slice-sensitivity"))?.value ?? 0.12);
+      const out = /** @type {HTMLElement} */ ($("#loop-region-slice-sensitivity-value"));
       if (out) out.textContent = val.toFixed(2);
       loopPanel.updateSelectedRegion();
     });

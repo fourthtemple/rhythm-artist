@@ -40,10 +40,10 @@
 
       <section class="workspace">
         <section class="sequencer-panel" aria-label="Step sequencer">
-          <div class="loop-toolbar" aria-label="32-bar loop controls">
-            <div class="loop-tabs" role="tablist" aria-label="Song loops"></div>
+          <div class="loop-toolbar" aria-label="Verse arrangement controls">
+            <div class="loop-tabs" role="tablist" aria-label="Song verses"></div>
             <label>
-              <span>Loops</span>
+              <span>Verses</span>
               <input id="loop-count" type="number" min="1" max="8" step="1" value="1" />
             </label>
             <label title="How many bars to show at once">
@@ -132,19 +132,9 @@
           </section>
         </section>
 
-        <aside class="control-panel" aria-label="Rhythm controls">
-          <!-- ── Track Explorer ───────────────────────────── -->
-          <section id="track-explorer-section" class="track-explorer-section">
-            <div class="track-explorer-header">
-              <span class="panel-label">Tracks</span>
-              <div class="track-explorer-actions">
-                <button id="add-track-btn-panel" type="button" class="add-track-btn">+ Track</button>
-                <button id="manage-groups-btn" type="button" class="add-track-btn">Groups</button>
-              </div>
-            </div>
-            <div id="track-explorer-list" class="track-explorer-list" aria-label="Track list"></div>
-          </section>
+        <div class="workspace-resize-handle" id="workspace-resize-handle" title="Drag to resize panel"></div>
 
+        <aside class="control-panel" aria-label="Rhythm controls">
           <!-- ── Track Inspector (per-track settings) ─────── -->
           <section id="track-inspector-section" class="track-inspector-section">
             <div class="track-inspector-header">
@@ -208,6 +198,57 @@
             </template>
           </section>
 
+          <!-- ── Track Explorer + Sample Tracks ─────────── -->
+          <section id="track-explorer-section" class="track-explorer-section">
+            <div class="track-explorer-header">
+              <span class="panel-label">Tracks</span>
+              <div class="track-explorer-actions">
+                <button id="add-track-btn-panel" type="button" class="add-track-btn">+ Track</button>
+                <button id="manage-groups-btn" type="button" class="add-track-btn">Groups</button>
+                <button id="add-loop-track-btn" type="button" class="add-track-btn">+ Sample</button>
+              </div>
+            </div>
+            <div id="track-explorer-list" class="track-explorer-list" aria-label="Track list"></div>
+            <!-- Sample / Loop tracks sit below drum tracks in the same section -->
+            <div class="track-explorer-group" id="loop-tracks-group">
+              <div class="track-explorer-group-heading" style="--group-accent:#a78bfa">Sample Tracks</div>
+              <p class="panel-hint" style="margin:2px 0 6px;font-size:11px">Load audio loops — each appears as a lane below the grid.</p>
+              <div id="loop-track-list" class="loop-track-list"></div>
+            </div>
+          </section>
+
+          <!-- ── Sample Region Panel ────────────────────── -->
+          <section id="loop-region-panel" class="loop-region-panel" hidden>
+            <span class="panel-label">Sample Region</span>
+            <div class="loop-region-controls">
+              <label>
+                <span>Start Bar</span>
+                <input id="loop-region-start" type="number" min="0" step="1" value="0" />
+              </label>
+              <label>
+                <span>Length (bars)</span>
+                <input id="loop-region-len" type="number" min="1" step="1" value="2" />
+              </label>
+              <label>
+                <span>Chops</span>
+                <input id="loop-region-chops" type="number" min="1" max="32" step="1" value="4" />
+              </label>
+              <label title="Beat slice detection sensitivity — lower values = fewer detected slices">
+                <span>Slice Sensitivity</span>
+                <input id="loop-region-slice-sensitivity" type="range" min="0.01" max="0.5" step="0.01" value="0.12" />
+                <output id="loop-region-slice-sensitivity-value">0.12</output>
+              </label>
+              <label>
+                <span>Gain</span>
+                <input id="loop-region-gain" type="range" min="0" max="2" step="0.01" value="1" />
+                <output id="loop-region-gain-value">1.00</output>
+              </label>
+            </div>
+            <div class="loop-region-actions">
+              <button id="loop-region-delete" type="button" class="btn-danger">Delete Region</button>
+            </div>
+          </section>
+
           <!-- ── Sample Browser ──────────────────────────── -->
           <section id="sample-browser-section" class="sample-browser-section">
             <div class="sample-browser-header">
@@ -223,56 +264,17 @@
           </section>
 
           <section>
-            <span class="panel-label">Groove</span>              <label>
-                <span>BPM</span>
-                <input data-config="patterns.jazz.bpm" type="range" min="40" max="220" step="1" />
-                <output></output>
-              </label>
+            <span class="panel-label">Groove</span>
+            <label>
+              <span>BPM</span>
+              <input data-config="patterns.jazz.bpm" type="range" min="40" max="220" step="1" />
+              <output></output>
+            </label>
             <label>
               <span>Swing</span>
               <input data-config="patterns.jazz.swing" type="range" min="0" max="0.42" step="0.01" />
               <output></output>
             </label>
-          </section>
-
-
-
-
-
-          <!-- ── Loop Tracks ─────────────────────────────── -->
-          <section id="loop-tracks-section">
-            <div class="loop-tracks-header">
-              <span class="panel-label">Loop Tracks</span>
-              <button id="add-loop-track-btn" type="button" class="add-track-btn">+ Add Loop</button>
-            </div>
-            <div id="loop-track-list" class="loop-track-list"></div>
-          </section>
-
-          <!-- ── Loop Region Panel ──────────────────────── -->
-          <section id="loop-region-panel" class="loop-region-panel" hidden>
-            <span class="panel-label">Loop Region</span>
-            <div class="loop-region-controls">
-              <label>
-                <span>Start Bar</span>
-                <input id="loop-region-start" type="number" min="0" step="1" value="0" />
-              </label>
-              <label>
-                <span>Length (bars)</span>
-                <input id="loop-region-len" type="number" min="1" step="1" value="2" />
-              </label>
-              <label>
-                <span>Chops</span>
-                <input id="loop-region-chops" type="number" min="1" max="32" step="1" value="4" />
-              </label>
-              <label>
-                <span>Gain</span>
-                <input id="loop-region-gain" type="range" min="0" max="2" step="0.01" value="1" />
-                <output id="loop-region-gain-value">1.00</output>
-              </label>
-            </div>
-            <div class="loop-region-actions">
-              <button id="loop-region-delete" type="button" class="btn-danger">Delete Region</button>
-            </div>
           </section>
         </aside>
       </section>
@@ -317,27 +319,43 @@
       }
     </script>
 
-    <!-- ── Add Loop Track Modal ──────────────────────────── -->
+    <!-- ── Add Sample Modal ──────────────────────────────── -->
     <dialog id="add-loop-dialog" class="add-track-dialog">
       <form method="dialog" id="add-loop-form">
-        <h2>Add Loop Track</h2>
-        <label>
-          <span>Name</span>
-          <input id="loop-track-name" type="text" placeholder="e.g. Break Loop" required maxlength="32" />
-        </label>
+        <h2>Add Sample Track</h2>
         <label>
           <span>Audio File</span>
           <input id="loop-track-file" type="file" accept=".wav,.mp3,.ogg,.flac" required />
-          <em class="add-track-hint">Drop a .wav / .mp3 audio loop here</em>
         </label>
+        <!-- Auto-detected info shown after file pick -->
+        <div id="loop-track-analysis" class="loop-track-analysis" hidden>
+          <div class="loop-analysis-row">
+            <span class="loop-analysis-label">Detected BPM</span>
+            <strong id="loop-detected-bpm">—</strong>
+            <span class="loop-analysis-label" style="margin-left:16px">Length</span>
+            <strong id="loop-detected-dur">—</strong>
+          </div>
+          <div class="loop-analysis-row">
+            <span class="loop-analysis-label">Bars at project BPM</span>
+            <strong id="loop-detected-bars">—</strong>
+            <span class="loop-analysis-muted" id="loop-detected-note"></span>
+          </div>
+        </div>
+        <div id="loop-track-analyzing" class="loop-analysis-row" hidden>
+          <span class="loop-analysis-muted">Analysing…</span>
+        </div>
         <label>
-          <span>Bars in file</span>
+          <span>Name</span>
+          <input id="loop-track-name" type="text" placeholder="e.g. Amen Break" required maxlength="32" />
+        </label>
+        <!-- Manual override, pre-filled from analysis -->
+        <label id="loop-bars-label">
+          <span>Bars <span class="loop-analysis-muted">(override if wrong)</span></span>
           <input id="loop-track-bars" type="number" min="1" max="64" step="1" value="4" />
-          <em class="add-track-hint">How many bars the audio file represents</em>
         </label>
         <div class="add-track-dialog-actions">
           <button type="button" id="add-loop-cancel">Cancel</button>
-          <button type="submit" id="add-loop-confirm">Add Loop</button>
+          <button type="submit" id="add-loop-confirm">Add Sample</button>
         </div>
       </form>
     </dialog>
@@ -355,5 +373,48 @@
     </dialog>
 
     <script type="module" src="./src/rhythm-sequence-editor.js"></script>
+    <script>
+      // ── Workspace right-panel drag-to-resize ──
+      (function () {
+        const MIN_W = 220, MAX_W = 560, STORAGE_KEY = "rightPanelWidth";
+        const handle = document.getElementById("workspace-resize-handle");
+        const workspace = handle && handle.closest(".workspace");
+        if (!handle || !workspace) return;
+
+        function applyWidth(w) {
+          w = Math.max(MIN_W, Math.min(MAX_W, w));
+          workspace.style.setProperty("--right-panel-width", w + "px");
+          return w;
+        }
+
+        // Restore saved width
+        const saved = parseInt(localStorage.getItem(STORAGE_KEY), 10);
+        if (saved) applyWidth(saved);
+
+        let startX, startW;
+
+        handle.addEventListener("pointerdown", (e) => {
+          e.preventDefault();
+          handle.classList.add("is-dragging");
+          startX = e.clientX;
+          const cs = getComputedStyle(workspace);
+          const cols = cs.gridTemplateColumns.split(" ");
+          startW = parseInt(cols[cols.length - 1], 10) || 320;
+
+          const onMove = (ev) => {
+            const delta = startX - ev.clientX; // dragging left = panel grows
+            const newW = applyWidth(startW + delta);
+            localStorage.setItem(STORAGE_KEY, newW);
+          };
+          const onUp = () => {
+            handle.classList.remove("is-dragging");
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+          };
+          window.addEventListener("pointermove", onMove);
+          window.addEventListener("pointerup", onUp);
+        });
+      })();
+    </script>
   </body>
 </html>

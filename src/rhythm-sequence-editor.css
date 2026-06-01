@@ -274,10 +274,11 @@ button.is-active {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(620px, 1fr) 320px;
-  gap: 14px;
+  grid-template-columns: minmax(400px, 1fr) 6px var(--right-panel-width, 320px);
+  gap: 0 8px;
   min-height: 0;
   overflow: hidden;
+  max-width: 100%;
 }
 
 .sequencer-panel {
@@ -410,6 +411,14 @@ button.is-active {
   min-height: 0;
   overflow: auto;
   padding-bottom: 6px;
+}
+
+/* Prevent any label cell (including sample-lane-label) from blowing out the 92px column */
+.step-grid > .track-label,
+.step-grid > .sample-lane-label {
+  max-width: 92px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 /* bar boundary marker between segments */
@@ -777,12 +786,31 @@ button.is-active {
 }
 
 .control-panel {
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
   min-height: 0;
-  overflow: auto;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 12px;
+  /* Let the whole panel scroll — sections size to their content */
+}
+
+/* ── Workspace resize handle ── */
+.workspace-resize-handle {
+  grid-column: 2;
+  cursor: ew-resize;
+  width: 6px;
+  background: var(--line);
+  border-radius: 3px;
+  transition: background 0.15s;
+  align-self: stretch;
+}
+
+.workspace-resize-handle:hover,
+.workspace-resize-handle.is-dragging {
+  background: var(--accent-2);
 }
 
 .control-panel section {
@@ -792,6 +820,7 @@ button.is-active {
   border: 1px solid #27313d;
   border-radius: 6px;
   background: var(--panel-soft);
+  flex-shrink: 0;
 }
 
 .control-panel label {
@@ -840,73 +869,256 @@ input[type="range"] {
   font-size: 12px;
 }
 
-/* ══ Loop Track Lanes ══════════════════════════════════════════ */
+/* ══ Sample / Loop Track Lanes ════════════════════════════════ */
 
-.loop-lane-row {
-  display: contents;
+/* Lane sits in the step grid like any other row; the label uses
+   the same .track-label column, the lane spans all step columns. */
+.sample-lane-label {
+  /* inherits .track-label grid styles */
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  min-width: 0;
 }
 
-.loop-lane {
+.sample-lane-label span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* grid item — use align/justify, not flex */
+  justify-self: stretch;
+}
+
+/* Solo button on sample/loop track label */
+.sample-lane-solo {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0;
+  border-radius: 3px;
+  border: 1px solid #3a4a5a;
+  background: #1a2230;
+  color: #7a9ab8;
+  cursor: pointer;
+  line-height: 1;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.sample-lane-solo:hover {
+  background: #223040;
+  color: #adc8e0;
+  border-color: #5580a0;
+}
+
+.sample-lane-solo.is-active {
+  background: #e2cf76;
+  color: #1a1500;
+  border-color: #e2cf76;
+}
+
+.sample-lane {
   position: relative;
   grid-column: 2 / -1;
-  height: 54px;
-  background: #0e1520;
-  border-radius: 5px;
+  height: 64px;
+  background: #080e18;
+  border-radius: 6px;
   overflow: hidden;
   cursor: crosshair;
-  border: 1px solid #27313d;
+  border: 1px solid #1e2d3e;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-.step-grid--zoom-2 .loop-lane  { height: 36px; }
-.step-grid--zoom-4 .loop-lane  { height: 22px; }
-.step-grid--zoom-8 .loop-lane  { height: 14px; }
-
-.loop-region {
+/* Ruler canvas fills the full lane behind regions */
+.sample-lane-ruler {
   position: absolute;
-  top: 3px;
-  bottom: 3px;
-  background: linear-gradient(180deg, #3a6bb0 0%, #255090 100%);
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  display: block;
+}
+
+/* ── Region block ── */
+.sample-region {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
   border-radius: 4px;
-  border: 1px solid #5590e0;
-  cursor: grab;
+  border: 1px solid rgba(120,180,255,0.25);
+  background: transparent;
+  cursor: crosshair; /* left-click draws a marquee, same as empty space */
   overflow: hidden;
-  min-width: 6px;
+  min-width: 8px;
+  box-shadow: none;
+  transition: border-color 0.1s;
 }
 
-.loop-region.is-selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(228,192,64,0.35);
+/* Resize handle keeps ew-resize; region itself uses crosshair everywhere */
+.sample-region-resize { cursor: ew-resize; }
+
+/* No per-region selection highlight — selection is handled by the marquee only */
+
+/* Move-pending state: bright outline to indicate drag-to-move is armed */
+.sample-region--move-pending {
+  border-color: rgba(249,216,113,0.9) !important;
+  box-shadow: 0 0 0 2px rgba(249,216,113,0.35), inset 0 0 0 1px rgba(249,216,113,0.2);
+  cursor: grab !important;
+  z-index: 8;
 }
 
-.loop-region-label {
+/* Waveform canvas inside the region — fills fully, no overlay */
+.sample-region-wave {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: 0.9;
+  display: block;
+}
+
+/* Label: only visible on hover so it doesn't obscure the waveform */
+.sample-region-label {
   position: absolute;
   left: 4px;
-  top: 2px;
-  font-size: 9px;
-  color: #c8dfff;
+  bottom: 2px;
+  right: 12px;
+  font-size: 8px;
+  font-weight: 700;
+  color: rgba(200,230,255,0.0);
   pointer-events: none;
   white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  z-index: 2;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+  transition: color 0.15s;
 }
 
-.loop-region-resize {
+.sample-region:hover .sample-region-label {
+  color: rgba(200,230,255,0.75);
+}
+
+.sample-region-resize {
   position: absolute;
   right: 0;
   top: 0;
   bottom: 0;
   width: 8px;
   cursor: ew-resize;
-  background: rgba(255,255,255,0.08);
+  background: linear-gradient(to left, rgba(255,255,255,0.12), transparent);
+  z-index: 3;
 }
 
-.loop-chop-line {
+.sample-region-mode-badge {  position: absolute;
+  bottom: 3px;
+  right: 11px;
+  font-size: 10px;
+  line-height: 1;
+  pointer-events: none;
+  z-index: 3;
+  opacity: 0.75;
+}
+.sample-region-mode-badge.mode-stretch {
+  color: #f9d871;
+}
+.sample-region-mode-badge.mode-cut {
+  color: rgba(200,230,255,0.6);
+}
+
+/* Playhead line for sample lanes */
+.sample-lane-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #fff;
+  box-shadow: 0 0 4px rgba(255,255,255,0.8), 0 0 8px rgba(249,216,113,0.6);
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 10;
+  transform: translateX(-1px);
+  will-change: left;
+}
+
+/* ── Marquee selection overlay ── */
+.lane-marquee {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border: 1.5px dashed rgba(226,207,118,0.80);
+  background: rgba(226,207,118,0.05);
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 20;
+}
+
+/* Drawing phase: bright yellow dashes, no fill */
+.lane-marquee--drawing {
+  border-color: rgba(226,207,118,0.95);
+  background: transparent;
+}
+
+/* Once promoted to active, enable pointer events on the marquee body */
+.lane-marquee--active {
+  pointer-events: auto;
+  cursor: pointer;
+  border-style: solid;
+  border-color: rgba(226,207,118,0.95);
+  background: transparent;
+}
+
+/* Edge drag handles — invisible hit zones, no visual bar */
+.lane-marquee-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: ew-resize;
+  z-index: 22;
+}
+.lane-marquee-handle--left  { left:  -5px; }
+.lane-marquee-handle--right { right: -5px; }
+
+/* ── Marquee action popup (same look as context menu) ── */
+.marquee-action-popup {
+  min-width: 210px;
+}
+
+.sample-lane-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #fff;
+  box-shadow: 0 0 4px rgba(255,255,255,0.8), 0 0 8px rgba(249,216,113,0.6);
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 10;
+  transform: translateX(-1px);
+  will-change: left;
+}
+
+.sample-chop-line {
   position: absolute;
   top: 0;
   bottom: 0;
   width: 1px;
-  background: rgba(228,192,64,0.55);
+  background: rgba(226,207,118,0.6);
   pointer-events: none;
+  z-index: 2;
 }
+
+/* Legacy class aliases so existing references don't break */
+.loop-lane { display: none; }
+.loop-lane-row-label { display: none; }
 
 /* ── Loop track list in side panel ─────────────────── */
 
@@ -914,6 +1126,13 @@ input[type="range"] {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+/* Sample tracks sub-group inside the track explorer section */
+#loop-tracks-group {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #2a2f3e;
 }
 
 .add-track-btn {
@@ -929,6 +1148,7 @@ input[type="range"] {
 .loop-track-list {
   display: grid;
   gap: 4px;
+  /* No max-height — whole panel scrolls */
 }
 
 .loop-track-item {
@@ -941,6 +1161,8 @@ input[type="range"] {
   border: 1px solid #27313d;
   cursor: pointer;
   font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .loop-track-item.is-selected {
@@ -950,6 +1172,7 @@ input[type="range"] {
 
 .loop-track-item-name {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1180,7 +1403,17 @@ input[type="range"] {
   border-radius: 10px;
   background: #161a26;
   padding: 10px 12px;
-  margin-bottom: 12px;
+  margin-bottom: 0;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+/* The track inspector section — sized to its content, no flex-grow needed */
+.track-inspector-section {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
 }
 
 .track-explorer-header,
@@ -1191,6 +1424,7 @@ input[type="range"] {
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
+  flex-shrink: 0;
 }
 
 .panel-label {
@@ -1227,8 +1461,7 @@ input[type="range"] {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 240px;
-  overflow-y: auto;
+  /* No max-height — the whole control-panel scrolls */
 }
 
 .track-explorer-group-heading {
@@ -1578,8 +1811,7 @@ input[type="range"] {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 260px;
-  overflow-y: auto;
+  /* No max-height — whole panel scrolls */
 }
 
 .sample-row {
@@ -1729,6 +1961,7 @@ input[type="range"] {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  /* No overflow/min-height needed — parent panel scrolls as a whole */
 }
 
 .track-inspector-panels:empty::after {
@@ -2200,6 +2433,42 @@ input[type="range"] {
   font-size: 10px;
   color: var(--accent, #7dd3fc);
   text-align: right;
+}
+
+/* ── Add Sample dialog — auto-analysis result ── */
+.loop-track-analysis {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 7px;
+  background: rgba(120, 215, 186, 0.08);
+  border: 1px solid rgba(120, 215, 186, 0.25);
+  margin: 4px 0 8px;
+}
+
+.loop-analysis-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.loop-analysis-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.loop-analysis-row strong {
+  color: var(--accent-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.loop-analysis-muted {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: italic;
 }
 
 /* end of file */

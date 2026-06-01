@@ -604,7 +604,8 @@ const gridBuilder = createStepGridBuilder({
   openLoopContextMenu,
   openBarContextMenu,
   openTrackContextMenu,
-  resetSelectedPanel
+  resetSelectedPanel,
+  onAfterBuild: () => loopPanel.rebuildStepGridRows()
 });
 
 function buildStepGrid() { return gridBuilder.buildStepGrid(); }
@@ -725,7 +726,8 @@ const transport = createTransport({
   selectStep,
   soundingStepForRow,
   getHitData,
-  syncSelectedPitchDisplay
+  syncSelectedPitchDisplay,
+  onEngineRestart: () => loopPanel.attachScheduler()
 });
 
 function startPlayback() { return transport.startPlayback(); }
@@ -833,8 +835,9 @@ window.rhythmEditorSetTrackPan = setTrackPan;
 const loopPanel = createLoopTrackPanel({
   stepGrid,
   $,
-  getBarsLength: () => bars().length,
-  setStatus: (msg) => { status.textContent = msg; }
+  getBarsLength: () => LOOP_BAR_COUNT,
+  setStatus: (msg) => { status.textContent = msg; },
+  getEngine: () => state.engine
 });
 
 // ══ Track panels controller (grid mgmt + Add-Track + Explorer + Inspector) ══
@@ -980,6 +983,13 @@ wireEvents();
 applyZoom(8);
 applySegments(2);
 refreshLoopBarButton();
+
+// ── Attach loop-track scheduler whenever the engine starts/restarts ─────────
+// The engine emits "play" once it's running and has a live AudioContext;
+// we (re)subscribe loop-track bar events at that point so the buffer source
+// nodes are scheduled against the same clock.
+state.engine.on("play", () => loopPanel.attachScheduler());
+state.engine.on("stop", () => loopPanel.detachScheduler());
 
 // ── Bottom-panel resize handle ──────────────────────────────────────────────
 {
