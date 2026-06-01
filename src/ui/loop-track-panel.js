@@ -146,6 +146,8 @@ export function createLoopTrackPanel({
   stepGrid,
   $ = (sel) => document.querySelector(sel),
   getBarsLength = () => 1,
+  getActiveBar = () => 0,
+  getSegmentsCount = () => getBarsLength(),
   setStatus = () => {},
   getEngine = () => null
 }) {
@@ -248,9 +250,16 @@ export function createLoopTrackPanel({
       const now = ctx ? ctx.currentTime : 0;
       // How far into the current bar are we? (0..1)
       const fracInBar = Math.min(1, Math.max(0, (now - _playheadScheduledTime) / barDurationSec));
-      // Global fractional bar position (local)
-      const globalFrac = (_playheadBar + fracInBar) / bars;
-      const pct = Math.min(100, Math.max(0, globalFrac * 100));
+      // Position within the *visible* window (activeBar … activeBar+segmentsCount).
+      // If the playhead bar is outside the window, hide it.
+      const segments = totalBars();
+      const activeBar = getActiveBar();
+      const localBar = _playheadBar - activeBar;
+      if (localBar < 0 || localBar >= segments) {
+        stepGrid.querySelectorAll(".sample-lane-playhead").forEach((el) => { el.style.display = "none"; });
+        return;
+      }
+      const pct = Math.min(100, Math.max(0, ((localBar + fracInBar) / segments) * 100));
 
       stepGrid.querySelectorAll(".sample-lane-playhead").forEach((el) => {
         el.style.display = "";
@@ -274,16 +283,20 @@ export function createLoopTrackPanel({
 
   // ── Scheduler ────────────────────────────────────────────────────────────
   // Called on every "bar" event from the engine.
-  function onBarEvent({ bar, scheduledTime, bpm }) {
+  function onBarEvent({ bar, phraseBar, scheduledTime, bpm }) {
     const engine = getEngine();
     const ctx = engine?.context;
     if (!ctx) return;
     const masterOut = engine.masterGain ?? ctx.destination;
     const anySolo = soloTracks.size > 0;
-    const bars = totalBars();
-    const localBar = bar % bars;
+    const visibleBars = totalBars();
+    // phraseBar is 0-based position within the current phrase (0..PHRASE_BARS-1),
+    // matching exactly what the drum grid uses. Fall back to bar%songBars if missing.
+    const songBars = totalSongBars();
+    const currentPhraseBar = (phraseBar != null) ? phraseBar : (bar % songBars);
 
-    _playheadBar = localBar;
+    // _playheadBar is the phraseBar — renderPlayheads converts to visible-window coords.
+    _playheadBar = currentPhraseBar;
     _playheadScheduledTime = scheduledTime;
     renderPlayheads();
 
@@ -301,7 +314,7 @@ export function createLoopTrackPanel({
       }
       if (anySolo && !soloTracks.has(track.id)) return;
       track.regions.forEach((region) => {
-        if (region.bar !== localBar) return;
+        if (region.bar !== currentPhraseBar) return;
         const gain = region.gain ?? 1;
         const mode = region.mode ?? "cut";
         const secPerBeat = 60 / bpm;
@@ -324,7 +337,7 @@ export function createLoopTrackPanel({
           playDuration = Math.min(srcWindowSec, regionDurationSec);
         }
 
-        console.log(`[loop] scheduling "${track.name}" bar=${localBar} rate=${playbackRate.toFixed(3)} dur=${playDuration.toFixed(2)}s at ${scheduledTime.toFixed(3)}`);
+        console.log(`[loop] scheduling "${track.name}" bar=${currentPhraseBar} rate=${playbackRate.toFixed(3)} dur=${playDuration.toFixed(2)}s at ${scheduledTime.toFixed(3)}`);
 
         const src = ctx.createBufferSource();
         src.buffer = track.buffer;
@@ -407,7 +420,10 @@ export function createLoopTrackPanel({
   }
 
   const trackById = (id) => loopTracks.find((t) => t.id === id) ?? null;
-  const totalBars = () => Math.max(1, getBarsLength());
+  // Visible window: how many bars the step grid is currently showing.
+  const totalBars = () => Math.max(1, getSegmentsCount());
+  // Full song length: used for scheduling so regions outside the window still play.
+  const totalSongBars = () => Math.max(1, getBarsLength());
 
   async function addTrack(name, file, barsInFile) {
     const audioUrl = URL.createObjectURL(file);
@@ -431,7 +447,7 @@ export function createLoopTrackPanel({
     // Seed a default region spanning the full timeline so the waveform is
     // immediately visible across the entire lane.  barsInFile controls audio
     // looping/cut scheduling, but the region visually fills the whole song.
-    const bars = totalBars();
+    const bars = totalSongBars();
     track.regions.push({
       bar: 0,
       len: bars,
@@ -527,7 +543,7 @@ export function createLoopTrackPanel({
     const normalized = normalizeRegion({
       bar: startEl?.value, len: lenEl?.value,
       chops: chopsEl?.value, gain: gainEl?.value
-    }, totalBars());
+    }, totalSongBars());
     region.bar = normalized.bar; region.len = normalized.len;
     region.chops = normalized.chops; region.gain = normalized.gain;
     if (sensEl) {
@@ -654,8 +670,8 @@ export function createLoopTrackPanel({
 
     // ── Loop: create a region spanning the selection
     addItem("↺  Loop selection", (startBar, len) => {
-      const bars = totalBars();
-      const clampedLen = Math.max(1, Math.min(len, bars - startBar));
+      const songBars = totalSongBars();
+      const clampedLen = Math.max(1, Math.min(len, songBars - startBar));
       track.regions.push({ bar: startBar, len: clampedLen, gain: 1, chops: 4, sliceSensitivity: 0.12, mode: "cut" });
       selectRegion(track.id, track.regions.length - 1);
       renderLane(track.id);
@@ -668,25 +684,28 @@ export function createLoopTrackPanel({
     //    (timeline-fraction space) into each region's source-buffer window so
     //    the kept audio matches *exactly* what was highlighted on screen.
     addItem("✂  Cut (keep inside selection)", (startBar, len, leftFrac, rightFrac) => {
-      const bars = totalBars();
+      const songBars = totalSongBars();
+      const winStart = getActiveBar();
+      // Convert visible-window fractions to global song fractions for region overlap math
+      const globalLeftFrac  = (winStart + leftFrac  * totalBars()) / songBars;
+      const globalRightFrac = (winStart + rightFrac * totalBars()) / songBars;
       const dur = track.buffer ? track.buffer.duration : 0;
       const next = [];
       pushHistory();
       track.regions.forEach((region) => {
-        // Region's extent on the timeline, as fractions
-        const rL = region.bar / bars;
-        const rR = (region.bar + region.len) / bars;
-        // Intersect with the marquee in timeline-fraction space
-        const oL = Math.max(rL, leftFrac);
-        const oR = Math.min(rR, rightFrac);
+        // Region's extent on the timeline, as global fractions
+        const rL = region.bar / songBars;
+        const rR = (region.bar + region.len) / songBars;
+        // Intersect with the marquee in global-fraction space
+        const oL = Math.max(rL, globalLeftFrac);
+        const oR = Math.min(rR, globalRightFrac);
         if (oR > oL) {
           // New region bounds on the timeline (snap to bars)
-          const newBar = Math.round(oL * bars);
-          const newEnd = Math.round(oR * bars);
+          const newBar = Math.round(oL * songBars);
+          const newEnd = Math.round(oR * songBars);
           const newLen = Math.max(1, newEnd - newBar);
 
           // Map the kept slice back into the region's SOURCE window.
-          // relL/relR are how far through the region (0–1) the kept part sits.
           const { startFrac, endFrac } = regionSrc(region, dur);
           const relL = (oL - rL) / Math.max(1e-9, rR - rL);
           const relR = (oR - rL) / Math.max(1e-9, rR - rL);
@@ -709,8 +728,8 @@ export function createLoopTrackPanel({
     // ── Time-stretch: mark the overlapping portion of existing regions as stretch
     //    mode so they fill the selected range.  If no region overlaps, create one.
     addItem("↔  Time-stretch selection", (startBar, len) => {
-      const bars = totalBars();
-      const endBar = Math.min(bars, startBar + len);
+      const songBars = totalSongBars();
+      const endBar = Math.min(songBars, startBar + len);
       const clampedLen = Math.max(1, endBar - startBar);
 
       let applied = false;
@@ -779,8 +798,10 @@ export function createLoopTrackPanel({
      */
     const getSelection = () => {
       const bars = totalBars();
-      const startBar = Math.max(0, Math.round(left * bars));
-      const endBar   = Math.min(bars, Math.round(right * bars));
+      const winStart = getActiveBar();
+      // startBar/endBar are global phrase-bar numbers
+      const startBar = Math.max(winStart, Math.round(left * bars) + winStart);
+      const endBar   = Math.min(winStart + bars, Math.round(right * bars) + winStart);
       const len = Math.max(1, endBar - startBar);
       return { startBar, len, leftFrac: left, rightFrac: right };
     };
@@ -897,7 +918,10 @@ export function createLoopTrackPanel({
     if (!lane) return;
     const track = trackById(trackId);
     if (!track) return;
-    const bars = totalBars();
+    // Visible window: how many bars are shown in the drum grid right now.
+    const bars = totalBars();          // segmentsCount (e.g. 2)
+    const winStart = getActiveBar();   // first visible phrase-bar (e.g. 8)
+    const winEnd   = winStart + bars;  // last+1 visible phrase-bar (e.g. 10)
 
     // Repaint background ruler (with waveform underneath)
     const rulerCanvas = lane.querySelector(".sample-lane-ruler");
@@ -914,11 +938,32 @@ export function createLoopTrackPanel({
     const pxPerBar = laneWidth / bars;
 
     track.regions.forEach((region, regionIdx) => {
+      // Clip region to the visible window.
+      const rStart = region.bar;
+      const rEnd   = region.bar + region.len;
+      if (rEnd <= winStart || rStart >= winEnd) return; // fully outside window
+
+      // Window-local start/end (clamped to visible range).
+      const visStart = Math.max(rStart, winStart) - winStart;
+      const visEnd   = Math.min(rEnd,   winEnd)   - winStart;
+      const visLen   = visEnd - visStart;
+
       const el = document.createElement("div");
       el.className = "sample-region";
-      const pct = regionPercent(region, bars);
-      el.style.left = `${pct.left}%`;
-      el.style.width = `${pct.width}%`;
+      el.style.left  = `${(visStart / bars) * 100}%`;
+      el.style.width = `${(visLen   / bars) * 100}%`;
+
+      // For waveform: what fraction of the audio does this visible slice cover?
+      // Cut mode plays at natural speed → 1 bar of playback = 1 bar of audio,
+      // so use barsInFile as the denominator (the actual sample length in bars).
+      // Stretch mode maps the whole audio window across region.len bars, so use region.len.
+      const visStartOffset  = Math.max(rStart, winStart) - rStart;
+      const visEndOffset    = Math.min(rEnd,   winEnd)   - rStart;
+      const denomBars       = (region.mode === "stretch")
+        ? region.len
+        : Math.max(1, track.barsInFile);
+      const regionFracStart = visStartOffset / denomBars;
+      const regionFracEnd   = Math.min(1, visEndOffset / denomBars);
 
       // Waveform canvas inside the region
       const waveCanvas = document.createElement("canvas");
@@ -930,7 +975,6 @@ export function createLoopTrackPanel({
       const label = document.createElement("span");
       label.className = "sample-region-label";
       label.textContent = track.name;
-      label.title = track.name;
       el.appendChild(label);
 
       // Mode badge
@@ -961,7 +1005,10 @@ export function createLoopTrackPanel({
         waveCanvas.height = LANE_H;
         if (track.buffer) {
           const { startFrac, endFrac } = regionSrc(region, track.buffer.duration);
-          drawWaveform(waveCanvas, track.buffer, startFrac, endFrac);
+          // Map visible slice into buffer fractions
+          const visStartFrac = startFrac + regionFracStart * (endFrac - startFrac);
+          const visEndFrac   = startFrac + regionFracEnd   * (endFrac - startFrac);
+          drawWaveform(waveCanvas, track.buffer, visStartFrac, visEndFrac);
         }
       }));
 
@@ -972,7 +1019,9 @@ export function createLoopTrackPanel({
         waveCanvas.height = LANE_H;
         if (track.buffer) {
           const { startFrac, endFrac } = regionSrc(region, track.buffer.duration);
-          drawWaveform(waveCanvas, track.buffer, startFrac, endFrac);
+          const visStartFrac = startFrac + regionFracStart * (endFrac - startFrac);
+          const visEndFrac   = startFrac + regionFracEnd   * (endFrac - startFrac);
+          drawWaveform(waveCanvas, track.buffer, visStartFrac, visEndFrac);
         }
       };
 
@@ -981,9 +1030,10 @@ export function createLoopTrackPanel({
         e.stopPropagation(); // don't start a marquee when dragging the resize handle
         const startX = e.clientX;
         const startLen = region.len;
+        const songBars = totalSongBars();
         const onMove = (me) => {
           const dx = me.clientX - startX;
-          region.len = clampRegionLen(startLen + pixelsToBars(dx, pxPerBar), region.bar, bars);
+          region.len = clampRegionLen(startLen + pixelsToBars(dx, pxPerBar), region.bar, songBars);
           renderLane(trackId);
           syncRegionPanel();
         };
@@ -1025,11 +1075,12 @@ export function createLoopTrackPanel({
 
             const onMove = (me) => {
               if (!snapped) { startDrag(true); snapped = true; }
+              const songBars = totalSongBars();
               const deltaBar = (me.clientX - startX) / (rect.width / bars);
               const dB = Math.round(deltaBar);
 
               if (which === "right") {
-                const newLen = Math.max(1, Math.min(bars - startBar, startLen + dB));
+                const newLen = Math.max(1, Math.min(songBars - startBar, startLen + dB));
                 region.len = newLen;
                 if (mode === "reveal") {
                   region.srcStartFrac = startSrcStart;
@@ -1058,10 +1109,10 @@ export function createLoopTrackPanel({
                 }
                 region.sampleOffset = undefined;
               }
-              // Update position CSS live, then repaint waveform in-place (no DOM rebuild)
-              const pct = regionPercent(region, bars);
-              el.style.left  = `${pct.left}%`;
-              el.style.width = `${pct.width}%`;
+              // Update position CSS live (window-relative), then repaint waveform
+              const wb = getActiveBar();
+              el.style.left  = `${((Math.max(region.bar, wb) - wb) / bars) * 100}%`;
+              el.style.width = `${(Math.min(region.bar + region.len, wb + bars) - Math.max(region.bar, wb)) / bars * 100}%`;
               repaintWave();
             };
             const onUp = () => {
@@ -1090,11 +1141,12 @@ export function createLoopTrackPanel({
             let snapped = false;
             const onMove = (me) => {
               if (!snapped) { startDrag(true); snapped = true; }
+              const songBars = totalSongBars();
               const dB = Math.round((me.clientX - startX) / (rect.width / bars));
-              region.bar = Math.max(0, Math.min(bars - region.len, startBar + dB));
-              // Move CSS live; no DOM rebuild during drag
-              const pct = regionPercent(region, bars);
-              el.style.left = `${pct.left}%`;
+              region.bar = Math.max(0, Math.min(songBars - region.len, startBar + dB));
+              // Move CSS live (window-relative); no DOM rebuild during drag
+              const wb = getActiveBar();
+              el.style.left = `${((Math.max(region.bar, wb) - wb) / bars) * 100}%`;
             };
             const onUp = () => {
               el.style.cursor = "grab";
@@ -1135,7 +1187,6 @@ export function createLoopTrackPanel({
 
       const span = document.createElement("span");
       span.textContent = track.name;
-      span.title = track.name; // tooltip for full name
 
       // Solo button — use the same class as drum-track solo buttons so style is consistent
       const soloBtn = document.createElement("button");
@@ -1279,7 +1330,7 @@ export function createLoopTrackPanel({
         sep();
 
         addItem("↺  Loop entire file here", () => {
-          track.regions.push({ bar: 0, len: bars, gain: 1, chops: 4, sliceSensitivity: 0.12, mode: "cut" });
+          track.regions.push({ bar: 0, len: totalSongBars(), gain: 1, chops: 4, sliceSensitivity: 0.12, mode: "cut" });
           selectRegion(track.id, track.regions.length - 1);
           renderLane(track.id);
         });
@@ -1322,6 +1373,7 @@ export function createLoopTrackPanel({
     updateSelectedRegion,
     deleteSelectedRegion,
     rebuildStepGridRows,
+    renderAllLanes: () => loopTracks.forEach((t) => renderLane(t.id)),
     renderTrackList,
     attachScheduler,
     detachScheduler,

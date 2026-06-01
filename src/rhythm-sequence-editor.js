@@ -611,7 +611,11 @@ const gridBuilder = createStepGridBuilder({
 function buildStepGrid() { return gridBuilder.buildStepGrid(); }
 function buildLoopTabs() { return gridBuilder.buildLoopTabs(); }
 function buildBarTabs() { return gridBuilder.buildBarTabs(); }
-function renderStepGrid() { return gridBuilder.renderStepGrid(); }
+function renderStepGrid() {
+  gridBuilder.renderStepGrid();
+  // Re-render loop lanes so waveform/playhead align with the new visible window.
+  loopPanel.renderAllLanes();
+}
 
 // ══ Row / step selection + solo controller ══════════════════════════════════
 // selectStep, selectRow, selectRowWithModifiers, resetSelectedPanel,
@@ -836,6 +840,8 @@ const loopPanel = createLoopTrackPanel({
   stepGrid,
   $,
   getBarsLength: () => LOOP_BAR_COUNT,
+  getSegmentsCount: () => state.segmentsCount,
+  getActiveBar: () => state.activeBar,
   setStatus: (msg) => { status.textContent = msg; },
   getEngine: () => state.engine
 });
