@@ -998,13 +998,19 @@ state.engine.on("stop", () => loopPanel.detachScheduler());
   if (handle && panel) {
     let startY = 0;
     let startHeight = 0;
+    const clampPanelHeight = (h) => {
+      // Never exceed ~60% of the viewport height so the panel can't swallow the grid
+      const maxH = Math.floor(window.innerHeight * 0.6);
+      return Math.max(60, Math.min(maxH, h));
+    };
+
     handle.addEventListener("mousedown", (e) => {
       startY = e.clientY;
       startHeight = panel.getBoundingClientRect().height;
       handle.classList.add("is-dragging");
       const onMove = (me) => {
         const delta = startY - me.clientY;
-        panel.style.height = `${Math.max(60, startHeight + delta)}px`;
+        panel.style.height = `${clampPanelHeight(startHeight + delta)}px`;
       };
       const onUp = () => {
         handle.classList.remove("is-dragging");
@@ -1013,6 +1019,13 @@ state.engine.on("stop", () => loopPanel.detachScheduler());
       };
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
+    });
+
+    // Re-clamp on window resize so a previously set height can't overflow
+    window.addEventListener("resize", () => {
+      if (panel.style.height) {
+        panel.style.height = `${clampPanelHeight(parseInt(panel.style.height, 10))}px`;
+      }
     });
   }
 }

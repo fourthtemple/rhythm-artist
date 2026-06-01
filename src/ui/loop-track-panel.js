@@ -12,18 +12,40 @@ import {
 } from "./loop-region.js";
 
 /**
- * @typedef {{ bar: number, len: number, gain: number, chops: number, sliceSensitivity: number, mode: "cut"|"stretch", sampleOffset?: number }} LoopRegion
- * `sampleOffset` is seconds into the audio buffer to begin playback (cut mode only). Default 0.
+ * @typedef {{ bar: number, len: number, gain: number, chops: number, sliceSensitivity: number, mode: "cut"|"stretch", srcStartFrac?: number, srcEndFrac?: number, sampleOffset?: number }} LoopRegion
+ * `srcStartFrac`/`srcEndFrac` describe which slice of the audio buffer this
+ * region plays/draws, as fractions (0–1) of the buffer. Default 0–1 (whole file).
+ * `sampleOffset` is the legacy seconds-based start point, migrated on read.
  * @typedef {{ id: string, name: string, barsInFile: number, audioUrl: string, buffer: AudioBuffer|null, regions: LoopRegion[], selected: boolean }} LoopTrack
  */
 
 const LANE_H = 64; // px – must match CSS .sample-lane height
 
+/**
+ * Return the audio buffer slice a region plays/draws as `{ startFrac, endFrac }`
+ * (fractions 0–1 of the buffer). Falls back to the whole file and migrates the
+ * legacy `sampleOffset` (seconds) field when present.
+ */
+function regionSrc(region, bufferDuration = 0) {
+  let s = region.srcStartFrac;
+  let e = region.srcEndFrac;
+  if (s == null && e == null && region.sampleOffset && bufferDuration > 0) {
+    // Legacy: only a start offset was stored — keep from there to the end.
+    s = region.sampleOffset / bufferDuration;
+    e = 1;
+  }
+  s = s ?? 0;
+  e = e ?? 1;
+  if (!(e > s)) { s = 0; e = 1; }
+  return { startFrac: Math.max(0, Math.min(1, s)), endFrac: Math.max(0, Math.min(1, e)) };
+}
+
 // ── Waveform painter ─────────────────────────────────────────────────────────
 /**
  * Render a mono overview waveform for `buffer` into `canvas`.
- * The waveform is drawn from x=startFrac*width to x=endFrac*width so regions
- * can show the correct section of the sample.
+ * `startFrac`/`endFrac` select WHICH slice of the buffer to read (fractions
+ * 0–1). The selected slice is always painted across the FULL width of the
+ * canvas, so each region block shows exactly the audio it plays, edge-to-edge.
  * @param {boolean} [clear=true] Whether to clearRect first (false = paint on top).
  */
 function drawWaveform(canvas, buffer, startFrac = 0, endFrac = 1, color = "#5b9bd5", clear = true) {
@@ -42,35 +64,38 @@ function drawWaveform(canvas, buffer, startFrac = 0, endFrac = 1, color = "#5b9b
     for (let i = 0; i < length; i++) merged[i] += data[i] / buffer.numberOfChannels;
   }
 
-  const drawW = Math.round((endFrac - startFrac) * W);
-  const offsetX = Math.round(startFrac * W);
-  const samplesPerPx = (length * (endFrac - startFrac)) / Math.max(1, drawW);
-  const sampleOffset = Math.round(startFrac * length);
+  // Sample range to read from the buffer
+  const s = Math.max(0, Math.min(1, startFrac));
+  const e = Math.max(0, Math.min(1, endFrac));
+  const span = Math.max(1e-9, e - s);
+  const firstSample = Math.floor(s * length);
+  // How many source samples each painted pixel column represents
+  const samplesPerPx = (length * span) / Math.max(1, W);
 
   ctx.fillStyle = color + "33";
   ctx.strokeStyle = color;
   ctx.lineWidth = 1;
 
-  // Draw filled waveform (min/max per pixel column)
-  for (let px = 0; px < drawW; px++) {
-    const s0 = Math.floor(sampleOffset + px * samplesPerPx);
-    const s1 = Math.min(length, Math.floor(sampleOffset + (px + 1) * samplesPerPx));
+  // Draw filled waveform (min/max per pixel column), painted across full width
+  for (let px = 0; px < W; px++) {
+    const s0 = Math.floor(firstSample + px * samplesPerPx);
+    const s1 = Math.min(length, Math.floor(firstSample + (px + 1) * samplesPerPx));
     let min = 0, max = 0;
-    for (let s = s0; s < s1; s++) {
-      const v = merged[s];
+    for (let smp = s0; smp < s1; smp++) {
+      const v = merged[smp];
       if (v < min) min = v;
       if (v > max) max = v;
     }
     const yMin = ((1 - max) / 2) * H;
     const yMax = ((1 - min) / 2) * H;
-    ctx.fillRect(offsetX + px, yMin, 1, Math.max(1, yMax - yMin));
+    ctx.fillRect(px, yMin, 1, Math.max(1, yMax - yMin));
   }
 
   // Centre line
   ctx.strokeStyle = color + "44";
   ctx.beginPath();
-  ctx.moveTo(offsetX, H / 2);
-  ctx.lineTo(offsetX + drawW, H / 2);
+  ctx.moveTo(0, H / 2);
+  ctx.lineTo(W, H / 2);
   ctx.stroke();
 }
 
@@ -130,6 +155,8 @@ export function createLoopTrackPanel({
   const soloTracks = new Set();
   /** @type {{ trackId: string, regionIdx: number } | null} */
   let selectedLoopRegion = null;
+  /** @type {{ trackId: string, regionIdx: number, mode: "move"|"scale"|"reveal" } | null} */
+  let activeRegionEdit = null;
   /** @type {Function|null} Unsubscribe from engine bar events */
   let _barUnsub = null;
   /** @type {Function|null} Unsubscribe from engine stop events */
@@ -142,6 +169,61 @@ export function createLoopTrackPanel({
   let _playheadScheduledTime = 0;
   /** rAF handle for playhead animation */
   let _playheadRaf = null;
+
+  // ── Undo / Redo history ────────────────────────────────────────────────────
+  // We snapshot every track's region list (deep-ish copy of plain region
+  // objects). Buffers/raw bytes are not touched. Call pushHistory() *before*
+  // mutating regions, then undo()/redo() swap snapshots in and out.
+  /** @type {Array<Array<{id:string, regions:LoopRegion[]}>>} */
+  const undoStack = [];
+  /** @type {Array<Array<{id:string, regions:LoopRegion[]}>>} */
+  const redoStack = [];
+  const HISTORY_LIMIT = 100;
+
+  function snapshot() {
+    return loopTracks.map((t) => ({ id: t.id, regions: t.regions.map((r) => ({ ...r })) }));
+  }
+  function pushHistory() {
+    undoStack.push(snapshot());
+    if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+    redoStack.length = 0;
+  }
+  function applySnapshot(snap) {
+    snap.forEach(({ id, regions }) => {
+      const t = trackById(id);
+      if (t) t.regions = regions.map((r) => ({ ...r }));
+    });
+    selectedLoopRegion = null;
+    activeRegionEdit = null;
+    syncRegionPanel();
+    loopTracks.forEach((t) => renderLane(t.id));
+  }
+  function undo() {
+    if (!undoStack.length) { setStatus("Nothing to undo"); return; }
+    redoStack.push(snapshot());
+    applySnapshot(undoStack.pop());
+    setStatus("Undo");
+  }
+  function redo() {
+    if (!redoStack.length) { setStatus("Nothing to redo"); return; }
+    undoStack.push(snapshot());
+    applySnapshot(redoStack.pop());
+    setStatus("Redo");
+  }
+
+  // Global keyboard shortcuts: ⌘/Ctrl-Z undo, ⌘/Ctrl-Shift-Z or Ctrl-Y redo.
+  document.addEventListener("keydown", (e) => {
+    const mod = e.metaKey || e.ctrlKey;
+    if (!mod) return;
+    const key = e.key.toLowerCase();
+    if (key === "z") {
+      e.preventDefault();
+      if (e.shiftKey) redo(); else undo();
+    } else if (key === "y") {
+      e.preventDefault();
+      redo();
+    }
+  });
 
   // ── Smooth playhead animation ────────────────────────────────────────────
   // We interpolate sub-bar position using ctx.currentTime vs scheduledTime
@@ -226,17 +308,20 @@ export function createLoopTrackPanel({
         const barDurationSec = secPerBeat * 4;
         const regionDurationSec = barDurationSec * region.len;
         const sampleDurationSec = track.buffer.duration;
-        const naturalRegionSec = barDurationSec * (track.barsInFile || 1);
+
+        // Which slice of the buffer does this region play?
+        const { startFrac, endFrac } = regionSrc(region, sampleDurationSec);
+        const srcStartSec = startFrac * sampleDurationSec;
+        const srcWindowSec = Math.max(0, (endFrac - startFrac) * sampleDurationSec);
 
         let playbackRate, playDuration;
-        const sampleOffset = region.sampleOffset ?? 0;
         if (mode === "stretch") {
-          playbackRate = sampleDurationSec > 0 ? naturalRegionSec / sampleDurationSec : 1;
+          // Stretch the selected window to fill the region's musical duration.
+          playbackRate = srcWindowSec > 0 ? srcWindowSec / regionDurationSec : 1;
           playDuration = regionDurationSec;
         } else {
           playbackRate = 1;
-          const remainingSec = Math.max(0, sampleDurationSec - sampleOffset);
-          playDuration = Math.min(remainingSec, regionDurationSec);
+          playDuration = Math.min(srcWindowSec, regionDurationSec);
         }
 
         console.log(`[loop] scheduling "${track.name}" bar=${localBar} rate=${playbackRate.toFixed(3)} dur=${playDuration.toFixed(2)}s at ${scheduledTime.toFixed(3)}`);
@@ -251,7 +336,7 @@ export function createLoopTrackPanel({
         src.connect(gainNode);
         gainNode.connect(masterOut);
 
-        src.start(scheduledTime, sampleOffset);
+        src.start(scheduledTime, srcStartSec);
         src.stop(scheduledTime + playDuration + 0.05);
         activeSources.add(src);
         src.onended = () => activeSources.delete(src);
@@ -383,6 +468,27 @@ export function createLoopTrackPanel({
     syncRegionPanel();
   }
 
+  // Enter an interactive edit mode for a region. The lane re-renders with edge
+  // handles (and a move grip) wired to the chosen behaviour. Clicking elsewhere
+  // / pressing Escape exits the mode. A history snapshot is taken on the first
+  // actual drag so undo restores the pre-edit state.
+  function beginRegionEdit(track, regionIdx, mode) {
+    activeRegionEdit = { trackId: track.id, regionIdx, mode };
+    selectRegion(track.id, regionIdx);
+    const labels = { move: "Move", scale: "Scale (time-stretch)", reveal: "Reveal cut audio" };
+    setStatus(`${labels[mode]}: drag the ${mode === "move" ? "block" : "edges"} — Esc to finish`);
+    renderLane(track.id);
+
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        activeRegionEdit = null;
+        document.removeEventListener("keydown", onKey);
+        renderLane(track.id);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+  }
+
   function syncRegionPanel() {
     const panel = $("#loop-region-panel");
     if (!panel) return;
@@ -470,121 +576,36 @@ export function createLoopTrackPanel({
       menu.appendChild(d);
     };
 
-    // ── Move region: drag the region left/right to a new bar position.
-    addItem("↔  Move region…", () => {
-      const lane = stepGrid.querySelector(`.sample-lane[data-loop-track="${track.id}"]`);
-      if (!lane) return;
-      const regionEl = lane.querySelectorAll(".sample-region")[regionIdx];
-      if (!regionEl) return;
-
-      // Visual cue: add a move-pending class
-      regionEl.classList.add("sample-region--move-pending");
-      regionEl.style.cursor = "grab";
-      regionEl.title = "Drag to move region";
-
-      const startMoveBar = region.bar;
-      const laneWidth = lane.offsetWidth || 800;
-      const pxPerBar = laneWidth / totalBarsCount;
-
-      let moved = false;
-
-      const onMouseDown = (ev) => {
-        if (ev.button !== 0) return;
-        ev.stopPropagation();
-        ev.preventDefault();
-        regionEl.style.cursor = "grabbing";
-
-        const startX = ev.clientX;
-        const origBar = region.bar;
-
-        const onMove = (me) => {
-          const dx = me.clientX - startX;
-          const deltaBar = Math.round(dx / pxPerBar);
-          region.bar = Math.max(0, Math.min(totalBarsCount - region.len, origBar + deltaBar));
-          const pct = regionPercent(region, totalBarsCount);
-          regionEl.style.left = `${pct.left}%`;
-          moved = true;
-        };
-
-        const onUp = () => {
-          document.removeEventListener("mousemove", onMove);
-          document.removeEventListener("mouseup", onUp);
-          regionEl.removeEventListener("mousedown", onMouseDown);
-          regionEl.classList.remove("sample-region--move-pending");
-          regionEl.style.cursor = "";
-          regionEl.title = "";
-          if (moved) {
-            renderLane(track.id);
-            syncRegionPanel();
-          }
-        };
-
-        document.addEventListener("mousemove", onMove);
-        document.addEventListener("mouseup", onUp);
-      };
-
-      regionEl.addEventListener("mousedown", onMouseDown, { once: false });
+    // ── Move selection: drag the whole region left/right along the timeline.
+    addItem("↔  Move selection", () => {
+      beginRegionEdit(track, regionIdx, "move");
     });
 
     sep();
 
-    // ── Stretch to fill: expands the region to cover from its start bar to
-    //    the end of the song's total bars.
-    addItem("↕  Stretch to fill", () => {
-      region.len = Math.max(1, totalBarsCount - region.bar);
-      renderLane(track.id);
-      syncRegionPanel();
+    // ── Scale selection: drag either edge to stretch/shrink the region in time
+    //    WITHOUT changing pitch (time-stretch). The source window is unchanged.
+    addItem("⇲  Scale selection (time-stretch, no pitch change)", () => {
+      beginRegionEdit(track, regionIdx, "scale");
     });
 
     sep();
 
-    // ── Inverse: keep the parts of the timeline NOT covered by this region.
-    //    Creates up to two new regions (before and after), then removes this one.
-    addItem("⬛  Inverse (keep outside this region)", () => {
-      const newRegions = [];
-      if (region.bar > 0) {
-        newRegions.push({ bar: 0, len: region.bar, gain: region.gain, chops: region.chops, sliceSensitivity: region.sliceSensitivity ?? 0.12, mode: region.mode ?? "cut" });
-      }
-      const afterBar = region.bar + region.len;
-      if (afterBar < totalBarsCount) {
-        newRegions.push({ bar: afterBar, len: totalBarsCount - afterBar, gain: region.gain, chops: region.chops, sliceSensitivity: region.sliceSensitivity ?? 0.12, mode: region.mode ?? "cut" });
-      }
-      track.regions.splice(regionIdx, 1, ...newRegions);
-      selectedLoopRegion = newRegions.length > 0 ? { trackId: track.id, regionIdx } : null;
-      syncRegionPanel();
-      renderLane(track.id);
+    // ── Reveal: drag either edge to pull back the audio that was cut away on
+    //    the left/right, as if un-cutting. Source window grows/shrinks with the
+    //    edges; pitch and speed stay natural.
+    addItem("⤢  Reveal cut audio (drag edges)", () => {
+      beginRegionEdit(track, regionIdx, "reveal");
     });
 
     sep();
-
-    // ── Mode toggle: cut vs stretch
-    const currentMode = region.mode ?? "cut";
-    const modeLabel = currentMode === "cut"
-      ? "↔  Enable time-stretch (fills region duration)"
-      : "✂  Disable stretch → Cut mode (natural speed)";
-    addItem(modeLabel, () => {
-      region.mode = currentMode === "cut" ? "stretch" : "cut";
-      renderLane(track.id);
-      syncRegionPanel();
-    });
-
-    sep();
-
-    // ── Duplicate
-    addItem("⧉  Duplicate region", () => {
-      const dupe = { ...region };
-      // Place the duplicate immediately after, clamped to the timeline
-      dupe.bar = Math.min(region.bar + region.len, totalBarsCount - 1);
-      dupe.len = Math.min(region.len, totalBarsCount - dupe.bar);
-      track.regions.push(dupe);
-      selectRegion(track.id, track.regions.length - 1);
-      renderLane(track.id);
-    });
 
     // ── Delete
     addItem("🗑  Delete region", () => {
+      pushHistory();
       track.regions.splice(regionIdx, 1);
       selectedLoopRegion = null;
+      activeRegionEdit = null;
       syncRegionPanel();
       renderLane(track.id);
     });
@@ -643,42 +664,42 @@ export function createLoopTrackPanel({
     sep();
 
     // ── Cut-inverse: keep only the parts of existing regions INSIDE the selection.
-    //    Everything outside the marquee is removed.
-    //    We use the raw floating-point bar positions for precise intersection,
-    //    then round to integer bars for the final region boundaries.
-    addItem("✂  Cut-inverse (keep inside selection)", (startBar, len, leftFrac, rightFrac) => {
+    //    Everything outside the marquee is removed.  We map the visual marquee
+    //    (timeline-fraction space) into each region's source-buffer window so
+    //    the kept audio matches *exactly* what was highlighted on screen.
+    addItem("✂  Cut (keep inside selection)", (startBar, len, leftFrac, rightFrac) => {
       const bars = totalBars();
+      const dur = track.buffer ? track.buffer.duration : 0;
       const next = [];
+      pushHistory();
       track.regions.forEach((region) => {
-        // Convert region to fractions
+        // Region's extent on the timeline, as fractions
         const rL = region.bar / bars;
         const rR = (region.bar + region.len) / bars;
-        // Intersect with marquee in fraction space
+        // Intersect with the marquee in timeline-fraction space
         const oL = Math.max(rL, leftFrac);
         const oR = Math.min(rR, rightFrac);
         if (oR > oL) {
-          // Convert back to bars
+          // New region bounds on the timeline (snap to bars)
           const newBar = Math.round(oL * bars);
           const newEnd = Math.round(oR * bars);
           const newLen = Math.max(1, newEnd - newBar);
-          // Compute sampleOffset: how many seconds into the audio to start.
-          // In cut mode, 1 bar of the sample = sampleDuration / barsInFile seconds.
-          // The kept region starts at fraction (oL - rL) / (rR - rL) through the
-          // original region, which maps to:
-          //   sampleOffset = (oL - rL) * bars / (track.barsInFile || 1) * bufferDuration
-          // We store the raw seconds offset so the scheduler can use it directly.
-          let sampleOffset = region.sampleOffset ?? 0;
-          if ((region.mode ?? "cut") === "cut") {
-            const secPerBarOfSample = (track.buffer ? track.buffer.duration : 0) / (track.barsInFile || 1);
-            sampleOffset = sampleOffset + (oL - rL) * bars * secPerBarOfSample;
-          }
-          next.push({ ...region, bar: newBar, len: newLen, sampleOffset });
+
+          // Map the kept slice back into the region's SOURCE window.
+          // relL/relR are how far through the region (0–1) the kept part sits.
+          const { startFrac, endFrac } = regionSrc(region, dur);
+          const relL = (oL - rL) / Math.max(1e-9, rR - rL);
+          const relR = (oR - rL) / Math.max(1e-9, rR - rL);
+          const srcStartFrac = startFrac + relL * (endFrac - startFrac);
+          const srcEndFrac   = startFrac + relR * (endFrac - startFrac);
+
+          next.push({ ...region, bar: newBar, len: newLen, srcStartFrac, srcEndFrac, sampleOffset: undefined });
         }
       });
-      setStatus(`Cut-inverse: kept ${next.length} region(s) inside selection`);
+      setStatus(`Cut: kept ${next.length} region(s) inside selection`);
       track.regions.length = 0;
       track.regions.push(...next);
-      selectedLoopRegion = null;
+      selectedLoopRegion = next.length ? { trackId: track.id, regionIdx: 0 } : null;
       syncRegionPanel();
       renderLane(track.id);
     });
@@ -939,16 +960,21 @@ export function createLoopTrackPanel({
         waveCanvas.width = elW;
         waveCanvas.height = LANE_H;
         if (track.buffer) {
-          // What fraction of the full file is this region?
-          const fileFrac = track.barsInFile > 0 ? 1 / track.barsInFile : 1;
-          const loopFrac = (region.len % track.barsInFile || track.barsInFile) * fileFrac;
-          // If region has a sampleOffset (cut-inverse), shift the displayed waveform window
-          const offsetFrac = (region.sampleOffset ?? 0) / track.buffer.duration;
-          const waveStart = Math.min(1, offsetFrac);
-          const waveEnd   = Math.min(1, offsetFrac + loopFrac);
-          drawWaveform(waveCanvas, track.buffer, waveStart, waveEnd);
+          const { startFrac, endFrac } = regionSrc(region, track.buffer.duration);
+          drawWaveform(waveCanvas, track.buffer, startFrac, endFrac);
         }
       }));
+
+      // Live waveform repaint — called during drag so the wave updates in real-time.
+      const repaintWave = () => {
+        const elW = el.offsetWidth || 200;
+        if (waveCanvas.width !== elW) waveCanvas.width = elW;
+        waveCanvas.height = LANE_H;
+        if (track.buffer) {
+          const { startFrac, endFrac } = regionSrc(region, track.buffer.duration);
+          drawWaveform(waveCanvas, track.buffer, startFrac, endFrac);
+        }
+      };
 
       // Drag the right edge to resize the region
       resizeHandle.addEventListener("mousedown", (e) => {
@@ -973,6 +999,126 @@ export function createLoopTrackPanel({
         selectRegion(trackId, regionIdx);
         showRegionContextMenu(e.clientX, e.clientY, track, region, regionIdx, bars);
       });
+
+      // ── Interactive edit mode (Move / Scale / Reveal) ──────────────────────
+      if (activeRegionEdit && activeRegionEdit.trackId === track.id && activeRegionEdit.regionIdx === regionIdx) {
+        el.classList.add("sample-region--editing", `sample-region--edit-${activeRegionEdit.mode}`);
+        const mode = activeRegionEdit.mode;
+
+        // Snapshot history once per drag gesture.
+        const startDrag = (snapNeeded) => { if (snapNeeded) pushHistory(); };
+
+        // Shared edge-drag wiring. `which` is "left" or "right".
+        const wireEdge = (handle, which) => {
+          handle.addEventListener("mousedown", (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            const rect = lane.getBoundingClientRect();
+            const startX = e.clientX;
+            const startBar = region.bar;
+            const startLen = region.len;
+            const srcA = regionSrc(region, track.buffer ? track.buffer.duration : 0);
+            const startSrcStart = srcA.startFrac;
+            const startSrcEnd = srcA.endFrac;
+            const srcPerBar = startLen > 0 ? (startSrcEnd - startSrcStart) / startLen : 0;
+            let snapped = false;
+
+            const onMove = (me) => {
+              if (!snapped) { startDrag(true); snapped = true; }
+              const deltaBar = (me.clientX - startX) / (rect.width / bars);
+              const dB = Math.round(deltaBar);
+
+              if (which === "right") {
+                const newLen = Math.max(1, Math.min(bars - startBar, startLen + dB));
+                region.len = newLen;
+                if (mode === "reveal") {
+                  region.srcStartFrac = startSrcStart;
+                  region.srcEndFrac = Math.max(startSrcStart + 1e-4, Math.min(1, startSrcStart + newLen * srcPerBar));
+                  region.mode = "cut";
+                } else if (mode === "scale") {
+                  region.srcStartFrac = startSrcStart;
+                  region.srcEndFrac = startSrcEnd;
+                  region.mode = "stretch";
+                }
+                region.sampleOffset = undefined;
+              } else { // left edge
+                const newBar = Math.max(0, Math.min(startBar + startLen - 1, startBar + dB));
+                const newLen = startLen + (startBar - newBar);
+                region.bar = newBar;
+                region.len = Math.max(1, newLen);
+                if (mode === "reveal") {
+                  const shift = (newBar - startBar) * srcPerBar;
+                  region.srcStartFrac = Math.max(0, Math.min(startSrcEnd - 1e-4, startSrcStart + shift));
+                  region.srcEndFrac = startSrcEnd;
+                  region.mode = "cut";
+                } else if (mode === "scale") {
+                  region.srcStartFrac = startSrcStart;
+                  region.srcEndFrac = startSrcEnd;
+                  region.mode = "stretch";
+                }
+                region.sampleOffset = undefined;
+              }
+              // Update position CSS live, then repaint waveform in-place (no DOM rebuild)
+              const pct = regionPercent(region, bars);
+              el.style.left  = `${pct.left}%`;
+              el.style.width = `${pct.width}%`;
+              repaintWave();
+            };
+            const onUp = () => {
+              document.removeEventListener("mousemove", onMove);
+              document.removeEventListener("mouseup", onUp);
+              // Full render pass to synchronise everything after drag ends
+              renderLane(track.id);
+              syncRegionPanel();
+            };
+            document.addEventListener("mousemove", onMove);
+            document.addEventListener("mouseup", onUp);
+          });
+        };
+
+        if (mode === "move") {
+          // Drag the whole block to a new bar position (timeline only).
+          el.style.cursor = "grab";
+          el.addEventListener("mousedown", (e) => {
+            if (e.button !== 0) return;
+            e.stopPropagation();
+            e.preventDefault();
+            el.style.cursor = "grabbing";
+            const rect = lane.getBoundingClientRect();
+            const startX = e.clientX;
+            const startBar = region.bar;
+            let snapped = false;
+            const onMove = (me) => {
+              if (!snapped) { startDrag(true); snapped = true; }
+              const dB = Math.round((me.clientX - startX) / (rect.width / bars));
+              region.bar = Math.max(0, Math.min(bars - region.len, startBar + dB));
+              // Move CSS live; no DOM rebuild during drag
+              const pct = regionPercent(region, bars);
+              el.style.left = `${pct.left}%`;
+            };
+            const onUp = () => {
+              el.style.cursor = "grab";
+              document.removeEventListener("mousemove", onMove);
+              document.removeEventListener("mouseup", onUp);
+              renderLane(track.id);
+              syncRegionPanel();
+            };
+            document.addEventListener("mousemove", onMove);
+            document.addEventListener("mouseup", onUp);
+          });
+        } else {
+          // Scale / Reveal: add draggable left + right edge handles.
+          const leftH = document.createElement("div");
+          leftH.className = "sample-region-edit-handle sample-region-edit-handle--left";
+          leftH.title = mode === "scale" ? "Drag to stretch (no pitch change)" : "Drag to reveal audio on the left";
+          const rightH = document.createElement("div");
+          rightH.className = "sample-region-edit-handle sample-region-edit-handle--right";
+          rightH.title = mode === "scale" ? "Drag to stretch (no pitch change)" : "Drag to reveal audio on the right";
+          wireEdge(leftH, "left");
+          wireEdge(rightH, "right");
+          el.append(leftH, rightH);
+        }
+      }
 
       lane.appendChild(el);
     });
@@ -1082,7 +1228,11 @@ export function createLoopTrackPanel({
           const width = Math.abs(curFrac - startFrac);
 
           if (!dragged || width * getLaneRect().width < 6) {
-            // Short click on empty lane → dismiss any marquee, deselect
+            // Short click on empty lane → exit edit mode, dismiss marquee, deselect
+            if (activeRegionEdit && activeRegionEdit.trackId === track.id) {
+              activeRegionEdit = null;
+              renderLane(track.id);
+            }
             lane.querySelector(".lane-marquee")?.remove();
             document.querySelector(".marquee-action-popup")?.remove();
             selectedLoopRegion = null;
@@ -1175,6 +1325,8 @@ export function createLoopTrackPanel({
     renderTrackList,
     attachScheduler,
     detachScheduler,
+    undo,
+    redo,
     soloTracks,
     _tracks: loopTracks
   };
