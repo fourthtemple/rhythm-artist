@@ -48,7 +48,7 @@
             </label>
             <label title="How many bars to show at once">
               <span>Bars</span>
-              <input id="segments-count" type="number" min="1" max="16" step="1" value="2" />
+              <input id="segments-count" type="number" min="1" max="32" step="1" value="2" />
             </label>
             <label title="Time signature">
               <span>Time</span>
@@ -217,17 +217,40 @@
             </div>
           </section>
 
+          <!-- ── Quantize Panel ────────────────────────── -->
+          <section id="quantize-panel" class="quantize-panel">
+            <span class="panel-label">Quantize</span>
+            <div class="quantize-controls">
+              <label class="quantize-toggle-label">
+                <input id="quantize-enabled" type="checkbox" />
+                <span>On</span>
+              </label>
+              <label class="quantize-grid-label">
+                <span>Grid</span>
+                <select id="quantize-value">
+                  <option value="4">4 bars</option>
+                  <option value="2">2 bars</option>
+                  <option value="1">1 bar</option>
+                  <option value="0.5">1/2</option>
+                  <option value="0.25" selected>1/4</option>
+                  <option value="0.125">1/8</option>
+                  <option value="0.0625">1/16</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
           <!-- ── Sample Region Panel ────────────────────── -->
           <section id="loop-region-panel" class="loop-region-panel" hidden>
             <span class="panel-label">Sample Region</span>
             <div class="loop-region-controls">
               <label>
                 <span>Start Bar</span>
-                <input id="loop-region-start" type="number" min="0" step="1" value="0" />
+                <input id="loop-region-start" type="number" min="0" step="0.01" value="0" />
               </label>
               <label>
                 <span>Length (bars)</span>
-                <input id="loop-region-len" type="number" min="1" step="1" value="2" />
+                <input id="loop-region-len" type="number" min="0.01" step="0.01" value="2" />
               </label>
               <label>
                 <span>Chops</span>
@@ -350,8 +373,13 @@
         </label>
         <!-- Manual override, pre-filled from analysis -->
         <label id="loop-bars-label">
-          <span>Bars <span class="loop-analysis-muted">(override if wrong)</span></span>
-          <input id="loop-track-bars" type="number" min="1" max="64" step="1" value="4" />
+          <span>Bars in file <span class="loop-analysis-muted">(override if wrong)</span></span>
+          <input id="loop-track-bars" type="number" min="1" max="9999" step="1" value="4" />
+        </label>
+        <!-- Beatmatch option -->
+        <label class="loop-beatmatch-label">
+          <input id="loop-track-beatmatch" type="checkbox" />
+          <span>Auto beatmatch to project BPM <span class="loop-analysis-muted">(time-stretch sample to fit)</span></span>
         </label>
         <div class="add-track-dialog-actions">
           <button type="button" id="add-loop-cancel">Cancel</button>

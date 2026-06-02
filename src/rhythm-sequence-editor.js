@@ -150,7 +150,9 @@ const state = {
   segmentsCount: 2,
   timeSig: "4/4",
   // Registry-driven list of track ids shown in the grid (order = render order).
-  gridTrackIds: [...DEFAULT_GRID_TRACK_IDS]
+  gridTrackIds: [...DEFAULT_GRID_TRACK_IDS],
+  // Quantize grid for loop-lane editing (enabled + value in bars)
+  quantize: { enabled: false, value: 0.25 }
 };
 
 const stepGrid = $("#step-grid");
@@ -605,7 +607,8 @@ const gridBuilder = createStepGridBuilder({
   openBarContextMenu,
   openTrackContextMenu,
   resetSelectedPanel,
-  onAfterBuild: () => loopPanel.rebuildStepGridRows()
+  onAfterBuild: () => loopPanel.rebuildStepGridRows(),
+  onAfterRender: () => loopPanel.renderAllLanes()
 });
 
 function buildStepGrid() { return gridBuilder.buildStepGrid(); }
@@ -613,8 +616,6 @@ function buildLoopTabs() { return gridBuilder.buildLoopTabs(); }
 function buildBarTabs() { return gridBuilder.buildBarTabs(); }
 function renderStepGrid() {
   gridBuilder.renderStepGrid();
-  // Re-render loop lanes so waveform/playhead align with the new visible window.
-  loopPanel.renderAllLanes();
 }
 
 // ══ Row / step selection + solo controller ══════════════════════════════════
@@ -681,10 +682,13 @@ function syncSliders() { return configSync.syncSliders(); }
 function applyZoom(level) { return configSync.applyZoom(level); }
 
 function applySegments(count) {
-  const n = Math.max(1, Math.min(16, Math.round(count) || 2));
+  const n = Math.max(1, Math.min(LOOP_BAR_COUNT, Math.round(count) || 2));
   state.segmentsCount = n;
   const input = /** @type {HTMLInputElement|null} */ ($("#segments-count"));
-  if (input) input.value = String(n);
+  if (input) {
+    input.max = String(LOOP_BAR_COUNT);
+    input.value = String(n);
+  }
   buildStepGrid();
 }
 
@@ -843,8 +847,23 @@ const loopPanel = createLoopTrackPanel({
   getSegmentsCount: () => state.segmentsCount,
   getActiveBar: () => state.activeBar,
   setStatus: (msg) => { status.textContent = msg; },
-  getEngine: () => state.engine
+  getEngine: () => state.engine,
+  getQuantize: () => state.quantize,
+  onNavigate: (bar) => {
+    // Scroll the step-grid view to show the given bar, then repaint lanes
+    const seg = state.segmentsCount || 2;
+    state.activeBar = Math.max(0, Math.floor(bar / seg) * seg);
+    renderStepGrid(); // rebuilds bar tabs + calls renderAllLanes
+  }
 });
+
+// ── Quantize panel wiring ──────────────────────────────────────────────────
+{
+  const qEnabled = /** @type {HTMLInputElement|null} */ ($("#quantize-enabled"));
+  const qValue   = /** @type {HTMLSelectElement|null}  */ ($("#quantize-value"));
+  if (qEnabled) qEnabled.addEventListener("change", () => { state.quantize.enabled = qEnabled.checked; });
+  if (qValue)   qValue.addEventListener("change",   () => { state.quantize.value   = parseFloat(qValue.value); });
+}
 
 // ══ Track panels controller (grid mgmt + Add-Track + Explorer + Inspector) ══
 // The right-side track UI cluster lives in its own controller; the editor keeps

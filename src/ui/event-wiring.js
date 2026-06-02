@@ -312,16 +312,19 @@ export function createEventWiring(deps) {
       const nameInput = /** @type {HTMLInputElement} */ ($("#loop-track-name"));
       const fileInput2 = /** @type {HTMLInputElement} */ ($("#loop-track-file"));
       const barsInput = /** @type {HTMLInputElement} */ ($("#loop-track-bars"));
+      const beatmatchInput = /** @type {HTMLInputElement} */ ($("#loop-track-beatmatch"));
       const name = nameInput?.value.trim();
       const file = fileInput2?.files?.[0];
       const barsInFile = Math.max(1, Math.round(Number(barsInput?.value) || 4));
+      const beatmatch = beatmatchInput?.checked ?? false;
       if (!name || !file) return;
-      void loopPanel.addTrack(name, file, barsInFile);
+      void loopPanel.addTrack(name, file, barsInFile, beatmatch);
       /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"))?.close();
       // Reset for next use
       if (nameInput) nameInput.value = "";
       if (fileInput2) fileInput2.value = "";
       if (barsInput) barsInput.value = "4";
+      if (beatmatchInput) beatmatchInput.checked = false;
       const analysisEl = $("#loop-track-analysis");
       const analyzingEl = $("#loop-track-analyzing");
       if (analysisEl) analysisEl.hidden = true;

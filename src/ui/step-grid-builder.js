@@ -48,6 +48,7 @@
  * @param {(event:MouseEvent, hit:string) => void} deps.openTrackContextMenu
  * @param {() => void} deps.resetSelectedPanel
  * @param {() => void} [deps.onAfterBuild] Called after buildStepGrid rebuilds the DOM (e.g. to re-append loop lanes).
+ * @param {() => void} [deps.onAfterRender] Called after renderStepGrid syncs the visible bar window.
  */
 export function createStepGridBuilder(deps) {
   const {
@@ -89,6 +90,7 @@ export function createStepGridBuilder(deps) {
     resetSelectedPanel
   } = deps;
   const onAfterBuild = deps.onAfterBuild ?? (() => {});
+  const onAfterRender = deps.onAfterRender ?? (() => {});
 
   function buildStepGrid() {
     const segments = state.segmentsCount ?? 2;
@@ -366,6 +368,7 @@ export function createStepGridBuilder(deps) {
       label.classList.toggle("is-selected-row", isPrimary || inSelection);
     });
     renderSoloButtons();
+    onAfterRender();
   }
 
   return { buildStepGrid, buildLoopTabs, buildBarTabs, renderStepGrid };

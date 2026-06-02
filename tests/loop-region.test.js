@@ -19,7 +19,8 @@ test("clampRegionBar keeps the region inside the song", () => {
 
 test("clampRegionLen keeps bar+len inside the song", () => {
   assert.equal(clampRegionLen(99, 6, 8), 2);
-  assert.equal(clampRegionLen(0, 0, 8), 1);
+  assert.equal(clampRegionLen(0, 0, 8), 1 / 64);
+  assert.equal(clampRegionLen(0.5, 0, 8), 0.5);
 });
 
 test("clampRegionChops/Gain clamp to their ranges", () => {
@@ -37,15 +38,21 @@ test("normalizeRegion produces a clean clamped object", () => {
   assert.equal(r.chops, 32);
 });
 
+test("normalizeRegion preserves fractional bar selections", () => {
+  const r = normalizeRegion({ bar: 1.25, len: 0.5, gain: 1, chops: 4 }, 8);
+  assert.equal(r.bar, 1.25);
+  assert.equal(r.len, 0.5);
+});
+
 test("regionAtBar sizes to the source loop length", () => {
   const r = regionAtBar(2, 4, 8);
   assert.equal(r.bar, 2);
   assert.equal(r.len, 4);
 });
 
-test("pixelsToBars rounds the pixel delta", () => {
-  assert.equal(pixelsToBars(45, 20), 2);
-  assert.equal(pixelsToBars(5, 20), 0);
+test("pixelsToBars returns a fractional bar delta", () => {
+  assert.equal(pixelsToBars(45, 20), 2.25);
+  assert.equal(pixelsToBars(5, 20), 0.25);
 });
 
 test("regionPercent maps to timeline percentages", () => {

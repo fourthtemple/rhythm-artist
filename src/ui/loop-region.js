@@ -14,14 +14,16 @@ const clampFloat = (value, min, max, fallback) => {
   return Math.max(min, Math.min(max, Number.isFinite(n) ? n : fallback));
 };
 
+const MIN_REGION_BARS = 1 / 64;
+
 /** Clamp a region's start bar so the region stays inside the song. */
 export function clampRegionBar(bar, len, totalBars) {
-  return Math.max(0, Math.min(Math.max(0, totalBars - len), clampInt(bar, 0, totalBars, 0)));
+  return Math.max(0, Math.min(Math.max(0, totalBars - len), clampFloat(bar, 0, totalBars, 0)));
 }
 
 /** Clamp a region's length so `bar + len` stays inside the song. */
 export function clampRegionLen(len, bar, totalBars) {
-  return Math.max(1, Math.min(Math.max(1, totalBars - bar), clampInt(len, 1, totalBars, 1)));
+  return Math.max(MIN_REGION_BARS, Math.min(Math.max(MIN_REGION_BARS, totalBars - bar), clampFloat(len, MIN_REGION_BARS, totalBars, 1)));
 }
 
 /** Clamp a chop count to the supported 1..32 range. */
@@ -39,8 +41,8 @@ export function clampRegionGain(gain) {
  * `{ bar, len, gain, chops }` object, clamped against the song length.
  */
 export function normalizeRegion({ bar, len, gain, chops }, totalBars) {
-  const safeBar = Math.max(0, clampInt(bar, 0, totalBars, 0));
-  const safeLen = Math.max(1, clampInt(len, 1, totalBars, 1));
+  const safeBar = Math.max(0, clampFloat(bar, 0, totalBars, 0));
+  const safeLen = Math.max(MIN_REGION_BARS, clampFloat(len, MIN_REGION_BARS, totalBars, 1));
   return {
     bar: safeBar,
     len: safeLen,
@@ -59,9 +61,9 @@ export function regionAtBar(clickBar, barsInFile, totalBars) {
   };
 }
 
-/** Convert a horizontal pixel delta into a (rounded) bar delta. */
+/** Convert a horizontal pixel delta into a fractional bar delta. */
 export function pixelsToBars(dxPixels, pxPerBar) {
-  return Math.round(dxPixels / Math.max(1, pxPerBar));
+  return dxPixels / Math.max(1, pxPerBar);
 }
 
 /** Position/width as percentages of the song timeline, for CSS placement. */

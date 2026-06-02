@@ -950,22 +950,18 @@ input[type="range"] {
   top: 2px;
   bottom: 2px;
   border-radius: 4px;
-  /* Thin top/bottom, nearly invisible left/right — color only in edit/active states */
-  border-top:    1px solid rgba(120,180,255,0.12);
-  border-bottom: 1px solid rgba(120,180,255,0.12);
-  border-left:   2px solid rgba(120,180,255,0.12);
-  border-right:  2px solid rgba(120,180,255,0.12);
+  border: 1px solid transparent;
   background: transparent;
   cursor: crosshair;
   overflow: hidden;
   min-width: 8px;
   box-shadow: none;
-  transition: border-color 0.12s;
+  transition: border-color 0.12s, background-color 0.12s;
 }
 
 .sample-region:hover {
-  border-left-color:  rgba(120,180,255,0.38);
-  border-right-color: rgba(120,180,255,0.38);
+  border-color: rgba(120,180,255,0.28);
+  background: rgba(80,140,220,0.04);
 }
 
 /* Resize handle keeps ew-resize; region itself uses crosshair everywhere */
@@ -1023,7 +1019,7 @@ input[type="range"] {
   bottom: 0;
   width: 8px;
   cursor: ew-resize;
-  background: linear-gradient(to left, rgba(255,255,255,0.12), transparent);
+  background: transparent;
   z-index: 3;
 }
 
@@ -1038,6 +1034,7 @@ input[type="range"] {
   z-index: 5;
 }
 .sample-region--edit-move { cursor: grab; }
+.sample-region--editing .sample-region-resize { display: none; }
 .sample-region--edit-scale {
   border-left-color:  rgba(249,216,113,0.95);
   border-right-color: rgba(249,216,113,0.95);
@@ -1047,6 +1044,11 @@ input[type="range"] {
   border-left-color:  rgba(140,255,180,0.95);
   border-right-color: rgba(140,255,180,0.95);
   box-shadow: 0 0 14px rgba(140,255,180,0.35);
+}
+.sample-region--edit-reveal-unscaled {
+  border-left-color:  rgba(104,190,255,0.98);
+  border-right-color: rgba(104,190,255,0.98);
+  box-shadow: 0 0 16px rgba(80,170,255,0.45);
 }
 
 .sample-region-edit-handle {
@@ -1070,8 +1072,26 @@ input[type="range"] {
 .sample-region--edit-reveal .sample-region-edit-handle {
   background: rgba(140,255,180,0.32);
   border-color: rgba(180,255,205,0.85);
+  width: 18px;
 }
 .sample-region--edit-reveal .sample-region-edit-handle:hover { background: rgba(140,255,180,0.55); }
+.sample-region--edit-reveal-unscaled .sample-region-edit-handle {
+  background: rgba(80,170,255,0.38);
+  border-color: rgba(150,215,255,0.9);
+  width: 18px;
+}
+.sample-region--edit-reveal-unscaled .sample-region-edit-handle:hover { background: rgba(80,170,255,0.62); }
+
+.sample-region--reveal-preview {
+  border-color: rgba(88,176,255,0.95);
+  background: rgba(56,130,210,0.16);
+  box-shadow: inset 0 0 0 1px rgba(120,210,255,0.5), 0 0 12px rgba(80,170,255,0.35);
+  z-index: 6;
+}
+
+.sample-region--reveal-preview .sample-region-wave {
+  opacity: 1;
+}
 
 
 .sample-region-mode-badge {  position: absolute;
@@ -1164,13 +1184,7 @@ input[type="range"] {
 }
 
 .sample-chop-line {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: rgba(226,207,118,0.6);
-  pointer-events: none;
-  z-index: 2;
+  display: none;
 }
 
 /* Legacy class aliases so existing references don't break */
@@ -1245,6 +1259,45 @@ input[type="range"] {
   cursor: pointer;
 }
 
+/* ── Quantize panel ─────────────────────────────────── */
+
+.quantize-panel {
+  border: 1px solid #3a6050;
+}
+
+.quantize-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.quantize-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.quantize-grid-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.quantize-grid-label select {
+  background: var(--bg2, #1e1e2e);
+  color: var(--text);
+  border: 1px solid var(--border, #444);
+  border-radius: 3px;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
 /* ── Loop region panel ──────────────────────────────── */
 
 .loop-region-panel {
@@ -1278,6 +1331,7 @@ input[type="range"] {
 .loop-region-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .btn-danger {
@@ -1334,6 +1388,23 @@ input[type="range"] {
 .add-track-hint {
   font-size: 11px;
   color: #556;
+}
+
+.loop-beatmatch-label {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  margin-bottom: 14px !important;
+  font-size: 12px !important;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.loop-beatmatch-label input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
 .add-track-dialog-actions {
