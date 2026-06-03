@@ -58,6 +58,17 @@ export const finiteNumber = (value, fallback = 0) => {
 };
 export const clamp01 = (value) => Math.max(0, Math.min(1, finiteNumber(value, 0)));
 export const clamp = (value, min, max, fallback = 0) => Math.max(min, Math.min(max, finiteNumber(value, fallback)));
+export const DEFAULT_TRACK_STEPS_PER_BAR = 16;
+export const normalizeTrackStepCount = (value) => {
+  const requested = Math.round(finiteNumber(value, DEFAULT_TRACK_STEPS_PER_BAR));
+  return Math.max(1, Math.min(128, requested));
+};
+export const normalizePatternStep = (value) => {
+  const step = finiteNumber(value, 0);
+  if (step <= 0) return 0;
+  if (step >= 16) return 15;
+  return Number(step.toFixed(4));
+};
 export const STEP_OPTION_DEFAULTS = {
   pitch: 0,
   offsetMs: 0,
@@ -118,7 +129,7 @@ const normalizePatternHit = (entry) => {
     const [step, velocity, options] = entry;
     const normalizedOptions = normalizeStepOptions(options);
     const hit = [
-      Math.round(Math.max(0, Math.min(15, finiteNumber(step, 0)))),
+      normalizePatternStep(step),
       clamp01(velocity)
     ];
     if (hasStepOptions(normalizedOptions)) hit.push(normalizedOptions);
@@ -130,7 +141,7 @@ const normalizePatternHit = (entry) => {
       : entry;
     const normalizedOptions = normalizeStepOptions(optionSource);
     const hit = [
-      Math.round(Math.max(0, Math.min(15, finiteNumber(entry.step, 0)))),
+      normalizePatternStep(entry.step),
       clamp01(entry.velocity)
     ];
     if (hasStepOptions(normalizedOptions)) hit.push(normalizedOptions);
@@ -192,6 +203,7 @@ export const DEFAULT_RHYTHM_CONFIG = {
   // what makes two "808 Clap" instances sound different.
   trackShapes: {},
   trackSamples: {},
+  trackStepCounts: {},
   generatedRowsEditable: 0,
   soloTracks: [],
   patterns: {
@@ -281,6 +293,7 @@ const collectExtraTrackIds = (config = {}) => {
   scan(config.trackPans);
   scan(config.trackShapes);
   scan(config.trackSamples);
+  scan(config.trackStepCounts);
   const bars = config.patterns?.jazz?.bars;
   if (Array.isArray(bars)) {
     bars.forEach((bar) => {
@@ -375,6 +388,12 @@ export const normalizeRhythmConfig = (config = {}) => {
         root: typeof entry.root === "string" ? entry.root : null,
         path: typeof entry.path === "string" ? entry.path : null
       }])
+  );
+  const sourceStepCounts = merged.trackStepCounts && typeof merged.trackStepCounts === "object" ? merged.trackStepCounts : {};
+  merged.trackStepCounts = Object.fromEntries(
+    Object.entries(sourceStepCounts)
+      .map(([track, value]) => [track, normalizeTrackStepCount(value)])
+      .filter(([track, value]) => typeof track === "string" && value !== DEFAULT_TRACK_STEPS_PER_BAR)
   );
   // Per-track 808 voice shape overrides: { trackId: { drive, punch, ... } }.
   // Keep only entries that carry at least one in-range field after clamping.
@@ -591,7 +610,7 @@ export function expandPatternBars(bars = [], count = null) {
 function serializeGeneratedEvent(event) {
   const options = normalizeStepOptions({ pitch: event.pitch || 0 });
   const hit = [
-    Math.max(0, Math.min(15, Math.round(finiteNumber(event.step, 0)))),
+    normalizePatternStep(event.step),
     Number(clamp01(event.velocity).toFixed(2))
   ];
   if (hasStepOptions(options)) {

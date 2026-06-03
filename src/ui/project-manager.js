@@ -11,6 +11,7 @@ const DB_NAME   = "rhythm-artist";
 const DB_STORE  = "kv";
 const SLOTS_KEY = "projectSlots";
 const MAX_SLOTS = 32;
+const PROJECT_SCHEMA = "rhythm-artist/project@1";
 
 // ── IndexedDB helpers ────────────────────────────────────────────────────────
 function openDB() {
@@ -82,13 +83,79 @@ export function createProjectManager({
   setStatus = () => {}
 }) {
   // ── Slot persistence ─────────────────────────────────────────────────────
-  async function loadSlots() { return (await idbGet(SLOTS_KEY)) ?? []; }
+  function configFromProject(project) {
+    return project?.schema === PROJECT_SCHEMA && project.config ? project.config : project;
+  }
+
+  function wrapProject(name, config, savedAt = new Date().toISOString()) {
+    return {
+      schema: PROJECT_SCHEMA,
+      name,
+      savedAt,
+      samplePacks: ["default-pack"],
+      config
+    };
+  }
+
+  async function fetchDiskProjectList() {
+    try {
+      const response = await fetch("/api/projects", { cache: "no-store" });
+      if (!response.ok) return [];
+      const data = await response.json();
+      return Array.isArray(data.projects) ? data.projects : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async function fetchDiskProject(name) {
+    const response = await fetch(`/api/project?name=${encodeURIComponent(name)}`, { cache: "no-store" });
+    if (!response.ok) throw new Error("disk-project-not-found");
+    return response.json();
+  }
+
+  async function saveDiskProject(name, project) {
+    const response = await fetch("/api/project", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, project })
+    });
+    if (!response.ok) throw new Error("disk-project-save-failed");
+    return response.json();
+  }
+
+  async function loadSlots() {
+    const idbSlots = (await idbGet(SLOTS_KEY)) ?? [];
+    const diskProjects = await fetchDiskProjectList();
+    const merged = new Map();
+    idbSlots.forEach((slot) => merged.set(slot.name, { ...slot, source: "browser" }));
+    diskProjects.forEach((project) => {
+      const existing = merged.get(project.name);
+      merged.set(project.name, {
+        ...existing,
+        ...project,
+        source: "file"
+      });
+    });
+    return [...merged.values()].sort((a, b) => {
+      if (a.name === "Default Project") return -1;
+      if (b.name === "Default Project") return 1;
+      return String(b.savedAt || "").localeCompare(String(a.savedAt || ""));
+    });
+  }
   async function saveSlots(slots) { await idbSet(SLOTS_KEY, slots); }
 
   async function saveProject(name) {
-    const slots = await loadSlots();
     const config = JSON.parse(JSON.stringify(getConfig()));
     const now = new Date().toISOString();
+    const project = wrapProject(name, config, now);
+    try {
+      const result = await saveDiskProject(name, project);
+      return { name, savedAt: result.project?.savedAt || now, config, source: "file" };
+    } catch (error) {
+      console.warn("Disk project save failed; falling back to browser storage", error);
+    }
+    const slots = ((await idbGet(SLOTS_KEY)) ?? []);
     const idx = slots.findIndex(s => s.name === name);
     if (idx >= 0) {
       slots[idx] = { ...slots[idx], config, savedAt: now };
@@ -104,7 +171,12 @@ export function createProjectManager({
     const slots = await loadSlots();
     const entry = slots.find(s => s.name === name);
     if (!entry) throw new Error(`"${name}" not found`);
-    applyLoadedConfig(entry.config);
+    if (entry.source === "file") {
+      const diskProject = await fetchDiskProject(name);
+      applyLoadedConfig(configFromProject(diskProject));
+      return diskProject;
+    }
+    applyLoadedConfig(configFromProject(entry.config));
     return entry;
   }
 
@@ -238,6 +310,9 @@ export function createProjectManager({
     const listEl   = overlay.querySelector("#pm-file-list");
     const footerEl = overlay.querySelector("#pm-footer-info");
     const slots    = await loadSlots();
+    if (!selectedName && slots.some((slot) => slot.name === "Default Project")) {
+      selectedName = "Default Project";
+    }
 
     // Disable/enable toolbar buttons
     const hasSelection = !!selectedName && slots.some(s => s.name === selectedName);
@@ -269,7 +344,7 @@ export function createProjectManager({
       row.tabIndex = 0;
       row.innerHTML = `
         <span class="pm-file-name">
-          <span class="pm-file-icon">🎵</span>
+          <span class="pm-file-icon">${slot.source === "file" ? "▣" : "🎵"}</span>
           <span class="pm-file-name-text"></span>
         </span>
         <span class="pm-file-date">${fmt(slot.savedAt)}</span>`;

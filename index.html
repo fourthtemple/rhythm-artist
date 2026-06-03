@@ -15,27 +15,42 @@
       </aside>
 
       <section class="transport" aria-label="Transport">
-        <span class="transport-wordmark">rhythmartist</span>
-        <button id="open-global-mix" type="button" class="topbar-view-btn">Mixer</button>
-        <button id="open-project-manager" type="button" class="topbar-view-btn">Projects</button>
-        <a href="./rhythm-api-demo.html" class="transport-nav-link">API Demo</a>
-        <span class="transport-divider"></span>
-        <button id="play-toggle" type="button">Play</button>
-        <button id="restart" type="button">Restart</button>
-        <button id="play-song" type="button">Full Song</button>
-        <button id="loop-bar" type="button" title="Loop the selected bar(s). Shift-click bars to select a range.">Loop Selected</button>
-        <label class="transport-bpm-label">
-          <span>BPM</span>
-          <input id="transport-bpm" type="range" min="40" max="220" step="1" value="118" />
-          <output id="transport-bpm-value">118</output>
-          <input id="transport-bpm-number" class="transport-number" type="number" min="40" max="220" step="1" value="118" />
-        </label>
-        <label>
-          <span>Intensity</span>
-          <input id="intensity" type="range" min="0" max="1" step="0.01" value="0.45" />
-          <output id="intensity-value">0.45</output>
-        </label>
-        <p id="status">Ready</p>
+        <div class="transport-row transport-main-row">
+          <span class="transport-wordmark">rhythmartist</span>
+          <button id="open-global-mix" type="button" class="topbar-view-btn">Mixer</button>
+          <button id="open-project-manager" type="button" class="topbar-view-btn">Projects</button>
+          <a href="./rhythm-api-demo.html" class="transport-nav-link">API Demo</a>
+          <span class="transport-divider"></span>
+          <button id="play-toggle" type="button">Play</button>
+          <button id="restart" type="button">Restart</button>
+          <button id="play-song" type="button">Full Song</button>
+          <button id="loop-bar" type="button" title="Loop the selected bar(s). Shift-click bars to select a range.">Loop Selected</button>
+          <label title="Horizontal zoom: higher values show more bars and compress the grid">
+            <span>Zoom</span>
+            <input id="segments-count" type="number" min="1" max="32" step="1" value="2" aria-label="Horizontal zoom" />
+          </label>
+          <label class="camera-mode-label" title="Keep playback centered while bars move through the view">
+            <input id="camera-mode" type="checkbox" />
+            <span>Camera</span>
+          </label>
+          <label title="Time signature">
+            <span>Time</span>
+            <select id="time-sig-select">
+              <option value="4/4" selected>4/4</option>
+              <option value="3/4">3/4</option>
+              <option value="6/8">6/8</option>
+              <option value="5/4">5/4</option>
+              <option value="7/8">7/8</option>
+            </select>
+          </label>
+        </div>
+        <div class="transport-row transport-groove-row">
+          <label class="transport-bpm-label">
+            <span>BPM</span>
+            <input id="transport-bpm-number" class="transport-number" type="number" min="40" max="220" step="1" value="118" />
+          </label>
+          <p id="status">Ready</p>
+        </div>
       </section>
 
       <section class="workspace">
@@ -45,20 +60,6 @@
             <label>
               <span>Verses</span>
               <input id="loop-count" type="number" min="1" max="8" step="1" value="1" />
-            </label>
-            <label title="How many bars to show at once">
-              <span>Bars</span>
-              <input id="segments-count" type="number" min="1" max="32" step="1" value="2" />
-            </label>
-            <label title="Time signature">
-              <span>Time</span>
-              <select id="time-sig-select">
-                <option value="4/4" selected>4/4</option>
-                <option value="3/4">3/4</option>
-                <option value="6/8">6/8</option>
-                <option value="5/4">5/4</option>
-                <option value="7/8">7/8</option>
-              </select>
             </label>
           </div>
           <div class="bar-tabs" role="tablist" aria-label="Pattern bars"></div>
@@ -158,6 +159,14 @@
                     <button type="button" data-action="audition" title="Audition track">▶</button>
                     <button type="button" data-action="clear-sample" title="Reset to built-in voice">⟲</button>
                   </div>
+                </div>
+                <div class="track-inspector-layout">
+                  <span class="track-inspector-sublabel">Drum Grid</span>
+                  <label class="track-grid-density-row">
+                    <span>Steps / bar</span>
+                    <input class="selected-number" type="number" min="1" max="128" step="1" value="16" data-control="stepsPerBar" />
+                    <output data-output="stepsPerBar">16</output>
+                  </label>
                 </div>
                 <label>
                   <span>Track Level</span>

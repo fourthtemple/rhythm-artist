@@ -21,6 +21,7 @@
  * @param {number}   deps.MAX_LOOP_COUNT
  * @param {Record<string,number>} deps.DEFAULT_VELOCITY
  * @param {() => Array<{id:string,label:string,type:string}>} deps.gridRows
+ * @param {(hit:string) => number} deps.trackStepCount
  * @param {() => number} deps.loopCount
  * @param {(barIndex?:number) => number} deps.localBarIndex
  * @param {(loopIndex?:number) => number} deps.loopStartBar
@@ -62,6 +63,7 @@ export function createStepGridBuilder(deps) {
     MAX_LOOP_COUNT,
     DEFAULT_VELOCITY,
     gridRows,
+    trackStepCount,
     loopCount,
     localBarIndex,
     loopStartBar,
@@ -91,11 +93,60 @@ export function createStepGridBuilder(deps) {
   } = deps;
   const onAfterBuild = deps.onAfterBuild ?? (() => {});
   const onAfterRender = deps.onAfterRender ?? (() => {});
+  const BASE_STEPS_PER_BAR = 16;
+  const GRID_COLUMNS_PER_BAR = 96;
+  const normalizeStepPosition = (value) => {
+    const step = Number(value);
+    if (!Number.isFinite(step) || step <= 0) return 0;
+    if (step >= BASE_STEPS_PER_BAR) return BASE_STEPS_PER_BAR - 1;
+    return Number(step.toFixed(4));
+  };
+  const rowStepCount = (hit) => {
+    const count = Math.round(Number(trackStepCount?.(hit)) || BASE_STEPS_PER_BAR);
+    return Math.max(1, Math.min(128, count));
+  };
+  const visualStepToPatternStep = (visualStep, stepsPerBar) =>
+    normalizeStepPosition((visualStep * BASE_STEPS_PER_BAR) / stepsPerBar);
+
+  const visibleSegmentCount = () => Math.max(1, Math.round(Number(state.segmentsCount) || 2));
+  const renderedSegmentCount = () => {
+    const visible = visibleSegmentCount();
+    const total = Math.max(1, state.config?.patterns?.jazz?.bars?.length || LOOP_BAR_COUNT);
+    const available = Math.max(visible, total - Math.max(0, Math.round(Number(state.activeBar) || 0)));
+    return Math.max(visible, Math.min(available, state.cameraMode ? visible + 1 : visible));
+  };
 
   function buildStepGrid() {
-    const segments = state.segmentsCount ?? 2;
-    const stepsPerRow = segments * 16;
-    stepGrid.style.setProperty("--visible-steps", String(stepsPerRow));
+    const segments = visibleSegmentCount();
+    const renderedSegments = renderedSegmentCount();
+    const [timeNumerator = 4] = String(state.timeSig || "4/4").split("/").map(Number);
+    const visibleGridColumns = segments * GRID_COLUMNS_PER_BAR;
+    const renderedGridColumns = renderedSegments * GRID_COLUMNS_PER_BAR;
+    const maxVisibleSteps = Math.max(
+      BASE_STEPS_PER_BAR,
+      ...gridRows().map(({ id }) => rowStepCount(id))
+    ) * segments;
+    state.renderedSegmentsCount = renderedSegments;
+    stepGrid.style.setProperty("--visible-grid-columns", String(visibleGridColumns));
+    stepGrid.style.setProperty("--rendered-grid-columns", String(renderedGridColumns));
+    const stepGapX = Math.max(0.02, Math.min(1.5, 24 / visibleGridColumns));
+    const stepGapY = Math.max(1, Math.min(6, 96 / maxVisibleSteps));
+    const hitInset = Math.max(0.2, Math.min(5, 80 / maxVisibleSteps));
+    const hitRadius = Math.max(1, Math.min(4, 64 / maxVisibleSteps));
+    const barGap = Math.max(1, Math.min(8, 128 / maxVisibleSteps));
+    const barPadX = Math.max(2, Math.min(8, 96 / maxVisibleSteps));
+    const gridWidth = stepGrid.clientWidth || stepGrid.getBoundingClientRect?.().width || 800;
+    const labelWidth = 92;
+    const visibleGapWidth = visibleGridColumns * stepGapX;
+    const stepColumnWidth = Math.max(0.02, (gridWidth - labelWidth - visibleGapWidth) / visibleGridColumns);
+    stepGrid.style.setProperty("--step-gap-x", `${stepGapX}px`);
+    stepGrid.style.setProperty("--step-gap-y", `${stepGapY}px`);
+    stepGrid.style.setProperty("--hit-inset", `${hitInset}px`);
+    stepGrid.style.setProperty("--hit-radius", `${hitRadius}px`);
+    stepGrid.style.setProperty("--step-column-width", `${stepColumnWidth}px`);
+    barTabs.style.setProperty("--bar-gap", `${barGap}px`);
+    barTabs.style.setProperty("--bar-tab-pad-x", `${barPadX}px`);
+    if (!state.cameraMode) stepGrid.scrollLeft = 0;
     stepGrid.innerHTML = "";
 
     // Header row: "Track" corner + one header cell per step (global numbering).
@@ -105,11 +156,12 @@ export function createStepGridBuilder(deps) {
       className: "step-header step-header--corner",
       textContent: "Track"
     }));
-    for (let seg = 0; seg < segments; seg += 1) {
-      for (let step = 0; step < 16; step += 1) {
+    for (let seg = 0; seg < renderedSegments; seg += 1) {
+      for (let step = 0; step < BASE_STEPS_PER_BAR; step += 1) {
         const header = document.createElement("div");
         header.className = "step-header step-header--step";
-        const globalStep = seg * 16 + step + 1;
+        header.style.gridColumn = `span ${GRID_COLUMNS_PER_BAR / BASE_STEPS_PER_BAR}`;
+        const globalStep = seg * BASE_STEPS_PER_BAR + step + 1;
         header.textContent = String(globalStep).padStart(2, "0");
         if (step === 0) {
           header.classList.add("is-bar-start");
@@ -164,23 +216,38 @@ export function createStepGridBuilder(deps) {
       rowLabel.append(rowText, soloButton);
       stepGrid.appendChild(rowLabel);
 
-      for (let seg = 0; seg < segments; seg += 1) {
-        for (let step = 0; step < 16; step += 1) {
+      const stepsForTrack = rowStepCount(hit);
+      const stepRow = document.createElement("div");
+      stepRow.className = `step-row ${type === "generated" ? "is-generated-row" : ""}`;
+      stepRow.dataset.hit = hit;
+      stepRow.dataset.type = type;
+      stepRow.dataset.stepsPerBar = String(stepsForTrack);
+      stepRow.style.gridColumn = "2 / -1";
+      stepRow.style.gridTemplateColumns = `repeat(${renderedSegments * stepsForTrack}, minmax(0, 1fr))`;
+      stepRow.style.columnGap = `${Math.max(0.5, Math.min(5, 80 / Math.max(1, stepsForTrack * segments)))}px`;
+      for (let seg = 0; seg < renderedSegments; seg += 1) {
+        for (let visualStep = 0; visualStep < stepsForTrack; visualStep += 1) {
+          const step = visualStepToPatternStep(visualStep, stepsForTrack);
+          const baseStep = Math.floor(step);
           const button = document.createElement("button");
           button.type = "button";
           button.className = `step-button ${type === "generated" ? "is-generated-step" : ""}`;
-          if (step === 0 && seg > 0) button.classList.add("is-bar-start");
+          if (visualStep === 0 && seg > 0) button.classList.add("is-bar-start");
           button.dataset.hit = hit;
           button.dataset.type = type;
           button.dataset.step = String(step);
+          button.dataset.visualStep = String(visualStep);
+          button.dataset.stepsPerBar = String(stepsForTrack);
+          button.dataset.baseStep = String(baseStep);
           button.dataset.seg = String(seg);
-          button.dataset.beat = step % 4 === 0 ? "1" : "0";
-          button.setAttribute("aria-label", `${label} bar+${seg} step ${step + 1}`);
+          button.dataset.beat = Math.abs((visualStep * timeNumerator) % stepsForTrack) < 0.0001 ? "1" : "0";
+          button.setAttribute("aria-label", `${label} bar+${seg} step ${visualStep + 1} of ${stepsForTrack}`);
           button.addEventListener("mousedown", (event) => {
             event.preventDefault();
           });
           button.addEventListener("click", () => {
             const barIndex = state.activeBar + seg;
+            if (!state.config.patterns.jazz.bars[barIndex]) return;
             const scrollLeft = stepGrid.scrollLeft;
             const scrollTop = stepGrid.scrollTop;
             if (state.selected
@@ -203,9 +270,10 @@ export function createStepGridBuilder(deps) {
             stepGrid.scrollLeft = scrollLeft;
             stepGrid.scrollTop = scrollTop;
           });
-          stepGrid.appendChild(button);
+          stepRow.appendChild(button);
         }
       }
+      stepGrid.appendChild(stepRow);
     });
     renderStepGrid();
     onAfterBuild();
@@ -346,6 +414,8 @@ export function createStepGridBuilder(deps) {
     stepGrid.querySelectorAll(".step-button").forEach((button) => {
       const hit = button.dataset.hit;
       const step = Number(button.dataset.step);
+      const visualStep = Number(button.dataset.visualStep ?? button.dataset.step);
+      const stepsPerBar = Number(button.dataset.stepsPerBar ?? BASE_STEPS_PER_BAR);
       const seg = Number(button.dataset.seg ?? 0);
       const barIndex = state.activeBar + seg;
       const hitData = getHitData(hit, step, barIndex);
@@ -360,7 +430,7 @@ export function createStepGridBuilder(deps) {
       const displayedPitch = displayedPitchForHit(hit, step, hitData.options, barIndex);
       button.dataset.note = "";
       const pitchLabel = `pitch ${formatPitch(displayedPitch)}`;
-      button.title = `${hit} bar ${barIndex + 1} step ${step + 1}: ${velocity.toFixed(2)} ${pitchLabel} offset ${hitData.options.offsetMs}ms`;
+      button.title = `${hit} bar ${barIndex + 1} step ${visualStep + 1}/${stepsPerBar}: ${velocity.toFixed(2)} ${pitchLabel} offset ${hitData.options.offsetMs}ms`;
     });
     stepGrid.querySelectorAll(".track-label").forEach((label) => {
       const isPrimary = state.selected?.hit === label.dataset.hit && state.selected?.mode === "row";

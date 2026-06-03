@@ -11,6 +11,12 @@
  *       → { root, path, dirs: [...], files: [{ name, rel, url }] }
  *   GET /api/sample-file?root=<id>&path=<relative/file.wav>
  *       → the raw audio bytes (for fetch + decodeAudioData / preview)
+ *   GET /api/projects
+ *       → { projects: [{ name, fileName, savedAt }] }
+ *   GET /api/project?name=<project name>
+ *       → a disk-backed .rhythm-project.json project
+ *   POST /api/project
+ *       body { name, project } saves assets/projects/<name>.rhythm-project.json
  */
 
 import http from "http";
@@ -22,7 +28,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const PORT = 3000;
 const LIBRARY_CONFIG = path.join(ROOT, "sample-library.json");
+const PROJECTS_DIR = path.join(ROOT, "assets", "projects");
+const DEFAULT_SAMPLE_PACK = path.join(ROOT, "assets", "audio", "sample-pack");
 const AUDIO_EXTS = new Set([".wav", ".mp3", ".ogg", ".flac", ".aif", ".aiff", ".m4a"]);
+const PROJECT_EXT = ".rhythm-project.json";
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -45,15 +54,25 @@ const MIME = {
 
 /** Read + resolve the configured sample roots (absolute paths). */
 function loadSampleRoots() {
+  const roots = [];
+  if (fs.existsSync(DEFAULT_SAMPLE_PACK)) {
+    roots.push({ id: "default-pack", label: "Default Sample Pack", path: DEFAULT_SAMPLE_PACK });
+  }
   try {
     const parsed = JSON.parse(fs.readFileSync(LIBRARY_CONFIG, "utf8"));
-    const roots = Array.isArray(parsed?.roots) ? parsed.roots : [];
-    return roots
+    const configuredRoots = Array.isArray(parsed?.roots) ? parsed.roots : [];
+    roots.push(...configuredRoots
       .filter((r) => r && typeof r.id === "string" && typeof r.path === "string")
-      .map((r) => ({ id: r.id, label: r.label || r.id, path: path.resolve(r.path) }));
+      .map((r) => ({ id: r.id, label: r.label || r.id, path: path.resolve(r.path) })));
   } catch {
-    return [];
+    // sample-library.json is optional.
   }
+  const seen = new Set();
+  return roots.filter((root) => {
+    if (seen.has(root.id)) return false;
+    seen.add(root.id);
+    return true;
+  });
 }
 
 function jsonResponse(res, status, payload) {
@@ -63,6 +82,125 @@ function jsonResponse(res, status, payload) {
     "Access-Control-Allow-Origin": "*"
   });
   res.end(JSON.stringify(payload));
+}
+
+function readJsonBody(req, maxBytes = 10 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > maxBytes) {
+        reject(new Error("request-too-large"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (error) {
+        reject(error);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function projectFileNameFor(name = "Default Project") {
+  const base = String(name)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    || "default";
+  return `${base}${PROJECT_EXT}`;
+}
+
+function projectPathForName(name) {
+  const fileName = projectFileNameFor(name);
+  const abs = path.join(PROJECTS_DIR, fileName);
+  if (!abs.startsWith(PROJECTS_DIR)) return null;
+  return { abs, fileName };
+}
+
+function normalizeProjectPayload(name, payload) {
+  const source = payload?.project && typeof payload.project === "object" ? payload.project : payload;
+  const config = source?.config && typeof source.config === "object" ? source.config : source;
+  return {
+    schema: "rhythm-artist/project@1",
+    name: source?.name || name || "Default Project",
+    savedAt: new Date().toISOString(),
+    samplePacks: source?.samplePacks || ["default-pack"],
+    config
+  };
+}
+
+function handleProjectList(res) {
+  try {
+    fs.mkdirSync(PROJECTS_DIR, { recursive: true });
+    const projects = fs.readdirSync(PROJECTS_DIR)
+      .filter((fileName) => fileName.endsWith(PROJECT_EXT))
+      .map((fileName) => {
+        const abs = path.join(PROJECTS_DIR, fileName);
+        let parsed = null;
+        try { parsed = JSON.parse(fs.readFileSync(abs, "utf8")); } catch {}
+        const stat = fs.statSync(abs);
+        return {
+          name: parsed?.name || fileName.slice(0, -PROJECT_EXT.length),
+          fileName,
+          savedAt: parsed?.savedAt || stat.mtime.toISOString()
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+    jsonResponse(res, 200, { projects });
+  } catch (error) {
+    jsonResponse(res, 500, { error: error.message || "project-list-failed" });
+  }
+}
+
+function handleProjectGet(res, query) {
+  const name = query.get("name") || "Default Project";
+  const resolved = projectPathForName(name);
+  if (!resolved) return jsonResponse(res, 400, { error: "bad-project-name" });
+  fs.readFile(resolved.abs, "utf8", (error, data) => {
+    if (error) return jsonResponse(res, 404, { error: "not-found" });
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Origin": "*"
+    });
+    res.end(data);
+  });
+}
+
+async function handleProjectPost(req, res) {
+  try {
+    const body = await readJsonBody(req);
+    const name = body.name || body.project?.name || "Default Project";
+    const resolved = projectPathForName(name);
+    if (!resolved) return jsonResponse(res, 400, { error: "bad-project-name" });
+    const project = normalizeProjectPayload(name, body);
+    fs.mkdirSync(PROJECTS_DIR, { recursive: true });
+    fs.writeFileSync(resolved.abs, JSON.stringify(project, null, 2) + "\n");
+    jsonResponse(res, 200, { ok: true, project: { name: project.name, fileName: resolved.fileName, savedAt: project.savedAt } });
+  } catch (error) {
+    jsonResponse(res, error.message === "request-too-large" ? 413 : 400, { error: error.message || "save-failed" });
+  }
+}
+
+async function handleSaveGameAsset(req, res) {
+  try {
+    const body = await readJsonBody(req);
+    const fileName = path.basename(String(body.fileName || ""));
+    if (!fileName.endsWith(".json")) return jsonResponse(res, 400, { error: "bad-file-name" });
+    const content = typeof body.content === "string" ? body.content : JSON.stringify(body.content ?? {}, null, 2) + "\n";
+    const outPath = path.join(ROOT, "assets", "game", fileName);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, content);
+    jsonResponse(res, 200, { ok: true });
+  } catch (error) {
+    jsonResponse(res, 400, { error: error.message || "save-failed" });
+  }
 }
 
 /** Resolve a (root id, relative path) pair to a safe absolute path. */
@@ -138,6 +276,12 @@ const server = http.createServer((req, res) => {
   if (urlPath === "/api/sample-roots") return handleSampleRoots(res);
   if (urlPath === "/api/sample-browse") return handleSampleBrowse(res, url.searchParams);
   if (urlPath === "/api/sample-file") return handleSampleFile(res, url.searchParams);
+  if (urlPath === "/api/projects" && req.method === "GET") return handleProjectList(res);
+  if (urlPath === "/api/project" && req.method === "GET") return handleProjectGet(res, url.searchParams);
+  if (urlPath === "/api/project" && req.method === "POST") return void handleProjectPost(req, res);
+  if (urlPath === "/api/default-project" && req.method === "GET") return handleProjectGet(res, new URLSearchParams({ name: "Default Project" }));
+  if (urlPath === "/api/default-project" && req.method === "POST") return void handleProjectPost(req, res);
+  if (urlPath === "/api/save-game-asset" && req.method === "POST") return void handleSaveGameAsset(req, res);
 
   // ── Static files ───────────────────────────────────────────
   const staticPath = urlPath === "/" ? "/index.html" : urlPath;

@@ -316,6 +316,7 @@ export function createLoopTrackPanel({
   setStatus = () => {},
   getEngine = () => null,
   getQuantize = () => ({ enabled: false, value: 0.25 }),
+  getCameraMode = () => false,
   onNavigate = null   // (bar: number) => void  — called to scroll view to a bar
 }) {
   /** @type {LoopTrack[]} */
@@ -411,6 +412,10 @@ export function createLoopTrackPanel({
       _playheadRaf = requestAnimationFrame(frame);
       if (!engine?.playing) {
         // engine stopped — hide playheads
+        stepGrid.querySelectorAll(".sample-lane-playhead").forEach((el) => { el.style.display = "none"; });
+        return;
+      }
+      if (getCameraMode()) {
         stepGrid.querySelectorAll(".sample-lane-playhead").forEach((el) => { el.style.display = "none"; });
         return;
       }

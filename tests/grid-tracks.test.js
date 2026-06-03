@@ -101,13 +101,14 @@ test("removeTrackFromConfigMaps drops the id from every map immutably", () => {
   assert.equal(config.trackLevels["clap~a1"], 0.5);
 });
 
-test("TRACK_CONFIG_MAP_KEYS lists the six per-track maps", () => {
+test("TRACK_CONFIG_MAP_KEYS lists the seven per-track maps", () => {
   assert.deepEqual(TRACK_CONFIG_MAP_KEYS, [
     "trackShapes",
     "trackBusSends",
     "trackReverbSends",
     "trackLevels",
     "trackPans",
-    "trackSamples"
+    "trackSamples",
+    "trackStepCounts"
   ]);
 });

@@ -24,6 +24,12 @@ test("normalizeHitEntry clamps step and velocity into range", () => {
   assert.equal(entry.velocity, 1);
 });
 
+test("normalizeHitEntry preserves fractional dense-grid steps", () => {
+  const entry = normalizeHitEntry([3.5, 0.5]);
+  assert.equal(entry.step, 3.5);
+  assert.deepEqual(serializeHitEntry(entry), [3.5, 0.5]);
+});
+
 test("normalizeHitEntry coerces junk to a silent step", () => {
   const entry = normalizeHitEntry(null);
   assert.equal(entry.step, 0);

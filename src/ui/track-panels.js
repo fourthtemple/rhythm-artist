@@ -113,6 +113,12 @@ export function createTrackPanels(deps) {
   } = deps;
 
   const registryIds = () => TRACK_REGISTRY.map((t) => t.id);
+  const DEFAULT_TRACK_STEPS_PER_BAR = 16;
+  const normalizeTrackStepCount = (value) => {
+    const number = Number(value);
+    const requested = Math.round(Number.isFinite(number) ? number : DEFAULT_TRACK_STEPS_PER_BAR);
+    return Math.max(1, Math.min(128, requested));
+  };
 
   // ── Registry-driven grid track management ───────────────────
 
@@ -183,6 +189,12 @@ export function createTrackPanels(deps) {
     state.config.trackReverbSends = { ...(state.config.trackReverbSends || {}), [instanceId]: base.reverbSend ?? 0.2 };
     state.config.trackLevels = { ...(state.config.trackLevels || {}), [instanceId]: base.level ?? 1 };
     state.config.trackPans = { ...(state.config.trackPans || {}), [instanceId]: base.pan ?? 0 };
+    if (state.config.trackStepCounts?.[base.id]) {
+      state.config.trackStepCounts = {
+        ...(state.config.trackStepCounts || {}),
+        [instanceId]: normalizeTrackStepCount(state.config.trackStepCounts[base.id])
+      };
+    }
     applyConfig();
     buildStepGrid();
     renderTrackExplorer();
@@ -475,6 +487,23 @@ export function createTrackPanels(deps) {
 
   // ── Track Inspector ──────────────────────────────────────────
 
+  function trackStepCount(hit) {
+    return normalizeTrackStepCount(state.config.trackStepCounts?.[hit] ?? DEFAULT_TRACK_STEPS_PER_BAR);
+  }
+
+  function setTrackStepCount(hit, value) {
+    const nextValue = normalizeTrackStepCount(value);
+    const next = { ...(state.config.trackStepCounts || {}) };
+    if (nextValue === DEFAULT_TRACK_STEPS_PER_BAR) delete next[hit];
+    else next[hit] = nextValue;
+    state.config.trackStepCounts = next;
+    applyConfig();
+    buildStepGrid();
+    renderTrackInspector();
+    syncJson();
+    setStatus(`${instanceLabel(hit)} grid set to ${nextValue} steps/bar`);
+  }
+
   /**
    * Build one inspector panel (cloned from the template) for a single track id,
    * wiring its sample row, Level/Pan/Delay/Verb controls, optional 808 shape, and
@@ -495,6 +524,22 @@ export function createTrackPanels(deps) {
       const assigned = state.config.trackSamples?.[hit];
       sampleEl.textContent = assigned ? assigned.label : "— built-in —";
       sampleEl.classList.toggle("is-custom", Boolean(assigned));
+    }
+
+    const densityInput = panel.querySelector('[data-control="stepsPerBar"]');
+    const densityOutput = panel.querySelector('[data-output="stepsPerBar"]');
+    if (densityInput) {
+      const currentSteps = trackStepCount(hit);
+      densityInput.value = String(currentSteps);
+      if (densityOutput) densityOutput.textContent = String(currentSteps);
+      const commitDensity = () => setTrackStepCount(hit, densityInput.value);
+      densityInput.addEventListener("change", commitDensity);
+      densityInput.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        commitDensity();
+        densityInput.blur();
+      });
     }
 
     // Paired range + number controls for Level / Pan / Delay / Verb.
@@ -740,6 +785,8 @@ export function createTrackPanels(deps) {
     assignSampleToTrack,
     clearTrackSample,
     reapplyTrackSamples,
+    trackStepCount,
+    setTrackStepCount,
     // misc
     auditionTrackById
   };

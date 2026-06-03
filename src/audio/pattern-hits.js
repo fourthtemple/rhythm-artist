@@ -6,7 +6,7 @@
 // prefer the richer `{ step, velocity, options }` shape. These helpers convert
 // between the two representations and have no dependency on editor state, which
 // keeps them easy to unit test in isolation.
-import { normalizeStepOptions, STEP_OPTION_DEFAULTS } from "./rhythm-config.js";
+import { normalizePatternStep, normalizeStepOptions, STEP_OPTION_DEFAULTS } from "./rhythm-config.js";
 
 const clampNumber = (value, min, max, fallback = 0) => {
   const number = Number(value);
@@ -21,7 +21,7 @@ export function normalizeHitEntry(entry) {
   if (Array.isArray(entry)) {
     const [step, velocity, options] = entry;
     return {
-      step: Math.round(clampNumber(step, 0, 15, 0)),
+      step: normalizePatternStep(step),
       velocity: clampNumber(velocity, 0, 1, 0),
       options: normalizeStepOptions(options)
     };
@@ -31,7 +31,7 @@ export function normalizeHitEntry(entry) {
       ? { ...entry.options, ...entry }
       : entry;
     return {
-      step: Math.round(clampNumber(entry.step, 0, 15, 0)),
+      step: normalizePatternStep(entry.step),
       velocity: clampNumber(entry.velocity, 0, 1, 0),
       options: normalizeStepOptions(optionSource)
     };
@@ -55,7 +55,7 @@ export function hasStepOptions(options = {}) {
 export function serializeHitEntry(entry) {
   const normalized = normalizeHitEntry(entry);
   const tuple = [
-    normalized.step,
+    normalizePatternStep(normalized.step),
     Number(normalized.velocity.toFixed(2))
   ];
   if (hasStepOptions(normalized.options)) {
@@ -90,7 +90,7 @@ export function buildHitMap(bar, hit) {
  * when the step has no stored hit. Pure read against the provided bar.
  */
 export function readStoredHit(bar, hit, step) {
-  return buildHitMap(bar, hit).get(step) || null;
+  return buildHitMap(bar, hit).get(normalizePatternStep(step)) || null;
 }
 
 /**
@@ -100,9 +100,10 @@ export function readStoredHit(bar, hit, step) {
  * compact on-disk tuple form.
  */
 export function commitHitEntry(bar, hit, step, mergedEntry) {
+  const safeStep = normalizePatternStep(step);
   const next = buildHitMap(bar, hit);
-  if (!mergedEntry || mergedEntry.velocity <= 0.005) next.delete(step);
-  else next.set(step, mergedEntry);
+  if (!mergedEntry || mergedEntry.velocity <= 0.005) next.delete(safeStep);
+  else next.set(safeStep, { ...mergedEntry, step: safeStep });
   bar[hit] = Array.from(next.values())
     .sort((a, b) => a.step - b.step)
     .map(serializeHitEntry);

@@ -14,7 +14,8 @@ export const TRACK_CONFIG_MAP_KEYS = [
   "trackReverbSends",
   "trackLevels",
   "trackPans",
-  "trackSamples"
+  "trackSamples",
+  "trackStepCounts"
 ];
 
 /**

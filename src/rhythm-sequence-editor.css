@@ -178,14 +178,28 @@ button.is-active {
 }
 
 .transport {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  display: grid;
   gap: 6px;
   padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
+}
+
+.transport-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.transport-main-row {
+  flex-wrap: wrap;
+}
+
+.transport-groove-row {
+  justify-content: flex-end;
+  min-height: 24px;
 }
 
 .transport button {
@@ -204,18 +218,25 @@ button.is-active {
 }
 
 .transport label {
-  grid-template-columns: auto minmax(80px, 140px) auto auto;
+  display: flex;
   align-items: center;
-  margin-left: auto;
+  gap: 6px;
+  margin: 0;
+}
+
+.transport-main-row label {
+  margin-left: 4px;
 }
 
 .transport-bpm-label {
-  margin-left: 0 !important;
+  margin-left: 0;
 }
 
-.transport-number {
+.transport-number,
+.transport input[type="number"] {
   width: 48px;
-  padding: 1px 4px;
+  height: 28px;
+  padding: 1px 5px;
   font-size: 12px;
   background: var(--bg2, #1e1e2e);
   color: var(--text);
@@ -223,17 +244,9 @@ button.is-active {
   border-radius: 3px;
 }
 
-/* ── Zoom controls ──────────────────────────────────── */
-.zoom-controls {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.loop-toolbar select {
+.transport select,
+.loop-toolbar select,
+.track-grid-density-row select {
   height: 30px;
   padding: 0 6px;
   border: 1px solid #3a4553;
@@ -242,18 +255,6 @@ button.is-active {
   color: var(--text);
   font-size: 12px;
 }
-
-/* ── Step grid zoom modifiers (8× by default, class applied on init) ─── */
-.step-grid--zoom-2 .step-button { min-height: 36px; font-size: 9px; }
-.step-grid--zoom-4 .step-button { min-height: 22px; font-size: 0; padding: 0; }
-.step-grid--zoom-8 .step-button { min-height: 14px; font-size: 0; padding: 0; border-radius: 2px; }
-.step-grid--zoom-4 .step-button::after,
-.step-grid--zoom-8 .step-button::after { inset: auto 2px 2px; }
-.step-grid--zoom-2 .step-header,
-.step-grid--zoom-4 .step-header,
-.step-grid--zoom-8 .step-header { font-size: 9px; padding: 0 2px; }
-.step-grid--zoom-4 .step-header,
-.step-grid--zoom-8 .step-header { font-size: 8px; }
 
 .transport output,
 .control-panel output,
@@ -265,7 +266,7 @@ button.is-active {
 }
 
 #status {
-  flex: 0 0 170px;
+  flex: 1 1 auto;
   margin: 0;
   color: var(--muted);
   font-size: 12px;
@@ -282,6 +283,7 @@ button.is-active {
 }
 
 .sequencer-panel {
+  position: relative;
   display: grid;
   grid-template-rows: auto auto 1fr 6px auto;
   gap: 12px;
@@ -377,17 +379,30 @@ button.is-active {
   padding: 0 6px;
 }
 
+.transport .camera-mode-label {
+  gap: 5px;
+  color: var(--text);
+}
+
+.transport input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent-2);
+}
+
 .bar-tabs {
   display: grid;
   grid-template-columns: repeat(16, minmax(34px, 1fr));
-  gap: 8px;
+  gap: var(--bar-gap, 8px);
   overflow: auto;
   padding-bottom: 2px;
 }
 
 .bar-tabs button {
   min-height: 30px;
-  padding: 0 8px;
+  padding: 0 var(--bar-tab-pad-x, 8px);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
@@ -405,12 +420,19 @@ button.is-active {
 
 .step-grid {
   display: grid;
-  grid-template-columns: 92px repeat(var(--visible-steps, 16), minmax(28px, 1fr));
-  gap: 6px;
+  grid-template-columns: 92px repeat(var(--rendered-grid-columns, var(--visible-grid-columns, 16)), var(--step-column-width, minmax(0, 1fr)));
+  --step-gap-x: 5px;
+  --step-gap-y: 6px;
+  --hit-inset: 5px;
+  --hit-radius: 4px;
+  column-gap: var(--step-gap-x);
+  row-gap: var(--step-gap-y);
   align-content: start;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding-bottom: 6px;
+  scroll-behavior: auto;
 }
 
 /* Prevent any label cell (including sample-lane-label) from blowing out the 92px column */
@@ -419,6 +441,20 @@ button.is-active {
   max-width: 92px;
   min-width: 0;
   overflow: hidden;
+}
+
+.step-grid > .step-header--corner,
+.step-grid > .track-label,
+.step-grid > .sample-lane-label {
+  position: sticky;
+  left: 0;
+  z-index: 12;
+  background: var(--panel);
+}
+
+.step-grid > .step-header--corner {
+  z-index: 14;
+  background: var(--panel-soft);
 }
 
 /* bar boundary marker between segments */
@@ -485,6 +521,12 @@ button.is-active {
   color: var(--text);
 }
 
+.step-row {
+  display: grid;
+  min-width: 0;
+  align-items: stretch;
+}
+
 .solo-button {
   min-height: 24px;
   min-width: 28px;
@@ -528,10 +570,10 @@ button.is-active {
 .step-button::after {
   content: "";
   position: absolute;
-  inset: auto 5px 5px;
+  inset: auto var(--hit-inset) var(--hit-inset);
   height: calc(var(--level, 0) * 44px);
   min-height: calc(var(--level, 0) * 8px);
-  border-radius: 4px;
+  border-radius: var(--hit-radius);
   background: linear-gradient(180deg, var(--accent) 0%, #d28f57 100%);
   opacity: calc(0.2 + var(--level, 0) * 0.8);
 }
@@ -1856,6 +1898,15 @@ input[type="range"] {
   border: 1px solid #262c3b;
 }
 
+.track-inspector-layout {
+  display: grid;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  background: #11151f;
+  border: 1px solid #262c3b;
+}
+
 .track-inspector-sublabel {
   font-size: 10px;
   letter-spacing: 0.06em;
@@ -1895,6 +1946,19 @@ input[type="range"] {
 
 .track-inspector-sample-row button:hover {
   background: #2c3346;
+}
+
+.track-grid-density-row {
+  display: grid !important;
+  grid-template-columns: auto minmax(78px, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.track-grid-density-row input,
+.track-grid-density-row select {
+  width: 100%;
+  min-width: 72px;
 }
 
 /* ── Sample Browser ── */

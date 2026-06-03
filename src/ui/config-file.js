@@ -59,6 +59,12 @@ export function createConfigFile(deps) {
     downloadJsonFile(content, "kamorebi-rhythm-sequence.json");
   }
 
+  function configFromPayload(payload) {
+    return payload?.schema === "rhythm-artist/project@1" && payload.config
+      ? payload.config
+      : payload;
+  }
+
   async function downloadConfig() {
     state.config = normalizeEditorConfig(state.config);
     syncJson();
@@ -110,10 +116,16 @@ export function createConfigFile(deps) {
   async function loadSavedRhythmConfig() {
     if (runningFromFile) return;
     try {
-      applyLoadedConfig(await fetchSavedConfig(SAVED_RHYTHM_URL));
-      setStatus("Loaded game rhythm");
+      const payload = await fetchSavedConfig(SAVED_RHYTHM_URL);
+      applyLoadedConfig(configFromPayload(payload));
+      setStatus(payload?.name ? `Loaded ${payload.name}` : "Loaded default project");
     } catch (error) {
-      console.warn("Using sequencer defaults", error);
+      try {
+        applyLoadedConfig(await fetchSavedConfig("./assets/game/rhythm-sequence.json"));
+        setStatus("Loaded legacy game rhythm");
+      } catch (fallbackError) {
+        console.warn("Using sequencer defaults", error, fallbackError);
+      }
     }
   }
 

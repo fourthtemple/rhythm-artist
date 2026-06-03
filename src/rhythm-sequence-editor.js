@@ -110,7 +110,7 @@ const LOOP_BAR_COUNT = PHRASE_BARS;
 const MAX_LOOP_COUNT = Math.floor(MAX_SEQUENCE_BARS / LOOP_BAR_COUNT);
 const PITCH_SLIDER_MIN = -24;
 const PITCH_SLIDER_MAX = 48;
-const SAVED_RHYTHM_URL = "./assets/game/rhythm-sequence.json";
+const SAVED_RHYTHM_URL = "./assets/projects/default-project.rhythm-project.json";
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const $ = (selector) => document.querySelector(selector);
 const clamp = (value, min, max, fallback = 0) => {
@@ -146,8 +146,8 @@ const state = {
   barClipboard: null,
   playheadStep: 0,
   uiTimer: null,
-  zoomLevel: 8,
   segmentsCount: 2,
+  cameraMode: false,
   timeSig: "4/4",
   // Registry-driven list of track ids shown in the grid (order = render order).
   gridTrackIds: [...DEFAULT_GRID_TRACK_IDS],
@@ -570,6 +570,7 @@ function setTrackPan(hit, value) {
 // buildStepGrid, buildLoopTabs, buildBarTabs, and renderStepGrid live in
 // their own controller. The editor keeps thin hoisted wrappers so all
 // existing call sites are unchanged.
+let trackPanels = null;
 const gridBuilder = createStepGridBuilder({
   state,
   stepGrid,
@@ -581,6 +582,7 @@ const gridBuilder = createStepGridBuilder({
   MAX_LOOP_COUNT,
   DEFAULT_VELOCITY,
   gridRows,
+  trackStepCount: (hit) => trackPanels?.trackStepCount?.(hit) ?? 16,
   loopCount,
   localBarIndex,
   loopStartBar,
@@ -661,12 +663,11 @@ function clearSolo() { return rowSelection.clearSolo(); }
 function renderSoloButtons() { return rowSelection.renderSoloButtons(); }
 
 // ══ Config sync controller ══════════════════════════════════════════════════
-// getPathValue, setPathValue, syncSliders, applyZoom, syncJson, applyConfig
+// getPathValue, setPathValue, syncSliders, syncJson, applyConfig
 // live in their own controller. Hoisted wrappers below preserve all call sites.
 const configSync = createConfigSync({
   $,
   state,
-  stepGrid,
   jsonOutput,
   getConfigPath,
   setConfigPath,
@@ -679,7 +680,6 @@ const configSync = createConfigSync({
 function getPathValue(path) { return configSync.getPathValue(path); }
 function setPathValue(path, value) { return configSync.setPathValue(path, value); }
 function syncSliders() { return configSync.syncSliders(); }
-function applyZoom(level) { return configSync.applyZoom(level); }
 
 function applySegments(count) {
   const n = Math.max(1, Math.min(LOOP_BAR_COUNT, Math.round(count) || 2));
@@ -698,8 +698,9 @@ function applyTimeSig(value) {
   stepGrid.dataset.timeSig = value;
   // Mark beat accents based on numerator
   stepGrid.querySelectorAll(".step-button").forEach((btn) => {
-    const step = Number(btn.dataset.step);
-    btn.dataset.beat = step % num === 0 ? "1" : "0";
+    const visualStep = Number(btn.dataset.visualStep ?? btn.dataset.step ?? 0);
+    const stepsPerBar = Number(btn.dataset.stepsPerBar ?? 16);
+    btn.dataset.beat = Math.abs((visualStep * num) % stepsPerBar) < 0.0001 ? "1" : "0";
   });
   const sel = /** @type {HTMLSelectElement|null} */ ($("#time-sig-select"));
   if (sel) sel.value = state.timeSig;
@@ -791,7 +792,6 @@ function wireEvents() {
     status,
     loopCountInput,
     setPathValue,
-    applyZoom,
     wireNumberControl,
     startPlayback, stopPlayback, restartPlayback,
     playFullSong, toggleBarLoop, toggleTwoBarLoop,
@@ -844,11 +844,12 @@ const loopPanel = createLoopTrackPanel({
   stepGrid,
   $,
   getBarsLength: () => LOOP_BAR_COUNT,
-  getSegmentsCount: () => state.segmentsCount,
+  getSegmentsCount: () => state.renderedSegmentsCount || state.segmentsCount,
   getActiveBar: () => state.activeBar,
   setStatus: (msg) => { status.textContent = msg; },
   getEngine: () => state.engine,
   getQuantize: () => state.quantize,
+  getCameraMode: () => state.cameraMode,
   onNavigate: (bar) => {
     // Scroll the step-grid view to show the given bar, then repaint lanes
     const seg = state.segmentsCount || 2;
@@ -868,7 +869,7 @@ const loopPanel = createLoopTrackPanel({
 // ══ Track panels controller (grid mgmt + Add-Track + Explorer + Inspector) ══
 // The right-side track UI cluster lives in its own controller; the editor keeps
 // thin, hoisted wrappers so the rest of the file calls these by their old names.
-const trackPanels = createTrackPanels({
+trackPanels = createTrackPanels({
   $,
   state,
   trackExplorerList,
@@ -1005,9 +1006,10 @@ buildLoopTabs();
 buildBarTabs();
 buildStepGrid();
 wireEvents();
-applyZoom(8);
 applySegments(2);
 refreshLoopBarButton();
+
+window.addEventListener("resize", () => buildStepGrid());
 
 // ── Attach loop-track scheduler whenever the engine starts/restarts ─────────
 // The engine emits "play" once it's running and has a live AudioContext;

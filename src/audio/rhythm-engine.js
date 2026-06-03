@@ -627,6 +627,7 @@ export class RhythmEngine {
       phraseBar,
       time,
       scheduledTime,
+      stepDuration,
       bpm: this.currentBpm(),
       style: patternStyle,
       intensity: this.intensity
@@ -669,7 +670,8 @@ export class RhythmEngine {
       if (EDITABLE_GENERATED_ROWS.includes(hit)) return;
       if (!this.trackIsAudible(hit)) return;
       hits.forEach(([hitStep, velocity, optionsRaw]) => {
-        if (hitStep !== step) return;
+        const timing = this.hitTimingForSchedulerStep(hitStep, step, stepDuration);
+        if (!timing) return;
         const options = normalizeStepOptions(optionsRaw);
         const human = (Math.random() * 2 - 1) * this.config.humanizeSeconds;
         const lift = this.config.drumLift;
@@ -679,7 +681,7 @@ export class RhythmEngine {
         const arrangementLift = editableGeneratedRows ? 1 : arrangementHitScale(hit, step, phraseBar);
         if (phraseLift <= 0 || shiftLift <= 0 || arrangementLift <= 0) return;
         const layeredGain = velocity * lift * phraseLift * shiftLift * arrangementLift;
-        const hitTime = scheduledTime + human + options.offsetMs / 1000;
+        const hitTime = scheduledTime + timing.offsetSeconds + human + options.offsetMs / 1000;
         this.playHit(hit, hitTime, this.drumGain(layeredGain), rate, options);
         if (!editableGeneratedRows) {
           this.play808Overlay(hit, hitTime, layeredGain);
@@ -747,6 +749,9 @@ export class RhythmEngine {
       step: this.nextStep,
       barIndex: this.barIndex,
       phraseBar: this.phraseBarIndex(),
+      nextStepTime: this.nextStepTime,
+      stepDuration: this.activeStepDurationSeconds,
+      contextTime: this.context?.currentTime ?? 0,
       intensity: this.intensity,
       activeBarIntensity: this.activeBarIntensity
     };
@@ -839,9 +844,9 @@ export class RhythmEngine {
     this.playHit("scratch", scratchTime, upshift ? 0.24 : 0.18, upshift ? 1.08 : 0.92);
   }
 
-  currentBpm(style = this.activePatternStyle, intensity = this.intensity) {
+  currentBpm(style = this.activePatternStyle, _intensity = this.intensity) {
     const base = this.patterns[style]?.bpm ?? 140;
-    return base + clamp01(intensity) * 6;
+    return base;
   }
 
   stepDurationSeconds(style = this.activePatternStyle, intensity = this.intensity) {
@@ -850,6 +855,17 @@ export class RhythmEngine {
 
   swingIntensity() {
     return 1;
+  }
+
+  hitTimingForSchedulerStep(hitStep, schedulerStep, stepDuration) {
+    const position = finiteNumber(hitStep, 0);
+    if (position < 0 || position >= 16) return null;
+    const baseStep = Math.floor(position);
+    if (baseStep !== schedulerStep) return null;
+    return {
+      position,
+      offsetSeconds: Math.max(0, position - schedulerStep) * stepDuration
+    };
   }
 
   playbackRateFor(hit, style) {
@@ -1081,7 +1097,7 @@ export class RhythmEngine {
   editableSpaceMutesDrums(bar, step) {
     const hits = Array.isArray(bar?.space) ? bar.space : [];
     return hits.some(([hitStep, velocity, optionsRaw]) => {
-      if (hitStep !== step || velocity <= 0.001) return false;
+      if (!this.hitTimingForSchedulerStep(hitStep, step, 1) || velocity <= 0.001) return false;
       return optionsRaw?.muteDrums === true;
     });
   }
@@ -1097,9 +1113,10 @@ export class RhythmEngine {
       const base = baseTrackId(track);
       const hits = Array.isArray(bar?.[track]) ? bar[track] : [];
       hits.forEach(([hitStep, velocity, optionsRaw]) => {
-        if (hitStep !== step || velocity <= 0.001) return;
+        const timing = this.hitTimingForSchedulerStep(hitStep, step, stepDuration);
+        if (!timing || velocity <= 0.001) return;
         const options = normalizeStepOptions(optionsRaw);
-        const hitTime = time + options.offsetMs / 1000 + Math.max(0, options.delayMs / 1000);
+        const hitTime = time + timing.offsetSeconds + options.offsetMs / 1000 + Math.max(0, options.delayMs / 1000);
         const frequency = this.synthFrequency(options.pitch, 1);
         const gain = clamp01(velocity);
         if (base === "pluck") {
@@ -1258,10 +1275,11 @@ export class RhythmEngine {
     const pressure = clamp01(this.activeBarIntensity);
     const stepDuration = this.activeStepDurationSeconds || this.stepDurationSeconds(style, pressure);
     bassHits.forEach(([hitStep, velocity, optionsRaw], hitIndex) => {
-      if (hitStep !== step) return;
+      const timing = this.hitTimingForSchedulerStep(hitStep, step, stepDuration);
+      if (!timing) return;
       const options = normalizeStepOptions(optionsRaw);
       const noteIndex = sequencedBassPitchForStep({ phraseBar, hitIndex, step });
-      this.playBassSynth(time + options.offsetMs / 1000, this.synthFrequency(noteIndex, 0) * 2 ** (options.pitch / 12), {
+      this.playBassSynth(time + timing.offsetSeconds + options.offsetMs / 1000, this.synthFrequency(noteIndex, 0) * 2 ** (options.pitch / 12), {
         gain: (0.08 + pressure * 0.08) * velocity,
         duration: stepDuration * (step % 4 === 0 ? 2.7 : 1.85),
         style,

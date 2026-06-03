@@ -17,7 +17,6 @@ export function createEventWiring(deps) {
     status,
     loopCountInput,
     setPathValue,
-    applyZoom,
     wireNumberControl,
     // transport
     startPlayback, stopPlayback, restartPlayback,
@@ -73,27 +72,18 @@ export function createEventWiring(deps) {
     $("#restart").addEventListener("click", restartPlayback);
     $("#play-song").addEventListener("click", playFullSong);
     $("#loop-bar").addEventListener("click", toggleBarLoop);
-    $("#intensity").addEventListener("input", (event) => {
-      state.intensity = Number(event.target.value);
-      $("#intensity-value").textContent = state.intensity.toFixed(2);
-    });
     // Transport BPM widget
-    const transportBpm = $("#transport-bpm");
     const transportBpmNumber = $("#transport-bpm-number");
-    const transportBpmValue = $("#transport-bpm-value");
     function applyTransportBpm(value) {
       const bpm = Math.round(clamp(value, 40, 220, 118));
       setPathValue("patterns.jazz.bpm", bpm);
-      if (transportBpm) transportBpm.value = String(bpm);
       if (transportBpmNumber) transportBpmNumber.value = String(bpm);
-      if (transportBpmValue) transportBpmValue.textContent = String(bpm);
       const mixBpmSlider = document.querySelector('[data-config="patterns.jazz.bpm"]');
       if (mixBpmSlider) {
         mixBpmSlider.value = String(bpm);
         if (mixBpmSlider.nextElementSibling) mixBpmSlider.nextElementSibling.textContent = String(bpm);
       }
     }
-    if (transportBpm) transportBpm.addEventListener("input", () => applyTransportBpm(transportBpm.value));
     if (transportBpmNumber) wireNumberControl(transportBpmNumber, applyTransportBpm);
   }
 
@@ -109,6 +99,16 @@ export function createEventWiring(deps) {
     const segmentsInput = $("#segments-count");
     if (segmentsInput) {
       segmentsInput.addEventListener("input", () => applySegments(Number(segmentsInput.value)));
+    }
+    const cameraModeInput = $("#camera-mode");
+    if (cameraModeInput) {
+      cameraModeInput.checked = Boolean(state.cameraMode);
+      cameraModeInput.addEventListener("change", () => {
+        state.cameraMode = cameraModeInput.checked;
+        if (!state.cameraMode) $("#step-grid").scrollLeft = 0;
+        buildStepGrid();
+        status.textContent = state.cameraMode ? "Camera mode on" : "Camera mode off";
+      });
     }
     const timeSigSelect = $("#time-sig-select");
     if (timeSigSelect) {

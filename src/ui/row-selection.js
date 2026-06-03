@@ -43,6 +43,11 @@ export function createRowSelection(deps) {
     return [...ids].sort((a, b) => order.indexOf(a) - order.indexOf(b));
   }
 
+  function formatStepLabel(step) {
+    const value = Number(step) + 1;
+    return Number.isInteger(value) ? String(value).padStart(2, "0") : value.toFixed(2).replace(/\.?0+$/, "");
+  }
+
   // ── Step / row selection ──────────────────────────────────────────────────
 
   function selectStep(hit, step, mode = "step", barIndex = state.activeBar, pressure = state.intensity, generated = !PATTERN_ROW_IDS.has(hit)) {
@@ -50,8 +55,8 @@ export function createRowSelection(deps) {
     const hitData = getHitData(hit, step, barIndex);
     const { velocity, options } = hitData;
     selectedLabel.textContent = mode === "row"
-      ? `${hit} row · ${String(step + 1).padStart(2, "0")}${hitData.generated ? ` · ${hitData.label || "generated"}` : ""}`
-      : `${hit} ${step + 1}${hitData.generated && hitData.label ? ` · ${hitData.label}` : ""}`;
+      ? `${hit} row · ${formatStepLabel(step)}${hitData.generated ? ` · ${hitData.label || "generated"}` : ""}`
+      : `${hit} ${formatStepLabel(step)}${hitData.generated && hitData.label ? ` · ${hitData.label}` : ""}`;
     selectedControls.forEach((control) => {
       control.disabled = hitData.generated && state.config.generatedRowsEditable < 0.5;
     });

@@ -34,6 +34,39 @@
  * @param {(hit: string, step: number, barIndex?: number) => any} deps.getHitData
  * @param {(barIndex?: number) => void} deps.syncSelectedPitchDisplay
  */
+const finiteNumber = (value, fallback = 0) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+};
+
+const clampNumber = (value, min, max) => Math.max(min, Math.min(max, value));
+
+export function cameraAnchorForBar(phraseBar, segments = 1, totalBars = 1, loopStart = null, loopLength = 0) {
+  const start = cameraViewStartForPosition(phraseBar, segments, totalBars, loopStart, loopLength);
+  return start === null ? null : Math.floor(start);
+}
+
+export function cameraViewStartForPosition(positionBars, segments = 1, totalBars = 1, loopStart = null, loopLength = 0) {
+  const windowBars = Math.max(1, Math.round(finiteNumber(segments, 1)));
+  const songBars = Math.max(1, Math.round(finiteNumber(totalBars, 1)));
+  const songMaxAnchor = Math.max(0, songBars - windowBars);
+  const position = clampNumber(finiteNumber(positionBars, 0), 0, songBars);
+  const centerOffset = windowBars / 2;
+  let minAnchor = 0;
+  let maxAnchor = songMaxAnchor;
+
+  if (loopStart !== null && finiteNumber(loopLength, 0) > 0) {
+    const loopBegin = clampNumber(Math.floor(finiteNumber(loopStart, 0)), 0, songBars - 1);
+    const loopEnd = clampNumber(loopBegin + Math.max(1, Math.round(finiteNumber(loopLength, 1))), loopBegin + 1, songBars);
+    if (position < loopBegin || position >= loopEnd) return null;
+    minAnchor = Math.min(loopBegin, songMaxAnchor);
+    maxAnchor = Math.min(Math.max(loopBegin, loopEnd - windowBars), songMaxAnchor);
+    if (maxAnchor < minAnchor) maxAnchor = minAnchor;
+  }
+
+  return clampNumber(position - centerOffset, minAnchor, maxAnchor);
+}
+
 export function createTransport(deps) {
   const {
     $,
@@ -59,6 +92,111 @@ export function createTransport(deps) {
     getHitData,
     syncSelectedPitchDisplay
   } = deps;
+  let beatUnsubscribe = null;
+  let cameraRaf = null;
+  let cameraBeatQueue = [];
+
+  const visibleSegments = () => Math.max(1, Math.round(Number(state.segmentsCount) || 1));
+  const totalSongBars = () => Math.max(1, state.config.patterns.jazz.bars.length);
+
+  function attachBeatTracker() {
+    if (beatUnsubscribe) beatUnsubscribe();
+    cameraBeatQueue = [];
+    beatUnsubscribe = state.engine.on("beat", (payload) => {
+      const scheduledTime = finiteNumber(payload?.scheduledTime ?? payload?.time, 0);
+      const stepDuration = Math.max(0.001, finiteNumber(
+        payload?.stepDuration,
+        finiteNumber(payload?.bpm, 120) > 0 ? 60 / finiteNumber(payload.bpm, 120) / 4 : 0.125
+      ));
+      cameraBeatQueue.push({
+        phraseBar: Math.floor(finiteNumber(payload?.phraseBar, 0)),
+        step: Math.floor(finiteNumber(payload?.step, 0)),
+        scheduledTime,
+        stepDuration
+      });
+      cameraBeatQueue.sort((a, b) => a.scheduledTime - b.scheduledTime);
+      if (cameraBeatQueue.length > 96) cameraBeatQueue.splice(0, cameraBeatQueue.length - 96);
+    });
+  }
+
+  function detachBeatTracker() {
+    if (beatUnsubscribe) {
+      beatUnsubscribe();
+      beatUnsubscribe = null;
+    }
+    cameraBeatQueue = [];
+  }
+
+  function resetCameraScroll() {
+    if (cameraRaf) {
+      window.cancelAnimationFrame(cameraRaf);
+      cameraRaf = null;
+    }
+    stepGrid.scrollLeft = 0;
+  }
+
+  function currentBeatPosition() {
+    const engine = state.engine;
+    const now = finiteNumber(engine?.context?.currentTime, 0);
+    if (cameraBeatQueue.length) {
+      while (cameraBeatQueue.length > 1 && cameraBeatQueue[1].scheduledTime <= now + 0.002) {
+        cameraBeatQueue.shift();
+      }
+      const beat = cameraBeatQueue[0];
+      const elapsedSteps = clampNumber((now - beat.scheduledTime) / beat.stepDuration, 0, 1.25);
+      return beat.phraseBar + (beat.step + elapsedSteps) / 16;
+    }
+
+    const playback = engine.getPlaybackState();
+    const stepDuration = Math.max(0.001, finiteNumber(playback.stepDuration, 0.125));
+    const scheduledStep = playback.step === 0 ? 15 : playback.step - 1;
+    const scheduledBar = playback.step === 0
+      ? ((playback.phraseBar - 1) + totalSongBars()) % totalSongBars()
+      : playback.phraseBar;
+    const elapsedSteps = clampNumber((finiteNumber(playback.contextTime, 0) - finiteNumber(playback.nextStepTime, 0)) / stepDuration, 0, 1);
+    return scheduledBar + (scheduledStep + elapsedSteps) / 16;
+  }
+
+  function cameraBarWidth() {
+    const first = stepGrid.querySelector('.step-button[data-seg="0"][data-step="0"], .step-header--step[data-bar-seg="0"]');
+    const second = stepGrid.querySelector('.step-button[data-seg="1"][data-step="0"], .step-header--step[data-bar-seg="1"]');
+    if (first && second) {
+      const width = second.getBoundingClientRect().left - first.getBoundingClientRect().left;
+      if (width > 0) return width;
+    }
+    const labelWidth = 92;
+    return Math.max(1, (stepGrid.clientWidth - labelWidth) / visibleSegments());
+  }
+
+  function updateCameraScroll() {
+    if (!state.playing || !state.cameraMode) {
+      resetCameraScroll();
+      return;
+    }
+
+    const positionBars = currentBeatPosition();
+    const viewStart = cameraViewStartForPosition(
+      positionBars,
+      visibleSegments(),
+      totalSongBars(),
+      state.loopBar ? state.loopBarIndex : null,
+      state.loopBar ? state.loopBarLength : 0
+    );
+    if (viewStart !== null) {
+      const anchor = Math.floor(viewStart);
+      if (anchor !== state.activeBar) {
+        setPlaybackViewAnchor(anchor);
+      }
+      const offsetBars = viewStart - state.activeBar;
+      stepGrid.scrollLeft = Math.max(0, offsetBars * cameraBarWidth());
+    }
+    cameraRaf = window.requestAnimationFrame(updateCameraScroll);
+  }
+
+  function startCameraScroll() {
+    if (cameraRaf || !state.cameraMode || !state.playing) return;
+    cameraRaf = window.requestAnimationFrame(updateCameraScroll);
+  }
 
   async function startPlayback() {
     if (runningFromFile) {
@@ -67,6 +205,7 @@ export function createTransport(deps) {
     }
     try {
       state.playheadStep = 0;
+      attachBeatTracker();
       await state.engine.start({
         style: "jazz",
         volume: 0.62,
@@ -77,8 +216,10 @@ export function createTransport(deps) {
       $("#play-toggle").textContent = "Pause";
       setStatus(`Playing from ${barLabel(state.activeBar)}`);
       startUiTimer();
+      startCameraScroll();
     } catch (error) {
       console.error("Rhythm sequencer audio failed to start", error);
+      detachBeatTracker();
       setStatus("Audio failed to start");
     }
   }
@@ -93,6 +234,8 @@ export function createTransport(deps) {
     $("#play-toggle").textContent = "Play";
     setStatus("Paused");
     clearPlayhead();
+    detachBeatTracker();
+    resetCameraScroll();
   }
 
   function setLoopPlayback(start, length) {
@@ -194,6 +337,7 @@ export function createTransport(deps) {
         progress: state.intensity
       });
       updatePlayhead();
+      startCameraScroll();
     }, 70);
   }
 
@@ -204,21 +348,7 @@ export function createTransport(deps) {
     barTabs.querySelectorAll("button").forEach((button) => button.classList.remove("is-playhead-bar"));
   }
 
-  function followPlaybackBar(phraseBar) {
-    const segments = state.segmentsCount ?? 1;
-    // When a loop is active, any bar outside the loop range is a transient
-    // engine state (the tick just before the loop wraps back). Discard it so
-    // the view never snaps away from the loop window.
-    if (state.loopBar && state.loopBarLength > 0) {
-      const loopEnd = state.loopBarIndex + state.loopBarLength;
-      if (phraseBar < state.loopBarIndex || phraseBar >= loopEnd) return;
-    }
-    // Snap the view anchor to segment boundaries — only shift when phraseBar
-    // leaves the current window [activeBar, activeBar + segments).
-    const inWindow = phraseBar >= state.activeBar && phraseBar < state.activeBar + segments;
-    if (inWindow) return;
-    // Advance to the next segment window that contains phraseBar.
-    const newAnchor = Math.floor(phraseBar / segments) * segments;
+  function setPlaybackViewAnchor(newAnchor) {
     if (newAnchor === state.activeBar) return;
     const previousLoop = state.activeLoopIndex;
     state.activeBar = newAnchor;
@@ -231,6 +361,28 @@ export function createTransport(deps) {
     if (state.selected) {
       selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step");
     }
+  }
+
+  function followPlaybackBar(phraseBar) {
+    const segments = Math.max(1, Math.round(Number(state.segmentsCount) || 1));
+    const totalBars = state.config.patterns.jazz.bars.length;
+    // When a loop is active, any bar outside the loop range is a transient
+    // engine state (the tick just before the loop wraps back). Discard it so
+    // the view never snaps away from the loop window.
+    if (state.loopBar && state.loopBarLength > 0) {
+      const loopEnd = state.loopBarIndex + state.loopBarLength;
+      if (phraseBar < state.loopBarIndex || phraseBar >= loopEnd) return;
+    }
+    if (state.cameraMode) {
+      return;
+    }
+    // Snap the view anchor to segment boundaries — only shift when phraseBar
+    // leaves the current window [activeBar, activeBar + segments).
+    const inWindow = phraseBar >= state.activeBar && phraseBar < state.activeBar + segments;
+    if (inWindow) return;
+    // Advance to the next segment window that contains phraseBar.
+    const newAnchor = Math.floor(phraseBar / segments) * segments;
+    setPlaybackViewAnchor(newAnchor);
   }
 
   function updatePlayhead() {
@@ -261,8 +413,9 @@ export function createTransport(deps) {
     // Which segment column is the playhead in?
     const seg = displayBar - state.activeBar;
     if (seg >= 0 && seg < (state.segmentsCount ?? 1)) {
-      stepGrid.querySelectorAll(`.step-button[data-step="${displayStep}"][data-seg="${seg}"]`).forEach((button) => {
-        const hitData = getHitData(button.dataset.hit, displayStep, displayBar);
+      stepGrid.querySelectorAll(`.step-button[data-base-step="${displayStep}"][data-seg="${seg}"]`).forEach((button) => {
+        const step = Number(button.dataset.step ?? displayStep);
+        const hitData = getHitData(button.dataset.hit, step, displayBar);
         button.classList.add(hitData.velocity > 0.005 ? "is-playhead" : "is-playhead-empty");
       });
     }
