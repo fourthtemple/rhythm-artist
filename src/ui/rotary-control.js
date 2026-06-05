@@ -46,6 +46,15 @@ function updateKnob(input, knob) {
   knob.disabled = input.disabled;
 }
 
+function shouldEnhanceInput(input) {
+  if (input.closest(".pitch-control")) return false;
+  return Boolean(
+    input.closest(".control-panel")
+    || input.closest(".selected-step")
+    || input.closest(".track-inspector-extra-config")
+  );
+}
+
 function emitValue(input, knob, value, emitChange = false) {
   input.value = String(snapToStep(value, input));
   updateKnob(input, knob);
@@ -55,7 +64,7 @@ function emitValue(input, knob, value, emitChange = false) {
 }
 
 function enhanceInput(input) {
-  if (enhancedInputs.has(input) || !input.closest(".control-panel")) return;
+  if (enhancedInputs.has(input) || !shouldEnhanceInput(input)) return;
   enhancedInputs.add(input);
   input.classList.add("rotary-source");
 
@@ -72,6 +81,7 @@ function enhanceInput(input) {
   knob.innerHTML = '<span class="rotary-control__cap"></span><span class="rotary-control__pointer"></span>';
   input.before(knob);
   input.__rotaryKnob = knob;
+  input.__syncRotaryControl = () => updateKnob(input, knob);
   updateKnob(input, knob);
 
   input.addEventListener("input", () => updateKnob(input, knob));

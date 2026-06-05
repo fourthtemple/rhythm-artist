@@ -25,6 +25,7 @@ export function createRowSelection(deps) {
     selectedNoteReverbSend, selectedNoteReverbSendNumber, selectedNoteReverbSendValue,
     PITCH_SLIDER_MIN, PITCH_SLIDER_MAX, STEP_OPTION_DEFAULTS,
     PATTERN_ROW_IDS,
+    DEFAULT_VELOCITY = {},
     setPairedControl, formatPitch,
     getHitData, setHitVelocity,
     syncSelectedPitchDisplay, syncSelectedDubEchoDisplay, renderSelectedPiano,
@@ -34,6 +35,8 @@ export function createRowSelection(deps) {
     renderStepGrid,
     previewConfig
   } = deps;
+  let deferredTrackPanelRaf = 0;
+  let deferredTrackPanelTimer = 0;
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -48,9 +51,60 @@ export function createRowSelection(deps) {
     return Number.isInteger(value) ? String(value).padStart(2, "0") : value.toFixed(2).replace(/\.?0+$/, "");
   }
 
+  function defaultVelocityFor(hit, fallback = 0.5) {
+    const baseHit = String(hit || "").split("~")[0];
+    const value = DEFAULT_VELOCITY[hit] ?? DEFAULT_VELOCITY[baseHit] ?? fallback;
+    const number = Number(value);
+    return Math.max(0, Math.min(1, Number.isFinite(number) ? number : fallback));
+  }
+
+  function paintSelectedVelocity(value) {
+    const velocity = Math.max(0, Math.min(1, Number(value) || 0));
+    const rounded = Number(velocity.toFixed(2));
+    const text = rounded.toFixed(2);
+    selectedVelocity.disabled = false;
+    selectedVelocityNumber.disabled = false;
+    selectedVelocity.value = String(rounded);
+    selectedVelocityNumber.value = String(rounded);
+    selectedVelocityValue.textContent = text;
+    selectedVelocity.__syncRotaryControl?.();
+  }
+
+  function renderTrackPanels() {
+    renderTrackInspector();
+    renderTrackExplorer();
+  }
+
+  function renderTrackPanelsDeferred() {
+    if (typeof window === "undefined") {
+      renderTrackPanels();
+      return;
+    }
+    if (deferredTrackPanelRaf) {
+      window.cancelAnimationFrame(deferredTrackPanelRaf);
+      deferredTrackPanelRaf = 0;
+    }
+    if (deferredTrackPanelTimer) {
+      window.clearTimeout(deferredTrackPanelTimer);
+      deferredTrackPanelTimer = 0;
+    }
+    deferredTrackPanelRaf = window.requestAnimationFrame(() => {
+      deferredTrackPanelRaf = 0;
+      deferredTrackPanelTimer = window.setTimeout(() => {
+        deferredTrackPanelTimer = 0;
+        renderTrackPanels();
+      }, 0);
+    });
+  }
+
+  function renderTrackPanelsMaybe(options = {}) {
+    if (options.deferTrackPanels) renderTrackPanelsDeferred();
+    else renderTrackPanels();
+  }
+
   // ── Step / row selection ──────────────────────────────────────────────────
 
-  function selectStep(hit, step, mode = "step", barIndex = state.activeBar, pressure = state.intensity, generated = !PATTERN_ROW_IDS.has(hit)) {
+  function selectStep(hit, step, mode = "step", barIndex = state.activeBar, pressure = state.intensity, generated = !PATTERN_ROW_IDS.has(hit), selectOptions = {}) {
     const selectedBar = Math.max(0, Math.round(Number(barIndex) || 0));
     state.selected = { hit, step, mode, generated, bar: selectedBar };
     const hitData = getHitData(hit, step, selectedBar);
@@ -61,7 +115,8 @@ export function createRowSelection(deps) {
     selectedControls.forEach((control) => {
       control.disabled = hitData.generated && state.config.generatedRowsEditable < 0.5;
     });
-    setPairedControl(selectedVelocity, selectedVelocityNumber, selectedVelocityValue, velocity, (next) => next.toFixed(2));
+    const displayVelocity = mode === "row" && velocity <= 0.005 ? defaultVelocityFor(hit) : velocity;
+    setPairedControl(selectedVelocity, selectedVelocityNumber, selectedVelocityValue, displayVelocity, (next) => next.toFixed(2));
     syncSelectedPitchDisplay(selectedBar);
     setPairedControl(selectedOffset, selectedOffsetNumber, selectedOffsetValue, options.offsetMs, (next) => `${Math.round(next)}ms`);
     setPairedControl(selectedAttack, selectedAttackNumber, selectedAttackValue, options.attackMs, (next) => `${Math.round(next)}ms`);
@@ -77,11 +132,10 @@ export function createRowSelection(deps) {
       state.trackAnchor = hit;
     }
     updateTrackClipboardButtons();
-    renderTrackInspector();
-    renderTrackExplorer();
+    renderTrackPanelsMaybe(selectOptions);
   }
 
-  function selectRow(hit, { keepTracks = false } = {}) {
+  function selectRow(hit, { keepTracks = false, deferTrackPanels = false } = {}) {
     const playback = state.engine.getPlaybackState();
     const playheadStep = state.playing && playback.playing
       ? (playback.step + 15) % 16
@@ -94,20 +148,50 @@ export function createRowSelection(deps) {
       : playheadStep;
     const tracksBefore = keepTracks ? state.selectedTracks.slice() : null;
     const anchorBefore = keepTracks ? state.trackAnchor : null;
-    selectStep(hit, step, "row", barIndex, playback.activeBarIntensity ?? state.intensity);
+    selectStep(hit, step, "row", barIndex, playback.activeBarIntensity ?? state.intensity, undefined, { deferTrackPanels });
     if (keepTracks && tracksBefore) {
       state.selectedTracks = tracksBefore.includes(hit) ? tracksBefore : [...tracksBefore, hit];
       state.trackAnchor = anchorBefore;
     }
   }
 
+  function previewRowSelectionControls(hit) {
+    const playback = state.engine.getPlaybackState();
+    const playheadStep = state.playing && playback.playing
+      ? (playback.step + 15) % 16
+      : state.playheadStep || state.selected?.step || 0;
+    const barIndex = state.playing && playback.playing
+      ? playback.phraseBar % state.config.patterns.jazz.bars.length
+      : state.activeBar;
+    const step = state.playing && playback.playing
+      ? soundingStepForRow(hit, playheadStep, barIndex)
+      : playheadStep;
+    const hitData = getHitData(hit, step, barIndex);
+    selectedLabel.textContent = `${hit} row · ${formatStepLabel(step)}${hitData.generated ? ` · ${hitData.label || "generated"}` : ""}`;
+    selectedControls.forEach((control) => {
+      control.disabled = hitData.generated && state.config.generatedRowsEditable < 0.5;
+    });
+    const previewVelocity = hitData.velocity > 0.005 ? hitData.velocity : defaultVelocityFor(hit);
+    paintSelectedVelocity(previewVelocity);
+  }
+
+  function previewStepSelectionControls(hit, step, barIndex = state.activeBar, fallbackVelocity = 0) {
+    const selectedBar = Math.max(0, Math.round(Number(barIndex) || 0));
+    const hitData = getHitData(hit, step, selectedBar);
+    const previewVelocity = hitData.velocity > 0.005
+      ? hitData.velocity
+      : defaultVelocityFor(hit, fallbackVelocity);
+    selectedLabel.textContent = `${hit} ${formatStepLabel(step)}${hitData.generated && hitData.label ? ` · ${hitData.label}` : ""}`;
+    paintSelectedVelocity(previewVelocity);
+  }
+
   /** Toggle a row selection: re-clicking the selected row deselects it. */
-  function selectRowToggle(hit) {
+  function selectRowToggle(hit, options = {}) {
     if (state.selected?.hit === hit && state.selected?.mode === "row") {
       resetSelectedPanel();
       return;
     }
-    selectRow(hit);
+    selectRow(hit, options);
   }
 
   /**
@@ -115,7 +199,7 @@ export function createRowSelection(deps) {
    * extends the inspector selection from the anchor row to the clicked row (in
    * grid order); ctrl/cmd-click toggles a single row in/out of the selection.
    */
-  function selectRowWithModifiers(hit, event = {}) {
+  function selectRowWithModifiers(hit, event = {}, options = {}) {
     const shift = Boolean(event.shiftKey);
     const meta = Boolean(event.metaKey || event.ctrlKey);
     if (shift && state.trackAnchor && state.gridTrackIds.includes(state.trackAnchor)) {
@@ -126,9 +210,8 @@ export function createRowSelection(deps) {
         const [lo, hi] = a <= b ? [a, b] : [b, a];
         const range = order.slice(lo, hi + 1);
         state.selectedTracks = orderBySelectedGrid(new Set(range));
-        selectRow(hit, { keepTracks: true });
-        renderTrackInspector();
-        renderTrackExplorer();
+        selectRow(hit, { keepTracks: true, deferTrackPanels: options.deferTrackPanels });
+        renderTrackPanelsMaybe(options);
         status.textContent = `Selected ${state.selectedTracks.length} tracks`;
         return;
       }
@@ -140,20 +223,18 @@ export function createRowSelection(deps) {
         state.selectedTracks = orderBySelectedGrid(set);
         state.trackAnchor = state.selectedTracks[state.selectedTracks.length - 1] || null;
         // Keep the primary selection valid.
-        if (state.selected?.hit === hit) selectRow(state.selectedTracks[0], { keepTracks: true });
-        renderTrackInspector();
-        renderTrackExplorer();
+        if (state.selected?.hit === hit) selectRow(state.selectedTracks[0], { keepTracks: true, deferTrackPanels: options.deferTrackPanels });
+        renderTrackPanelsMaybe(options);
         return;
       }
       set.add(hit);
       state.selectedTracks = orderBySelectedGrid(set);
       state.trackAnchor = hit;
-      selectRow(hit, { keepTracks: true });
-      renderTrackInspector();
-      renderTrackExplorer();
+      selectRow(hit, { keepTracks: true, deferTrackPanels: options.deferTrackPanels });
+      renderTrackPanelsMaybe(options);
       return;
     }
-    selectRowToggle(hit);
+    selectRowToggle(hit, options);
   }
 
   function resetSelectedPanel() {
@@ -218,6 +299,9 @@ export function createRowSelection(deps) {
   return {
     selectStep,
     selectRow,
+    paintSelectedVelocityPreview: paintSelectedVelocity,
+    previewRowSelectionControls,
+    previewStepSelectionControls,
     selectRowToggle,
     selectRowWithModifiers,
     orderBySelectedGrid,

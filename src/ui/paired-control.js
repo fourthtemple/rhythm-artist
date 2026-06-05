@@ -33,6 +33,7 @@ export function setPairedControl(range, numberInput, output, value, formatter = 
   if (!lockedInputs.has(range)) {
     range.value = stringValue;
   }
+  range.__syncRotaryControl?.();
   if (!lockedInputs.has(numberInput)) {
     numberInput.value = stringValue;
   }

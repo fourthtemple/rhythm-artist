@@ -610,10 +610,10 @@ function syncSelectedPitchDisplay(barIndex = state.activeBar) { return noteInspe
 function ensureSelectedFromDom() { return noteInspector.ensureSelectedFromDom(); }
 function updateSelectedOption(field, value) { return noteInspector.updateSelectedOption(field, value); }
 function soundingStepForRow(hit, playheadStep, barIndex = state.activeBar) { return noteInspector.soundingStepForRow(hit, playheadStep, barIndex); }
-function setSelectedVelocityFromControl(value) { return noteInspector.setSelectedVelocityFromControl(value); }
-function setSelectedOptionFromControl(field, value) { return noteInspector.setSelectedOptionFromControl(field, value); }
+function setSelectedVelocityFromControl(value, options) { return noteInspector.setSelectedVelocityFromControl(value, options); }
+function setSelectedOptionFromControl(field, value, options) { return noteInspector.setSelectedOptionFromControl(field, value, options); }
 function syncSelectedDubEchoDisplay(options = null) { return noteInspector.syncSelectedDubEchoDisplay(options); }
-function setSelectedDubEchoFromControl(value) { return noteInspector.setSelectedDubEchoFromControl(value); }
+function setSelectedDubEchoFromControl(value, options) { return noteInspector.setSelectedDubEchoFromControl(value, options); }
 
 function selectedTrackBusSend(hit = state.selected?.hit) {
   return getTrackMix(state.config, "busSend", hit);
@@ -749,6 +749,9 @@ const gridBuilder = createStepGridBuilder({
   clearPlayhead,
   renderSoloButtons,
   toggleSolo,
+  paintSelectedVelocityPreview,
+  previewRowSelectionControls,
+  previewStepSelectionControls,
   selectRowWithModifiers,
   selectRowToggle,
   selectStep,
@@ -798,6 +801,7 @@ const rowSelection = createRowSelection({
   selectedNoteReverbSend, selectedNoteReverbSendNumber, selectedNoteReverbSendValue,
   PITCH_SLIDER_MIN, PITCH_SLIDER_MAX, STEP_OPTION_DEFAULTS,
   PATTERN_ROW_IDS,
+  DEFAULT_VELOCITY,
   setPairedControl, formatPitch,
   getHitData, setHitVelocity,
   syncSelectedPitchDisplay, syncSelectedDubEchoDisplay, renderSelectedPiano,
@@ -808,10 +812,13 @@ const rowSelection = createRowSelection({
   previewConfig
 });
 
-function selectStep(hit, step, mode, barIndex, pressure, generated) { return rowSelection.selectStep(hit, step, mode, barIndex, pressure, generated); }
+function selectStep(hit, step, mode, barIndex, pressure, generated, options) { return rowSelection.selectStep(hit, step, mode, barIndex, pressure, generated, options); }
 function selectRow(hit, opts) { return rowSelection.selectRow(hit, opts); }
-function selectRowToggle(hit) { return rowSelection.selectRowToggle(hit); }
-function selectRowWithModifiers(hit, event) { return rowSelection.selectRowWithModifiers(hit, event); }
+function paintSelectedVelocityPreview(value) { return rowSelection.paintSelectedVelocityPreview(value); }
+function previewRowSelectionControls(hit) { return rowSelection.previewRowSelectionControls(hit); }
+function previewStepSelectionControls(hit, step, barIndex, fallbackVelocity) { return rowSelection.previewStepSelectionControls(hit, step, barIndex, fallbackVelocity); }
+function selectRowToggle(hit, options) { return rowSelection.selectRowToggle(hit, options); }
+function selectRowWithModifiers(hit, event, options) { return rowSelection.selectRowWithModifiers(hit, event, options); }
 function orderBySelectedGrid(ids) { return rowSelection.orderBySelectedGrid(ids); }
 function resetSelectedPanel() { return rowSelection.resetSelectedPanel(); }
 function clearSelection() { return rowSelection.clearSelection(); }
@@ -1093,8 +1100,9 @@ loopPanel = createLoopTrackPanel({
   getCameraMode: () => state.cameraMode,
   getSampleGroups: () => state.config.sampleGroups || [],
   getSelectedPatternTrack: () => state.selected?.hit || state.selectedTracks[0] || null,
+  addTrackInstance: (baseId, opts) => addTrackInstance(baseId, opts),
   assignSampleToTrack,
-  trackName,
+  trackName: (id) => trackPanels?.instanceLabel?.(id) || trackName(id),
   onSoloChange: () => state.engine.setConfig(previewConfig()),
   onNavigate: (bar) => {
     // Scroll the step-grid view to show the given bar, then repaint lanes
@@ -1164,6 +1172,7 @@ trackPanels = createTrackPanels({
   setStatus: (msg) => { status.textContent = msg; },
   resetSelectedPanel,
   selectRow,
+  previewRowSelectionControls,
   selectRowWithModifiers,
   orderBySelectedGrid,
   toggleSolo,

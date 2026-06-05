@@ -65,6 +65,7 @@ import {
  * @param {(msg: string) => void} deps.setStatus
  * @param {() => void} deps.resetSelectedPanel
  * @param {(hit: string, opts?: {keepTracks?: boolean}) => void} deps.selectRow
+ * @param {(hit: string) => void} deps.previewRowSelectionControls
  * @param {(hit: string, event?: any) => void} deps.selectRowWithModifiers
  * @param {(ids: Iterable<string>) => string[]} deps.orderBySelectedGrid
  * @param {(track: string) => void} deps.toggleSolo
@@ -112,6 +113,7 @@ export function createTrackPanels(deps) {
     setStatus,
     resetSelectedPanel,
     selectRow,
+    previewRowSelectionControls,
     selectRowWithModifiers,
     orderBySelectedGrid,
     toggleSolo,
@@ -126,6 +128,71 @@ export function createTrackPanels(deps) {
     const requested = Math.round(Number.isFinite(number) ? number : DEFAULT_TRACK_STEPS_PER_BAR);
     return Math.max(1, Math.min(128, requested));
   };
+
+  function afterNextPaint(callback) {
+    if (typeof window === "undefined") {
+      callback();
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(callback);
+    });
+  }
+
+  function updateTrackExplorerSelectionNow() {
+    if (!trackExplorerList) return;
+    const selectedSet = new Set(state.selectedTracks.length ? state.selectedTracks : (state.selected?.hit ? [state.selected.hit] : []));
+    trackExplorerList.querySelectorAll(".track-explorer-row[data-track-id]").forEach((row) => {
+      const id = row.dataset.trackId;
+      const ids = row.dataset.trackAggregate === "base" ? trackIdsForBase(baseTrackId(id)) : [id];
+      row.classList.toggle("is-selected", ids.some((trackId) => selectedSet.has(trackId)) || selectedSet.has(id));
+    });
+  }
+
+  function previewTrackSelectionNow(trackId, event = {}) {
+    const shift = Boolean(event.shiftKey);
+    const meta = Boolean(event.metaKey || event.ctrlKey);
+    let selected = [trackId];
+    if (!shift && !meta && state.selected?.hit === trackId && state.selected?.mode === "row") {
+      selected = [];
+    } else if (shift && state.trackAnchor && state.gridTrackIds.includes(state.trackAnchor)) {
+      const a = state.gridTrackIds.indexOf(state.trackAnchor);
+      const b = state.gridTrackIds.indexOf(trackId);
+      if (a !== -1 && b !== -1) {
+        const [lo, hi] = a <= b ? [a, b] : [b, a];
+        selected = state.gridTrackIds.slice(lo, hi + 1);
+      }
+    } else if (meta) {
+      const set = new Set(state.selectedTracks);
+      if (set.has(trackId) && set.size > 1) set.delete(trackId);
+      else set.add(trackId);
+      selected = orderBySelectedGrid(set);
+    }
+    const selectedSet = new Set(selected);
+    trackExplorerList?.querySelectorAll(".track-explorer-row[data-track-id]").forEach((row) => {
+      const id = row.dataset.trackId;
+      const ids = row.dataset.trackAggregate === "base" ? trackIdsForBase(baseTrackId(id)) : [id];
+      row.classList.toggle("is-selected", ids.some((candidate) => selectedSet.has(candidate)) || selectedSet.has(id));
+    });
+    document.querySelectorAll(".track-label").forEach((label) => {
+      label.classList.toggle("is-selected-row", selectedSet.has(label.dataset.hit));
+    });
+  }
+
+  function selectExplorerTrackNow(trackId, event = {}) {
+    const selectionEvent = {
+      shiftKey: Boolean(event.shiftKey),
+      metaKey: Boolean(event.metaKey),
+      ctrlKey: Boolean(event.ctrlKey)
+    };
+    previewTrackSelectionNow(trackId, selectionEvent);
+    previewRowSelectionControls?.(trackId);
+    afterNextPaint(() => {
+      selectRowWithModifiers(trackId, selectionEvent, { deferTrackPanels: true });
+      updateTrackExplorerSelectionNow();
+      renderStepGrid();
+    });
+  }
   const collapsedVoiceGroups = new Set();
   let activeSampleGroupId = null;
 
@@ -189,7 +256,25 @@ export function createTrackPanels(deps) {
     /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.showModal();
   }
 
-  const visibleTrackGroups = () => TRACK_GROUPS.filter((group) => group.id !== "sampler");
+  const isSamplerTrack = (hit) => baseTrackId(hit) === "sampler";
+
+  function assignedSampleLabel(hit) {
+    const label = state.config.trackSamples?.[hit]?.label;
+    return typeof label === "string" ? label.trim() : "";
+  }
+
+  function trackDisplayLabel(hit) {
+    if (isSamplerTrack(hit)) {
+      const sampleLabel = assignedSampleLabel(hit);
+      if (sampleLabel) return sampleLabel;
+    }
+    const def = getTrackDef(hit);
+    return isInstanceId(hit) ? instanceLabel(hit) : (def?.label || hit);
+  }
+
+  const visibleTrackGroups = () => TRACK_GROUPS.filter((group) => (
+    group.id !== "sampler" || state.gridTrackIds.some((id) => getTrackDef(id)?.group === "sampler")
+  ));
 
   // ── Registry-driven grid track management ───────────────────
 
@@ -447,6 +532,77 @@ export function createTrackPanels(deps) {
       groupEl.appendChild(heading);
 
       if (!collapsed) {
+        if (group.id === "sampler") {
+          groupTrackIds.forEach((hit) => {
+            const active = selectedSet.has(hit);
+            const assigned = state.config.trackSamples?.[hit];
+            const labelText = trackDisplayLabel(hit);
+            const row = document.createElement("div");
+            row.className = `track-explorer-row track-explorer-row--sampler ${active ? "is-selected" : ""}`;
+            row.dataset.trackId = hit;
+
+            const name = document.createElement("button");
+            name.type = "button";
+            name.className = "track-explorer-name";
+            name.textContent = labelText;
+            const instanceName = instanceLabel(hit);
+            name.title = assigned
+              ? `${labelText} — ${instanceName} · Click to select · Shift-click to add a range · ⌘/Ctrl-click to toggle`
+              : `${instanceName} — Click to select · Shift-click to add a range · ⌘/Ctrl-click to toggle`;
+            if (assigned) {
+              const dot = document.createElement("span");
+              dot.className = "track-explorer-sample-dot";
+              dot.title = "Custom sample assigned";
+              name.appendChild(dot);
+            }
+            let skipNameClick = false;
+            name.addEventListener("pointerdown", (event) => {
+              if (event.button !== 0) return;
+              skipNameClick = true;
+              event.preventDefault();
+              selectExplorerTrackNow(hit, event);
+            });
+            name.addEventListener("click", (event) => {
+              if (skipNameClick) {
+                skipNameClick = false;
+                return;
+              }
+              selectExplorerTrackNow(hit, event);
+            });
+
+            const soloBtn = document.createElement("button");
+            soloBtn.type = "button";
+            soloBtn.className = `track-explorer-solo ${state.soloTracks.has(hit) ? "is-active" : ""}`;
+            soloBtn.textContent = "S";
+            soloBtn.title = `Solo ${labelText}`;
+            soloBtn.addEventListener("click", (event) => {
+              event.stopPropagation();
+              toggleSolo(hit);
+              renderTrackExplorer();
+            });
+
+            const removeBtn = document.createElement("button");
+            removeBtn.type = "button";
+            removeBtn.className = "track-explorer-remove";
+            removeBtn.textContent = "×";
+            removeBtn.title = `Remove ${labelText}`;
+            removeBtn.addEventListener("click", (event) => {
+              event.stopPropagation();
+              removeGridTrack(hit);
+            });
+
+            row.append(name, soloBtn, removeBtn);
+            groupEl.appendChild(row);
+          });
+          if (groupTrackIds.length === 0) {
+            const empty = document.createElement("p");
+            empty.className = "track-explorer-empty";
+            empty.textContent = "No pasted sampler tracks.";
+            groupEl.appendChild(empty);
+          }
+          trackExplorerList.appendChild(groupEl);
+          return;
+        }
         registryGroup.forEach((track) => {
           const ids = trackIdsForBase(track.id);
           const count = ids.length;
@@ -455,6 +611,7 @@ export function createTrackPanels(deps) {
           const row = document.createElement("div");
           row.className = `track-explorer-row ${active ? "is-selected" : ""} ${count === 0 ? "is-empty" : ""}`;
           row.dataset.trackId = primaryId;
+          row.dataset.trackAggregate = "base";
 
           const name = document.createElement("button");
           name.type = "button";
@@ -472,10 +629,23 @@ export function createTrackPanels(deps) {
             dot.title = "Custom sample assigned";
             name.appendChild(dot);
           }
-          name.addEventListener("click", (event) => {
+          const selectExplorerRowNow = (event) => {
             if (count === 0) return;
-            selectRowWithModifiers(primaryId, event);
-            renderStepGrid();
+            selectExplorerTrackNow(primaryId, event);
+          };
+          let skipNameClick = false;
+          name.addEventListener("pointerdown", (event) => {
+            if (event.button !== 0 || count === 0) return;
+            skipNameClick = true;
+            event.preventDefault();
+            selectExplorerRowNow(event);
+          });
+          name.addEventListener("click", (event) => {
+            if (skipNameClick) {
+              skipNameClick = false;
+              return;
+            }
+            selectExplorerRowNow(event);
           });
 
           const countInput = document.createElement("input");
@@ -717,7 +887,7 @@ export function createTrackPanels(deps) {
     panel.dataset.trackId = hit;
 
     const nameEl = panel.querySelector('[data-field="name"]');
-    if (nameEl) nameEl.textContent = isInstanceId(hit) ? instanceLabel(hit) : (def?.label || hit);
+    if (nameEl) nameEl.textContent = trackDisplayLabel(hit);
 
     const sampleEl = panel.querySelector('[data-field="sample"]');
     if (sampleEl) {
@@ -892,7 +1062,7 @@ export function createTrackPanels(deps) {
       trackInspectorName.textContent = tracks.length === 0
         ? "No track selected"
         : tracks.length === 1
-          ? (isInstanceId(tracks[0]) ? instanceLabel(tracks[0]) : (getTrackDef(tracks[0])?.label || tracks[0]))
+          ? trackDisplayLabel(tracks[0])
           : `${tracks.length} tracks`;
     }
     if (trackInspectorMultiHint) {
@@ -944,6 +1114,10 @@ export function createTrackPanels(deps) {
       setStatus(`${sample.label} will need relinking after reload`);
       return;
     }
+    renderTrackInspector();
+    renderTrackExplorer();
+    syncJson();
+    setStatus(`Loading ${sample.label} into ${instanceLabel(hit)}`);
     const ok = await getEngine().setTrackSample(hit, playbackUrl);
     if (!ok) {
       setStatus(`Could not load ${sample.label}`);
@@ -952,7 +1126,7 @@ export function createTrackPanels(deps) {
     renderTrackInspector();
     renderTrackExplorer();
     syncJson();
-    setStatus(`Loaded ${sample.label} into ${TRACK_LABELS[hit] || hit}`);
+    setStatus(`Loaded ${sample.label} into ${instanceLabel(hit)}`);
   }
 
   /** Clear a track's custom sample, reverting to the built-in voice. */

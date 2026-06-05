@@ -332,6 +332,7 @@ export function createLoopTrackPanel({
   getCameraMode = () => false,
   getSampleGroups = () => [],
   getSelectedPatternTrack = () => null,
+  addTrackInstance = null,
   assignSampleToTrack = null,
   trackName = (id) => id,
   onSoloChange = null,
@@ -343,6 +344,8 @@ export function createLoopTrackPanel({
   const soloTracks = new Set();
   /** @type {{ trackId: string, regionIdx: number } | null} */
   let selectedLoopRegion = null;
+  /** @type {{ trackId: string, regionIdx: number } | null} */
+  let regionMenuTarget = null;
   /** @type {{ trackId: string, regionIdx: number, mode: "move"|"scale"|"reveal"|"reveal-scaled" } | null} */
   let activeRegionEdit = null;
   /** @type {Function|null} Unsubscribe from engine bar events */
@@ -492,18 +495,22 @@ export function createLoopTrackPanel({
     setStatus(`Pasted wave edit into "${track.name}"`);
   }
 
-  async function assignRegionSliceToSelectedDrumTrack(track, region, labelStartBar = 0) {
-    const hit = getSelectedPatternTrack?.();
-    if (!hit) {
-      setStatus("Select a drum track first");
-      return;
-    }
+  async function assignRegionSliceToNewDrumTrack(track, region, labelStartBar = 0) {
     if (!assignSampleToTrack) {
       setStatus("Drum-track paste is not available");
       return;
     }
+    if (!addTrackInstance) {
+      setStatus("New drum-track paste is not available");
+      return;
+    }
     if (!track.buffer) {
       setStatus(`"${track.name}" needs audio before pasting to a drum track`);
+      return;
+    }
+    const hit = addTrackInstance("sampler", { select: true });
+    if (!hit) {
+      setStatus("Could not create a new drum track");
       return;
     }
     const srcStartFrac = Number.isFinite(Number(region?.srcStartFrac)) ? Number(region.srcStartFrac) : 0;
@@ -517,16 +524,16 @@ export function createLoopTrackPanel({
       label,
       url
     });
-    setStatus(`Pasted wave edit to ${trackName(hit)}`);
+    setStatus(`Pasted wave edit to new drum track ${trackName(hit)}`);
   }
 
-  async function pasteSelectionToDrumTrack(track, startBar, len) {
+  async function pasteSelectionToNewDrumTrack(track, startBar, len) {
     const regions = copiedRegionsForSelection(track, startBar, len);
     const slice = regions[0];
-    await assignRegionSliceToSelectedDrumTrack(track, slice, startBar);
+    await assignRegionSliceToNewDrumTrack(track, slice, startBar);
   }
 
-  async function pasteClipboardToDrumTrack() {
+  async function pasteClipboardToNewDrumTrack() {
     if (!waveEditClipboard?.regions?.length) {
       setStatus("Copy a wave edit selection first");
       return;
@@ -536,7 +543,7 @@ export function createLoopTrackPanel({
       setStatus("Copied wave edit source is gone");
       return;
     }
-    await assignRegionSliceToSelectedDrumTrack(track, waveEditClipboard.regions[0], 0);
+    await assignRegionSliceToNewDrumTrack(track, waveEditClipboard.regions[0], 0);
   }
 
   function serializeTracks() {
@@ -1296,6 +1303,51 @@ export function createLoopTrackPanel({
     syncRegionPanel();
   }
 
+  function clearRegionMenuTarget() {
+    regionMenuTarget = null;
+    stepGrid.querySelectorAll(".sample-region--menu-target").forEach((el) => {
+      el.classList.remove("sample-region--menu-target");
+    });
+  }
+
+  function setRegionMenuTarget(trackId, regionIdx) {
+    clearRegionMenuTarget();
+    regionMenuTarget = { trackId, regionIdx };
+    stepGrid.querySelectorAll(".sample-region").forEach((el) => {
+      if (!(el instanceof HTMLElement)) return;
+      if (el.dataset.loopTrack === trackId && Number(el.dataset.regionIdx) === regionIdx) {
+        el.classList.add("sample-region--menu-target");
+      }
+    });
+  }
+
+  function audibleRegionSpan(track, region) {
+    const start = finiteNumber(region?.bar, 0);
+    const len = Math.max(MIN_REGION_BARS, finiteNumber(region?.len, 1));
+    let end = start + len;
+    const mode = region?.mode === "stretch" ? "stretch" : "cut";
+    const barDurationSec = currentBarDurationSec();
+    if (mode === "cut" && track?.buffer?.duration > 0 && barDurationSec > 0) {
+      const { startFrac, endFrac } = regionSrc(region, track.buffer.duration);
+      const sourceBars = ((endFrac - startFrac) * track.buffer.duration) / barDurationSec;
+      end = Math.min(end, start + Math.max(MIN_REGION_BARS, sourceBars));
+    }
+    return { start, end: Math.max(start + MIN_REGION_BARS, end) };
+  }
+
+  function wholeWaveformSelectionFractions(track) {
+    const bars = Math.max(MIN_REGION_BARS, totalBars());
+    const winStart = getActiveBar();
+    const spans = (track?.regions || []).map((region) => audibleRegionSpan(track, region));
+    const endBar = spans.length
+      ? Math.max(...spans.map((span) => span.end))
+      : Math.max(MIN_REGION_BARS, finiteNumber(track?.barsInFile, bars));
+    const left = clampNumber((0 - winStart) / bars, 0, 1);
+    const minRight = Math.min(1, left + MIN_REGION_BARS / bars);
+    const right = clampNumber((endBar - winStart) / bars, minRight, 1);
+    return { left, right };
+  }
+
   // Enter an interactive edit mode for a region. The lane re-renders with edge
   // handles (and a move grip) wired to the chosen behaviour. Clicking elsewhere
   // / pressing Escape exits the mode. A history snapshot is taken on the first
@@ -1388,6 +1440,7 @@ export function createLoopTrackPanel({
   function showRegionContextMenu(x, y, track, region, regionIdx, totalBarsCount, clickBar = finiteNumber(region.bar, 0)) {
     // Remove any existing menu
     document.querySelector(".loop-region-ctx-menu")?.remove();
+    setRegionMenuTarget(track.id, regionIdx);
 
     const menu = document.createElement("div");
     menu.className = "context-menu loop-region-ctx-menu";
@@ -1400,6 +1453,7 @@ export function createLoopTrackPanel({
       btn.disabled = disabled;
       btn.addEventListener("click", () => {
         menu.remove();
+        clearRegionMenuTarget();
         void action();
       });
       menu.appendChild(btn);
@@ -1461,9 +1515,9 @@ export function createLoopTrackPanel({
       pasteWaveEdit(track, clickBar);
     }, !waveEditClipboard || waveEditClipboard.trackId !== track.id);
 
-    addItem(`▣  Paste region to selected drum track${getSelectedPatternTrack?.() ? ` (${trackName(getSelectedPatternTrack())})` : ""}`, () => {
-      void pasteSelectionToDrumTrack(track, finiteNumber(region.bar, 0), Math.max(MIN_REGION_BARS, finiteNumber(region.len, 1)));
-    });
+    addItem("▣  Paste region to new drum track", () => {
+      void pasteSelectionToNewDrumTrack(track, finiteNumber(region.bar, 0), Math.max(MIN_REGION_BARS, finiteNumber(region.len, 1)));
+    }, !addTrackInstance || !assignSampleToTrack || !track.buffer);
 
     sep();
 
@@ -1481,7 +1535,11 @@ export function createLoopTrackPanel({
 
     // Dismiss on outside click
     const dismiss = (e) => {
-      if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener("mousedown", dismiss); }
+      if (!menu.contains(e.target)) {
+        menu.remove();
+        clearRegionMenuTarget();
+        document.removeEventListener("mousedown", dismiss);
+      }
     };
     setTimeout(() => document.addEventListener("mousedown", dismiss), 0);
   }
@@ -1544,9 +1602,9 @@ export function createLoopTrackPanel({
       pasteWaveEdit(track, startBar, len);
     }, !waveEditClipboard || waveEditClipboard.trackId !== track.id);
 
-    addItem(`▣  Paste selection to selected drum track${getSelectedPatternTrack?.() ? ` (${trackName(getSelectedPatternTrack())})` : ""}`, async (startBar, len) => {
-      await pasteSelectionToDrumTrack(track, startBar, len);
-    });
+    addItem("▣  Paste selection to new drum track", async (startBar, len) => {
+      await pasteSelectionToNewDrumTrack(track, startBar, len);
+    }, !addTrackInstance || !assignSampleToTrack || !track.buffer);
 
     sep();
 
@@ -1818,15 +1876,29 @@ export function createLoopTrackPanel({
       // Clip region to the visible window.
       const rStart = region.bar;
       const rEnd   = region.bar + region.len;
-      if (rEnd <= winStart || rStart >= winEnd) return; // fully outside window
+      const mode = region.mode === "stretch" ? "stretch" : "cut";
+      const barDurationSec = currentBarDurationSec();
+      let displayStart = rStart;
+      let displayEnd = rEnd;
+      if (mode === "cut" && track.buffer?.duration > 0 && barDurationSec > 0) {
+        const { startFrac, endFrac } = regionSrc(region, track.buffer.duration);
+        const sourceBars = ((endFrac - startFrac) * track.buffer.duration) / barDurationSec;
+        displayEnd = Math.min(rEnd, rStart + Math.max(MIN_REGION_BARS, sourceBars));
+      }
+      if (displayEnd <= winStart || displayStart >= winEnd) return; // fully outside window
 
       // Window-local start/end (clamped to visible range).
-      const visStart = Math.max(rStart, winStart) - winStart;
-      const visEnd   = Math.min(rEnd,   winEnd)   - winStart;
+      const visStart = Math.max(displayStart, winStart) - winStart;
+      const visEnd   = Math.min(displayEnd,   winEnd)   - winStart;
       const visLen   = visEnd - visStart;
 
       const el = document.createElement("div");
       el.className = "sample-region";
+      el.dataset.loopTrack = track.id;
+      el.dataset.regionIdx = String(regionIdx);
+      if (regionMenuTarget?.trackId === track.id && regionMenuTarget.regionIdx === regionIdx) {
+        el.classList.add("sample-region--menu-target");
+      }
       if (track.missing) el.classList.add("sample-region--missing");
       if (region.revealPreview) el.classList.add("sample-region--reveal-preview");
       el.title = track.missing
@@ -1835,8 +1907,8 @@ export function createLoopTrackPanel({
       el.style.left  = `${(visStart / bars) * 100}%`;
       el.style.width = `${(visLen   / bars) * 100}%`;
 
-      const visibleSliceStartBar = Math.max(rStart, winStart);
-      const visibleSliceEndBar = Math.min(rEnd, winEnd);
+      const visibleSliceStartBar = Math.max(displayStart, winStart);
+      const visibleSliceEndBar = Math.min(displayEnd, winEnd);
 
       // Waveform canvas inside the region
       const waveCanvas = document.createElement("canvas");
@@ -1868,43 +1940,17 @@ export function createLoopTrackPanel({
             ctx.fillText("relink sample", 10, 36);
           }
         } else if (track.buffer) {
-          const liveWinStart = getActiveBar();
-          const liveWinEnd = liveWinStart + totalBars();
-          const liveRegionStart = finiteNumber(region.bar, 0);
-          const liveRegionEnd = liveRegionStart + Math.max(MIN_REGION_BARS, finiteNumber(region.len, 1));
-          const liveSliceStart = Math.max(liveRegionStart, liveWinStart);
-          const liveSliceEnd = Math.min(liveRegionEnd, liveWinEnd);
-          if (liveSliceEnd <= liveSliceStart + BAR_EPSILON) {
+          if (visibleSliceEndBar <= visibleSliceStartBar + BAR_EPSILON) {
             drawWaveform(waveCanvas, null);
             return;
-          }
-          const mode = region.mode === "stretch" ? "stretch" : "cut";
-          const barDurationSec = currentBarDurationSec();
-          let drawStartBar = liveSliceStart;
-          let drawEndBar = liveSliceEnd;
-          let targetStartPx = 0;
-          let targetEndPx = elW;
-          if (mode === "cut" && track.buffer.duration > 0 && barDurationSec > 0) {
-            const { startFrac, endFrac } = regionSrc(region, track.buffer.duration);
-            const sourceBars = ((endFrac - startFrac) * track.buffer.duration) / barDurationSec;
-            const naturalAudioEndBar = Math.min(liveRegionEnd, liveRegionStart + sourceBars);
-            drawStartBar = Math.max(liveSliceStart, liveRegionStart);
-            drawEndBar = Math.min(liveSliceEnd, naturalAudioEndBar);
-            if (drawEndBar <= drawStartBar + BAR_EPSILON) {
-              drawWaveform(waveCanvas, null);
-              return;
-            }
-            const visibleSpanBars = Math.max(MIN_REGION_BARS, liveSliceEnd - liveSliceStart);
-            targetStartPx = ((drawStartBar - liveSliceStart) / visibleSpanBars) * elW;
-            targetEndPx = ((drawEndBar - liveSliceStart) / visibleSpanBars) * elW;
           }
           const { startFrac: visStartFrac, endFrac: visEndFrac } = regionSourceSlice(
             region,
             track,
-            drawStartBar,
-            drawEndBar,
+            visibleSliceStartBar,
+            visibleSliceEndBar,
             track.buffer.duration,
-            barDurationSec
+            currentBarDurationSec()
           );
           drawWaveform(
             waveCanvas,
@@ -1913,8 +1959,8 @@ export function createLoopTrackPanel({
             visEndFrac,
             region.revealPreview ? "#6ec7ff" : "#5b9bd5",
             true,
-            targetStartPx,
-            targetEndPx
+            0,
+            elW
           );
         }
       };
@@ -1946,7 +1992,13 @@ export function createLoopTrackPanel({
         document.addEventListener("mouseup", onUp);
       });
 
-      // Right-click on a region → select it + show context menu
+      // Click selects the region; drag still bubbles to the lane marquee handler.
+      el.addEventListener("click", (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        selectRegion(trackId, regionIdx);
+      });
       el.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -2329,6 +2381,7 @@ export function createLoopTrackPanel({
             document.querySelector(".marquee-action-popup")?.remove();
             selectedLoopRegion = null;
             syncRegionPanel();
+            clearRegionMenuTarget();
             return;
           }
 
@@ -2366,7 +2419,8 @@ export function createLoopTrackPanel({
         const clickBar = barFromLaneClientX(lane, e.clientX, bars);
 
         addItem("⬛  Select entire loop", () => {
-          makePersistentMarquee(lane, track, 0, 1);
+          const { left, right } = wholeWaveformSelectionFractions(track);
+          makePersistentMarquee(lane, track, left, right);
         });
 
         sep();
@@ -2389,9 +2443,9 @@ export function createLoopTrackPanel({
           pasteWaveEdit(track, clickBar);
         }, !waveEditClipboard || waveEditClipboard.trackId !== track.id);
 
-        addItem(`▣  Paste copied wave edit to selected drum track${getSelectedPatternTrack?.() ? ` (${trackName(getSelectedPatternTrack())})` : ""}`, () => {
-          void pasteClipboardToDrumTrack();
-        }, !waveEditClipboard);
+        addItem("▣  Paste copied wave edit to new drum track", () => {
+          void pasteClipboardToNewDrumTrack();
+        }, !waveEditClipboard || !addTrackInstance || !assignSampleToTrack);
 
         if (track.regions.length > 0) {
           sep();

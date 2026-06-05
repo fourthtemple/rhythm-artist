@@ -232,24 +232,38 @@ export function createEventWiring(deps) {
 
   // ── Per-note inspector ────────────────────────────────────────────────────
   function wireSelectedNoteEvents() {
-    selectedVelocity.addEventListener("input", () => setSelectedVelocityFromControl());
-    wireNumberControl(selectedVelocityNumber, setSelectedVelocityFromControl);
-    selectedPitch.addEventListener("input", () => setSelectedOptionFromControl("pitch", selectedPitch.value));
-    wireNumberControl(selectedPitchNumber, (value) => setSelectedOptionFromControl("pitch", value));
-    selectedOffset.addEventListener("input", () => setSelectedOptionFromControl("offsetMs", selectedOffset.value));
-    wireNumberControl(selectedOffsetNumber, (value) => setSelectedOptionFromControl("offsetMs", value));
-    selectedAttack.addEventListener("input", () => setSelectedOptionFromControl("attackMs", selectedAttack.value));
-    wireNumberControl(selectedAttackNumber, (value) => setSelectedOptionFromControl("attackMs", value));
-    selectedDelay.addEventListener("input", () => setSelectedOptionFromControl("delayMs", selectedDelay.value));
-    wireNumberControl(selectedDelayNumber, (value) => setSelectedOptionFromControl("delayMs", value));
-    selectedWobble.addEventListener("input", () => setSelectedOptionFromControl("wobble", selectedWobble.value));
-    wireNumberControl(selectedWobbleNumber, (value) => setSelectedOptionFromControl("wobble", value));
-    selectedDubEcho.addEventListener("input", () => setSelectedDubEchoFromControl());
-    wireNumberControl(selectedDubEchoNumber, setSelectedDubEchoFromControl);
-    selectedNoteDelaySend.addEventListener("input", () => setSelectedOptionFromControl("delaySend", selectedNoteDelaySend.value));
-    wireNumberControl(selectedNoteDelaySendNumber, (value) => setSelectedOptionFromControl("delaySend", value));
-    selectedNoteReverbSend.addEventListener("input", () => setSelectedOptionFromControl("reverbSend", selectedNoteReverbSend.value));
-    wireNumberControl(selectedNoteReverbSendNumber, (value) => setSelectedOptionFromControl("reverbSend", value));
+    const live = { live: true, renderGrid: false };
+    const liveGrid = { live: true, renderGrid: "defer" };
+    const commitGridDeferred = { live: false, renderGrid: "defer" };
+    const commitGrid = { live: false, renderGrid: true };
+    const commitValue = { live: false, renderGrid: false };
+    selectedVelocity.addEventListener("input", () => setSelectedVelocityFromControl(selectedVelocity.value, liveGrid));
+    selectedVelocity.addEventListener("change", () => setSelectedVelocityFromControl(selectedVelocity.value, commitGridDeferred));
+    wireNumberControl(selectedVelocityNumber, (value) => setSelectedVelocityFromControl(value, commitGrid));
+    selectedPitch.addEventListener("input", () => setSelectedOptionFromControl("pitch", selectedPitch.value, live));
+    selectedPitch.addEventListener("change", () => setSelectedOptionFromControl("pitch", selectedPitch.value, commitValue));
+    wireNumberControl(selectedPitchNumber, (value) => setSelectedOptionFromControl("pitch", value, commitValue));
+    selectedOffset.addEventListener("input", () => setSelectedOptionFromControl("offsetMs", selectedOffset.value, live));
+    selectedOffset.addEventListener("change", () => setSelectedOptionFromControl("offsetMs", selectedOffset.value, commitValue));
+    wireNumberControl(selectedOffsetNumber, (value) => setSelectedOptionFromControl("offsetMs", value, commitValue));
+    selectedAttack.addEventListener("input", () => setSelectedOptionFromControl("attackMs", selectedAttack.value, live));
+    selectedAttack.addEventListener("change", () => setSelectedOptionFromControl("attackMs", selectedAttack.value, commitValue));
+    wireNumberControl(selectedAttackNumber, (value) => setSelectedOptionFromControl("attackMs", value, commitValue));
+    selectedDelay.addEventListener("input", () => setSelectedOptionFromControl("delayMs", selectedDelay.value, live));
+    selectedDelay.addEventListener("change", () => setSelectedOptionFromControl("delayMs", selectedDelay.value, commitValue));
+    wireNumberControl(selectedDelayNumber, (value) => setSelectedOptionFromControl("delayMs", value, commitValue));
+    selectedWobble.addEventListener("input", () => setSelectedOptionFromControl("wobble", selectedWobble.value, live));
+    selectedWobble.addEventListener("change", () => setSelectedOptionFromControl("wobble", selectedWobble.value, commitValue));
+    wireNumberControl(selectedWobbleNumber, (value) => setSelectedOptionFromControl("wobble", value, commitValue));
+    selectedDubEcho.addEventListener("input", () => setSelectedDubEchoFromControl(selectedDubEcho.value, live));
+    selectedDubEcho.addEventListener("change", () => setSelectedDubEchoFromControl(selectedDubEcho.value, commitValue));
+    wireNumberControl(selectedDubEchoNumber, (value) => setSelectedDubEchoFromControl(value, commitValue));
+    selectedNoteDelaySend.addEventListener("input", () => setSelectedOptionFromControl("delaySend", selectedNoteDelaySend.value, live));
+    selectedNoteDelaySend.addEventListener("change", () => setSelectedOptionFromControl("delaySend", selectedNoteDelaySend.value, commitValue));
+    wireNumberControl(selectedNoteDelaySendNumber, (value) => setSelectedOptionFromControl("delaySend", value, commitValue));
+    selectedNoteReverbSend.addEventListener("input", () => setSelectedOptionFromControl("reverbSend", selectedNoteReverbSend.value, live));
+    selectedNoteReverbSend.addEventListener("change", () => setSelectedOptionFromControl("reverbSend", selectedNoteReverbSend.value, commitValue));
+    wireNumberControl(selectedNoteReverbSendNumber, (value) => setSelectedOptionFromControl("reverbSend", value, commitValue));
     $("#clear-selected").addEventListener("click", clearSelection);
   }
 

@@ -102,9 +102,10 @@
           <div id="step-grid" class="step-grid"></div>
           <div class="selected-step-resize-handle" id="selected-step-resize-handle" title="Drag to resize"></div>
           <section class="selected-step" id="selected-step-panel">
-            <div>
+            <div class="selected-step-header">
               <span class="panel-label">Selected</span>
               <strong id="selected-label">none</strong>
+              <button id="clear-selected" type="button">Clear</button>
             </div>
             <div class="selected-controls">
               <label>
@@ -162,9 +163,6 @@
                 <output id="selected-note-reverb-send-value">0.00</output>
                 <input id="selected-note-reverb-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
               </label>
-            </div>
-            <div class="selected-actions">
-              <button id="clear-selected" type="button">Clear</button>
             </div>
           </section>
         </section>

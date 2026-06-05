@@ -37,9 +37,12 @@ import { visualBeatKindForStep } from "../audio/rhythm-config.js";
  * @param {() => void} deps.clearPlayhead
  * @param {() => void} deps.renderSoloButtons
  * @param {(hit:string) => void} deps.toggleSolo
- * @param {(hit:string, event?:object) => void} deps.selectRowWithModifiers
- * @param {(hit:string) => void} deps.selectRowToggle
- * @param {(hit:string, step:number, mode?:string, barIndex?:number, pressure?:number, generated?:boolean) => void} deps.selectStep
+ * @param {(value:number) => void} deps.paintSelectedVelocityPreview
+ * @param {(hit:string) => void} deps.previewRowSelectionControls
+ * @param {(hit:string, step:number, barIndex?:number, fallbackVelocity?:number) => void} deps.previewStepSelectionControls
+ * @param {(hit:string, event?:object, options?:object) => void} deps.selectRowWithModifiers
+ * @param {(hit:string, options?:object) => void} deps.selectRowToggle
+ * @param {(hit:string, step:number, mode?:string, barIndex?:number, pressure?:number, generated?:boolean, options?:object) => void} deps.selectStep
  * @param {(hit:string, step:number, barIndex?:number) => any} deps.getHitData
  * @param {(hit:string, step:number, velocity:number, barIndex?:number) => void} deps.setHitVelocity
  * @param {(hit:string, step:number, options:any) => number} deps.displayedPitchForHit
@@ -83,6 +86,9 @@ export function createStepGridBuilder(deps) {
     clearPlayhead,
     renderSoloButtons,
     toggleSolo,
+    paintSelectedVelocityPreview,
+    previewRowSelectionControls,
+    previewStepSelectionControls,
     selectRowWithModifiers,
     selectRowToggle,
     selectStep,
@@ -111,9 +117,12 @@ export function createStepGridBuilder(deps) {
   let cameraCanvasMetrics = null;
   let cameraSelectionOverlay = null;
   let cameraHoverOverlay = null;
+  let cameraActiveOverlay = null;
   let cameraHover = null;
+  let cameraActivePreview = null;
   let cameraDrag = null;
   let cameraSuppressClick = false;
+  let cameraPointerHandledClick = false;
   let cameraRenderRaf = 0;
   const normalizeStepPosition = (value) => {
     const step = Number(value);
@@ -128,6 +137,12 @@ export function createStepGridBuilder(deps) {
   const visualStepToPatternStep = (visualStep, stepsPerBar) =>
     normalizeStepPosition((visualStep * BASE_STEPS_PER_BAR) / stepsPerBar);
   const currentTimeSignature = () => state.config?.timeSignature || state.timeSig || "4/4";
+  const defaultVelocityForHit = (hit, fallback = 0.5) => {
+    const baseHit = String(hit || "").split("~")[0];
+    const value = DEFAULT_VELOCITY[hit] ?? DEFAULT_VELOCITY[baseHit] ?? fallback;
+    const number = Number(value);
+    return Math.max(0, Math.min(0.9, Number.isFinite(number) ? number : fallback));
+  };
 
   const visibleSegmentCount = () => Math.max(1, Math.round(Number(state.segmentsCount) || 2));
   const totalSegmentCount = () => Math.max(1, state.config?.patterns?.jazz?.bars?.length || loopBarCount());
@@ -182,25 +197,71 @@ export function createStepGridBuilder(deps) {
       event.stopPropagation();
       toggleSolo(hit);
     });
-    rowLabel.addEventListener("click", (event) => {
-      selectRowWithModifiers(hit, event);
-      renderStepGrid();
+    const selectRowLabelNow = (event) => {
+      const selectionEvent = {
+        shiftKey: Boolean(event.shiftKey),
+        metaKey: Boolean(event.metaKey),
+        ctrlKey: Boolean(event.ctrlKey)
+      };
+      paintSelectedVelocityPreview?.(defaultVelocityForHit(hit));
+      previewTrackSelectionNow(hit, selectionEvent);
+      previewRowSelectionControls?.(hit);
+      afterNextPaint(() => {
+        selectRowWithModifiers(hit, selectionEvent, { deferTrackPanels: true });
+        updateCameraTrackSelectionNow();
+        renderStepGrid();
+      });
+    };
+    rowLabel.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      if (event.target?.closest?.(".solo-button")) return;
+      event.preventDefault();
+      selectRowLabelNow(event);
     });
     rowLabel.addEventListener("contextmenu", (event) => {
       if (!state.selectedTracks.includes(hit)) {
-        selectRowWithModifiers(hit, {});
-        renderStepGrid();
+        selectRowWithModifiers(hit, {}, { deferTrackPanels: true });
+        updateCameraTrackSelectionNow();
+        afterNextPaint(renderStepGrid);
       }
       openTrackContextMenu(event, hit);
     });
     rowLabel.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
-      selectRowToggle(hit);
-      renderStepGrid();
+      selectRowLabelNow(event);
     });
     rowLabel.append(rowText, soloButton);
     return rowLabel;
+  }
+
+  function previewTrackSelectionNow(hit, event = {}) {
+    const shift = Boolean(event.shiftKey);
+    const meta = Boolean(event.metaKey || event.ctrlKey);
+    let selected = [hit];
+    if (!shift && !meta && state.selected?.hit === hit && state.selected?.mode === "row") {
+      selected = [];
+    } else if (shift && state.trackAnchor && state.gridTrackIds.includes(state.trackAnchor)) {
+      const a = state.gridTrackIds.indexOf(state.trackAnchor);
+      const b = state.gridTrackIds.indexOf(hit);
+      if (a !== -1 && b !== -1) {
+        const [lo, hi] = a <= b ? [a, b] : [b, a];
+        selected = state.gridTrackIds.slice(lo, hi + 1);
+      }
+    } else if (meta) {
+      const set = new Set(state.selectedTracks);
+      if (set.has(hit) && set.size > 1) set.delete(hit);
+      else set.add(hit);
+      selected = [...set];
+    }
+    const selectedSet = new Set(selected);
+    stepGrid.querySelectorAll(".track-label").forEach((item) => {
+      item.classList.toggle("is-selected-row", selectedSet.has(item.dataset.hit));
+    });
+    document.querySelectorAll(".track-explorer-row[data-track-id]").forEach((row) => {
+      row.classList.toggle("is-selected", selectedSet.has(row.dataset.trackId));
+    });
+    if (state.cameraMode) setCameraActivePreview(null);
   }
 
   function canvasCssColor(name, fallback) {
@@ -428,6 +489,13 @@ export function createStepGridBuilder(deps) {
     const barWidth = cssWidth / Math.max(1, renderedSegmentCount());
     const rows = cameraRowMetrics();
     cameraCanvasMetrics = { barWidth, rows };
+    if (!cameraPointerHandledClick) {
+      cameraActivePreview = state.selected?.mode === "step" ? {
+        hit: state.selected.hit,
+        step: state.selected.step,
+        bar: state.selected.bar ?? state.activeBar
+      } : null;
+    }
 
     ctx.fillStyle = "#101620";
     ctx.fillRect(0, 0, cssWidth, cssHeight);
@@ -516,6 +584,7 @@ export function createStepGridBuilder(deps) {
     });
 
     updateCameraSelectionOverlay();
+    updateCameraActiveOverlay();
     updateCameraHoverOverlay();
   }
 
@@ -529,7 +598,19 @@ export function createStepGridBuilder(deps) {
 
   function sameCameraTarget(a, b) {
     if (!a || !b) return !a && !b;
-    return a.hit === b.hit && a.step === b.step && a.bar === b.bar;
+    return a.hit === b.hit
+      && Math.abs(Number(a.step) - Number(b.step)) < 0.0001
+      && Number(a.bar) === Number(b.bar);
+  }
+
+  function cameraVisualStepForTarget(target, row) {
+    const explicit = Number(target?.visualStep);
+    if (Number.isFinite(explicit)) {
+      return Math.max(0, Math.min(row.steps - 1, Math.round(explicit)));
+    }
+    const step = Number(target?.step);
+    if (!Number.isFinite(step)) return 0;
+    return Math.max(0, Math.min(row.steps - 1, Math.round((step / BASE_STEPS_PER_BAR) * row.steps)));
   }
 
   function cameraCellRectForTarget(target) {
@@ -538,7 +619,7 @@ export function createStepGridBuilder(deps) {
     if (!row || !state.config.patterns.jazz.bars[target.bar]) return null;
     const stepGap = Math.max(0.5, Math.min(4, 80 / Math.max(1, row.steps * visibleSegmentCount())));
     const stepWidth = Math.max(1, cameraCanvasMetrics.barWidth / row.steps);
-    const visualStep = Math.max(0, Math.min(row.steps - 1, Math.round(Number(target.visualStep) || 0)));
+    const visualStep = cameraVisualStepForTarget(target, row);
     const width = Math.max(1, stepWidth - stepGap);
     return {
       x: target.bar * cameraCanvasMetrics.barWidth + visualStep * stepWidth + stepGap / 2,
@@ -546,8 +627,59 @@ export function createStepGridBuilder(deps) {
       width,
       height: Math.max(4, row.height - 10),
       radius: Math.min(5, Math.max(4, row.height - 10) / 2),
-      accent: row.accent || "#7dd3fc"
+      accent: row.accent || "#7dd3fc",
+      type: row.type
     };
+  }
+
+  function cameraTargetIsSelected(target) {
+    return Boolean(state.selected
+      && state.selected.hit === target?.hit
+      && Math.abs(Number(state.selected.step) - Number(target?.step)) < 0.0001
+      && Number(state.selected.bar ?? state.activeBar) === Number(target?.bar));
+  }
+
+  function updateCameraTrackSelectionNow() {
+    stepGrid.querySelectorAll(".track-label").forEach((label) => {
+      const isPrimary = state.selected?.hit === label.dataset.hit && state.selected?.mode === "row";
+      const inSelection = state.selectedTracks.includes(label.dataset.hit);
+      label.classList.toggle("is-selected-row", isPrimary || inSelection);
+    });
+  }
+
+  function paintCameraCellNow(target, options = {}) {
+    if (!cameraCanvas || !cameraCanvasWrap || !cameraCanvasMetrics) return false;
+    const rect = cameraCellRectForTarget(target);
+    if (!rect) return false;
+    const ctx = cameraCanvas.getContext("2d");
+    if (!ctx) return false;
+    const cssWidth = Math.max(1, cameraCanvasWrap.clientWidth || cameraCanvasWrap.getBoundingClientRect().width || 1);
+    const dpr = Math.max(1, cameraCanvas.width / cssWidth || 1);
+    const hitData = getHitData(target.hit, target.step, target.bar);
+    const velocity = Number.isFinite(Number(options.velocity)) ? Number(options.velocity) : hitData.velocity;
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawCameraStepPad(ctx, {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+      velocity,
+      generated: rect.type === "generated" && hitData.generated,
+      selected: options.selected ?? cameraTargetIsSelected(target),
+      hovered: false,
+      trackColor: rect.accent,
+      accent: canvasCssColor("--accent", "#8bd8bd"),
+      accent2: canvasCssColor("--accent-2", "#f5d76e")
+    });
+    ctx.restore();
+    return true;
+  }
+
+  function afterNextPaint(callback) {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(callback);
+    });
   }
 
   function updateCameraHoverOverlay() {
@@ -564,6 +696,27 @@ export function createStepGridBuilder(deps) {
     cameraHoverOverlay.style.borderRadius = `${Math.max(2, rect.radius + 1)}px`;
     cameraHoverOverlay.style.borderColor = colorAlpha(rect.accent, 0.92);
     cameraHoverOverlay.style.boxShadow = `0 0 0 1px rgba(0,0,0,0.34), 0 0 8px ${colorAlpha(rect.accent, 0.22)}`;
+  }
+
+  function updateCameraActiveOverlay() {
+    if (!cameraActiveOverlay) return;
+    const rect = cameraCellRectForTarget(cameraActivePreview);
+    if (!rect) {
+      cameraActiveOverlay.hidden = true;
+      return;
+    }
+    cameraActiveOverlay.hidden = false;
+    cameraActiveOverlay.style.transform = `translate(${Math.round(rect.x - 1)}px, ${Math.round(rect.y - 1)}px)`;
+    cameraActiveOverlay.style.width = `${Math.max(3, Math.round(rect.width + 2))}px`;
+    cameraActiveOverlay.style.height = `${Math.max(4, Math.round(rect.height + 2))}px`;
+    cameraActiveOverlay.style.borderRadius = `${Math.max(2, rect.radius + 1)}px`;
+    cameraActiveOverlay.style.borderColor = colorAlpha(rect.accent, 0.98);
+    cameraActiveOverlay.style.boxShadow = `0 0 0 1px rgba(0,0,0,0.42), 0 0 10px ${colorAlpha(rect.accent, 0.26)}`;
+  }
+
+  function setCameraActivePreview(target) {
+    cameraActivePreview = target && state.config.patterns.jazz.bars[target.bar] ? target : null;
+    updateCameraActiveOverlay();
   }
 
   function setCameraHover(target) {
@@ -727,13 +880,37 @@ export function createStepGridBuilder(deps) {
     cameraHoverOverlay.className = "camera-grid-hover";
     cameraHoverOverlay.hidden = true;
     cameraCanvasWrap.appendChild(cameraHoverOverlay);
+    cameraActiveOverlay = document.createElement("div");
+    cameraActiveOverlay.className = "camera-grid-active";
+    cameraActiveOverlay.hidden = true;
+    cameraCanvasWrap.appendChild(cameraActiveOverlay);
     const playheadLine = document.createElement("div");
     playheadLine.className = "camera-grid-playhead-line";
     playheadLine.hidden = true;
     cameraCanvasWrap.appendChild(playheadLine);
     cameraCanvasWrap.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
-      if (!cameraEventIsRuler(event)) return;
+      if (!cameraEventIsRuler(event)) {
+        const hit = hitTestCameraCanvas(event);
+        if (!hit || !state.config.patterns.jazz.bars[hit.bar]) return;
+        paintSelectedVelocityPreview?.(defaultVelocityForHit(hit.hit));
+        const sameSelection = state.selected
+          && state.selected.hit === hit.hit
+          && Math.abs(Number(state.selected.step) - Number(hit.step)) < 0.0001
+          && Number(state.selected.bar ?? state.activeBar) === Number(hit.bar)
+          && state.selected.mode === "step";
+        setCameraHover(hit);
+        setCameraActivePreview(sameSelection ? null : hit);
+        if (!sameSelection) {
+          const current = getHitData(hit.hit, hit.step, hit.bar);
+          const visualVelocity = current.velocity > 0.005 ? current.velocity : defaultVelocityForHit(hit.hit);
+          previewStepSelectionControls?.(hit.hit, hit.step, hit.bar, visualVelocity);
+          paintCameraCellNow(hit, { selected: true, velocity: visualVelocity });
+        }
+        cameraPointerHandledClick = true;
+        event.preventDefault();
+        return;
+      }
       cameraDrag = {
         pointerId: event.pointerId,
         startBarPosition: cameraBarPositionFromEvent(event),
@@ -789,6 +966,8 @@ export function createStepGridBuilder(deps) {
       setCameraHover(null);
     });
     cameraCanvasWrap.addEventListener("click", (event) => {
+      const handledOnPointerDown = cameraPointerHandledClick;
+      cameraPointerHandledClick = false;
       if (cameraSuppressClick) {
         cameraSuppressClick = false;
         return;
@@ -798,12 +977,18 @@ export function createStepGridBuilder(deps) {
       setCameraHover(hit);
       const scrollLeft = stepGrid.scrollLeft;
       const scrollTop = stepGrid.scrollTop;
+      const previousSelection = state.selected ? {
+        hit: state.selected.hit,
+        step: state.selected.step,
+        bar: state.selected.bar ?? state.activeBar
+      } : null;
       if (state.selected
         && state.selected.hit === hit.hit
         && state.selected.step === hit.step
         && state.selected.bar === hit.bar
         && state.selected.mode === "step") {
         resetSelectedPanel();
+        setCameraActivePreview(null);
         renderStepGrid();
         stepGrid.scrollLeft = scrollLeft;
         stepGrid.scrollTop = scrollTop;
@@ -813,10 +998,18 @@ export function createStepGridBuilder(deps) {
       if (current.velocity <= 0.005) {
         setHitVelocity(hit.hit, hit.step, DEFAULT_VELOCITY[hit.hit] ?? 0.5, hit.bar);
       }
-      selectStep(hit.hit, hit.step, "step", hit.bar, state.intensity, hit.type === "generated");
-      renderStepGrid();
-      stepGrid.scrollLeft = scrollLeft;
-      stepGrid.scrollTop = scrollTop;
+      selectStep(hit.hit, hit.step, "step", hit.bar, state.intensity, hit.type === "generated", { deferTrackPanels: true });
+      updateCameraTrackSelectionNow();
+      if (!handledOnPointerDown) setCameraActivePreview(hit);
+      if (previousSelection && !sameCameraTarget(previousSelection, hit)) {
+        paintCameraCellNow(previousSelection, { selected: false });
+      }
+      paintCameraCellNow(hit, { selected: true });
+      afterNextPaint(() => {
+        renderStepGrid();
+        stepGrid.scrollLeft = scrollLeft;
+        stepGrid.scrollTop = scrollTop;
+      });
     });
     cameraCanvasWrap.addEventListener("contextmenu", (event) => {
       const inRuler = cameraEventIsRuler(event);
@@ -948,6 +1141,27 @@ export function createStepGridBuilder(deps) {
           button.dataset.beat = visualBeatKindForStep(visualStep, stepsForTrack, currentTimeSignature());
           button.style.setProperty("--track-accent", accent || "#7dd3fc");
           button.setAttribute("aria-label", `${label} bar+${seg} step ${visualStep + 1} of ${stepsForTrack}`);
+          button.addEventListener("pointerdown", (event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            const barIndex = barIndexForSegment(seg);
+            if (!state.config.patterns.jazz.bars[barIndex]) return;
+            paintSelectedVelocityPreview?.(defaultVelocityForHit(hit));
+            const sameSelection = state.selected
+              && state.selected.hit === hit
+              && Math.abs(Number(state.selected.step) - Number(step)) < 0.0001
+              && Number(state.selected.bar ?? state.activeBar) === Number(barIndex)
+              && state.selected.mode === "step";
+            if (sameSelection) return;
+            stepGrid.querySelectorAll(".step-button.is-selected").forEach((item) => item.classList.remove("is-selected"));
+            button.classList.add("is-selected");
+            const current = getHitData(hit, step, barIndex);
+            const visualVelocity = current.velocity > 0.005 ? current.velocity : defaultVelocityForHit(hit);
+            button.classList.add("is-on");
+            button.classList.toggle("is-generated-on", type === "generated");
+            button.style.setProperty("--level", String(Math.min(1, visualVelocity / 0.9)));
+            previewStepSelectionControls?.(hit, step, barIndex, visualVelocity);
+          });
           button.addEventListener("mousedown", (event) => {
             event.preventDefault();
           });

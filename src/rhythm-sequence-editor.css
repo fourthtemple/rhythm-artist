@@ -744,6 +744,17 @@ button.is-active {
   z-index: 4;
 }
 
+.camera-grid-active {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border: 2px solid rgba(125, 211, 252, 0.98);
+  background: rgba(255, 255, 255, 0.025);
+  pointer-events: none;
+  will-change: transform, width, height;
+  z-index: 5;
+}
+
 .camera-grid-playhead-line {
   position: absolute;
   left: 0;
@@ -978,61 +989,98 @@ button.is-active {
 
 .selected-step {
   display: grid;
-  grid-template-columns: 100px minmax(0, 1fr);
-  grid-template-rows: auto auto auto;
+  grid-template-rows: auto minmax(0, 1fr);
   align-items: start;
-  gap: 8px;
-  padding-top: 6px;
+  gap: 5px;
+  padding: 5px 8px 6px;
   border-top: 1px solid var(--line);
   background: color-mix(in srgb, var(--panel) 96%, transparent);
-  min-height: 60px;
-  max-height: 60vh;
-  overflow: auto;
+  min-height: 82px;
+  max-height: 42vh;
+  overflow: hidden;
+}
+
+.selected-step-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 24px;
+}
+
+.selected-step-header .panel-label {
+  line-height: 1;
+}
+
+.selected-step-header button {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 12px;
 }
 
 .selected-step strong {
   display: block;
-  font-size: 15px;
+  min-width: 0;
+  overflow: hidden;
+  color: #dfe7ee;
+  font-size: 13px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .selected-controls {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(70px, 1fr));
+  grid-auto-flow: dense;
+  gap: 5px;
   min-width: 0;
-  max-height: 150px;
+  min-height: 0;
+  max-height: 146px;
   overflow: auto;
   padding-right: 4px;
 }
 
 .selected-controls label {
-  display: flex;
+  display: grid;
   align-items: center;
-  flex: 1 1 360px;
-  min-width: min(100%, 300px);
-  gap: 6px;
-  min-height: 30px;
-  padding: 3px 6px;
+  justify-items: center;
+  gap: 2px;
+  min-width: 0;
+  min-height: 62px;
+  padding: 4px;
   border: 1px solid #27313d;
   border-radius: 6px;
   background: #121820;
 }
 
 .selected-controls label > span {
-  flex: 0 0 68px;
+  min-width: 0;
+  max-width: 100%;
   color: #bcc7cf;
+  font-size: 10px;
+  letter-spacing: 0;
+  line-height: 1.05;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
   white-space: nowrap;
 }
 
 .selected-controls input[type="range"] {
-  flex: 1 1 150px;
-  min-width: 120px;
+  width: 100%;
+  min-width: 0;
 }
 
 .selected-controls output {
-  flex: 0 0 48px;
+  min-width: 0;
+  color: #dfe7ee;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
 }
 
 .selected-number {
@@ -1079,28 +1127,58 @@ button.is-active {
   color: var(--accent-2);
 }
 
-.selected-actions {
-  grid-column: 1;
-  grid-row: 2;
-  display: grid;
-  gap: 8px;
-  position: relative;
-  z-index: 4;
+.selected-controls label.pitch-control {
+  order: -1;
+  grid-column: 1 / -1;
+  grid-template-columns: 48px minmax(140px, 1fr) 48px 72px;
+  grid-template-rows: 22px auto;
+  justify-items: stretch;
+  min-height: 54px;
+  padding: 4px 6px;
 }
 
-.selected-controls label.pitch-control {
-  flex-wrap: wrap;
+.selected-controls label.pitch-control > span {
+  align-self: center;
+  text-align: left;
+}
+
+.selected-controls label.pitch-control input[type="range"] {
+  align-self: center;
+}
+
+.selected-controls label.pitch-control output {
+  align-self: center;
+  text-align: right;
+}
+
+.selected-controls label.pitch-control .selected-number {
+  display: block;
+  align-self: center;
+}
+
+.selected-controls label.has-rotary {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto 30px auto;
+}
+
+.selected-controls label.has-rotary .selected-number {
+  display: none;
+}
+
+.selected-controls label.has-rotary .rotary-control {
+  width: 30px;
+  height: 30px;
 }
 
 .selected-piano {
-  flex: 1 0 100%;
+  grid-column: 1 / -1;
   display: grid;
   grid-template-columns: 58px minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
-  min-height: 24px;
+  gap: 5px;
+  min-height: 20px;
   margin-left: 0;
-  padding: 4px 6px;
+  padding: 3px 6px;
   border: 1px solid #27313d;
   border-radius: 4px;
   background: #101820;
@@ -1239,22 +1317,53 @@ input[type="range"] {
   --rotary-angle: -135deg;
   --rotary-fill: 0deg;
   position: relative;
+  display: grid;
+  place-items: center;
   width: 32px;
   height: 32px;
   padding: 0;
-  border: 1px solid #3a4553;
+  border: 1px solid #344052;
   border-radius: 50%;
   background:
-    radial-gradient(circle at 50% 50%, #171d29 0 49%, transparent 50%),
-    conic-gradient(from -135deg, var(--accent) 0 var(--rotary-fill), #30394a var(--rotary-fill) 270deg, transparent 270deg);
-  box-shadow: inset 0 0 0 4px #121824;
+    radial-gradient(circle at 38% 28%, rgba(255,255,255,0.18), transparent 0 18%, transparent 19%),
+    linear-gradient(145deg, #172031 0%, #070b11 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255,255,255,0.1),
+    inset 0 -4px 9px rgba(0,0,0,0.58),
+    0 1px 2px rgba(0,0,0,0.42);
   cursor: ns-resize;
+  isolation: isolate;
+  overflow: visible;
   touch-action: none;
+}
+
+.rotary-control::before {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background:
+    conic-gradient(from 225deg,
+      rgba(118, 239, 202, 0.92) 0deg var(--rotary-fill),
+      rgba(62, 75, 93, 0.72) var(--rotary-fill) 270deg,
+      transparent 270deg 360deg);
+  filter:
+    drop-shadow(0 0 3px rgba(93, 221, 184, 0.34))
+    drop-shadow(0 1px 1px rgba(0,0,0,0.42));
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  opacity: 0.95;
+  z-index: 1;
 }
 
 .rotary-control:hover,
 .rotary-control.is-dragging {
-  border-color: var(--accent-2);
+  border-color: #6f8197;
+  box-shadow:
+    inset 0 1px 1px rgba(255,255,255,0.12),
+    inset 0 -4px 9px rgba(0,0,0,0.58),
+    0 0 0 1px rgba(139, 216, 189, 0.16),
+    0 1px 2px rgba(0,0,0,0.42);
 }
 
 .rotary-control:focus-visible {
@@ -1269,22 +1378,30 @@ input[type="range"] {
 
 .rotary-control__cap {
   position: absolute;
-  inset: 7px;
+  inset: 6px;
   border-radius: 50%;
-  background: linear-gradient(145deg, #242c3c, #111722);
-  box-shadow: inset 0 1px 1px rgba(255,255,255,0.14), 0 1px 3px rgba(0,0,0,0.35);
+  background:
+    radial-gradient(circle at 34% 28%, rgba(255,255,255,0.18), transparent 0 24%, transparent 25%),
+    linear-gradient(145deg, #2b3446 0%, #111824 72%);
+  box-shadow:
+    inset 0 1px 1px rgba(255,255,255,0.18),
+    inset 0 -3px 5px rgba(0,0,0,0.42),
+    0 1px 3px rgba(0,0,0,0.45);
+  z-index: 2;
 }
 
 .rotary-control__pointer {
   position: absolute;
   left: 50%;
-  top: 6px;
+  top: 15%;
   width: 2px;
-  height: 9px;
+  height: 36%;
   border-radius: 999px;
-  background: #eef5ff;
+  background: #f1f6ff;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.18), 0 0 5px rgba(139,216,189,0.24);
   transform: translateX(-50%) rotate(var(--rotary-angle));
-  transform-origin: 50% 10px;
+  transform-origin: 50% calc(100% + 1px);
+  z-index: 5;
 }
 
 .file-actions,
@@ -1418,6 +1535,18 @@ input[type="range"] {
   background: rgba(80,140,220,0.04);
 }
 
+.sample-region--menu-target {
+  border-color: rgba(245, 215, 110, 0.9);
+  background: rgba(245, 215, 110, 0.06);
+  box-shadow: 0 0 0 1px rgba(245, 215, 110, 0.34), inset 0 0 0 1px rgba(0, 0, 0, 0.38);
+  z-index: 7;
+}
+
+.sample-region--menu-target:hover {
+  border-color: rgba(245, 215, 110, 1);
+  background: rgba(245, 215, 110, 0.08);
+}
+
 .sample-region--missing {
   border-color: rgba(145,158,180,0.72);
   background: repeating-linear-gradient(
@@ -1432,7 +1561,7 @@ input[type="range"] {
 /* Resize handle keeps ew-resize; region itself uses crosshair everywhere */
 .sample-region-resize { cursor: ew-resize; }
 
-/* No per-region selection highlight — selection is handled by the marquee only */
+/* Right-click target cue; cleared as soon as the region menu closes. */
 
 /* Move-pending state: bright outline to indicate drag-to-move is armed */
 .sample-region--move-pending {
