@@ -129,6 +129,10 @@ export function createNoteInspector(deps) {
     return storedPitchValueFor(displayedPitch, base);
   }
 
+  function selectedBarIndex() {
+    return Math.max(0, Math.round(Number(state.selected?.bar ?? state.activeBar) || 0));
+  }
+
   function renderSelectedPiano(displayedPitch = null, basePitch = null) {
     if (!selectedPiano) return;
     selectedPiano.innerHTML = "";
@@ -182,7 +186,7 @@ export function createNoteInspector(deps) {
 
   function selectedPreviewOptions() {
     if (!state.selected) return normalizeStepOptions();
-    return normalizeStepOptions(getHitData(state.selected.hit, state.selected.step).options);
+    return normalizeStepOptions(getHitData(state.selected.hit, state.selected.step, selectedBarIndex()).options);
   }
 
   async function previewPianoPitch(displayedPitch, effectOptions = selectedPreviewOptions()) {
@@ -224,7 +228,7 @@ export function createNoteInspector(deps) {
     setStatus(`Preview pitch ${noteNameForPitch(displayedPitch)} ${formatPitch(displayedPitch)}`);
   }
 
-  function syncSelectedPitchDisplay(barIndex = state.activeBar) {
+  function syncSelectedPitchDisplay(barIndex = selectedBarIndex()) {
     if (!state.selected) return;
     const { hit, step } = state.selected;
     const hitData = getHitData(hit, step, barIndex);
@@ -259,17 +263,19 @@ export function createNoteInspector(deps) {
       hit: selectedButton.dataset.hit,
       step: Number(selectedButton.dataset.step),
       mode: "step",
-      generated: selectedButton.dataset.type === "generated"
+      generated: selectedButton.dataset.type === "generated",
+      bar: state.activeBar + Number(selectedButton.dataset.seg ?? 0)
     };
     return true;
   }
 
   function updateSelectedOption(field, value) {
     if (!ensureSelectedFromDom()) return;
+    const barIndex = selectedBarIndex();
     setHitData(state.selected.hit, state.selected.step, {
       options: { [field]: value }
-    });
-    selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step");
+    }, barIndex);
+    selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step", barIndex);
     renderStepGrid();
   }
 
@@ -284,15 +290,17 @@ export function createNoteInspector(deps) {
 
   function setSelectedVelocityFromControl(value = selectedVelocity.value) {
     if (!ensureSelectedFromDom()) return;
+    const barIndex = selectedBarIndex();
     const velocity = clamp(value, 0, 0.9, 0);
     setPairedControl(selectedVelocity, selectedVelocityNumber, selectedVelocityValue, Number(velocity.toFixed(2)), (next) => next.toFixed(2));
-    setHitVelocity(state.selected.hit, state.selected.step, velocity);
-    selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step");
+    setHitVelocity(state.selected.hit, state.selected.step, velocity, barIndex);
+    selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step", barIndex);
     renderStepGrid();
   }
 
   function setSelectedOptionFromControl(field, value) {
     let number = Number(value);
+    const barIndex = selectedBarIndex();
     if (field === "pitch" && state.selected) {
       const min = Number(selectedPitch.min);
       const max = Number(selectedPitch.max);
@@ -303,7 +311,7 @@ export function createNoteInspector(deps) {
         0
       ));
       setPairedControl(selectedPitch, selectedPitchNumber, selectedPitchValue, displayedPitch, formatPitch);
-      number = storedPitchForDisplay(state.selected.hit, state.selected.step, displayedPitch);
+      number = storedPitchForDisplay(state.selected.hit, state.selected.step, displayedPitch, barIndex);
     } else if (selectedOptionControls[field]) {
       const control = selectedOptionControls[field];
       number = control.step >= 1
@@ -319,7 +327,7 @@ export function createNoteInspector(deps) {
   }
 
   function syncSelectedDubEchoDisplay(options = null) {
-    const nextOptions = options || (state.selected ? getHitData(state.selected.hit, state.selected.step).options : {});
+    const nextOptions = options || (state.selected ? getHitData(state.selected.hit, state.selected.step, selectedBarIndex()).options : {});
     const amount = selectedDubEchoAmount(nextOptions);
     setPairedControl(selectedDubEcho, selectedDubEchoNumber, selectedDubEchoValue, amount, (next) => next.toFixed(2));
   }
@@ -330,6 +338,7 @@ export function createNoteInspector(deps) {
       return;
     }
     const hit = state.selected.hit;
+    const selectedBar = selectedBarIndex();
     const amount = clamp(value, 0, 1, 0);
     setPairedControl(selectedDubEcho, selectedDubEchoNumber, selectedDubEchoValue, Number(amount.toFixed(2)), (next) => next.toFixed(2));
     const patch = { dubEcho: Number(amount.toFixed(2)) };
@@ -337,7 +346,7 @@ export function createNoteInspector(deps) {
       const length = activeLoopLength() || 1;
       const start = activeLoopLength()
         ? clampLoopStart(state.loopBarIndex, length)
-        : state.activeBar;
+        : selectedBar;
       let applied = 0;
       for (let offset = 0; offset < length; offset += 1) {
         const barIndex = start + offset;
@@ -353,19 +362,19 @@ export function createNoteInspector(deps) {
         setStatus(`${trackName(hit)} row has no notes`);
         return;
       }
-      selectStep(hit, state.selected.step, "row");
+      selectStep(hit, state.selected.step, "row", selectedBar);
       setPairedControl(selectedDubEcho, selectedDubEchoNumber, selectedDubEchoValue, Number(amount.toFixed(2)), (next) => next.toFixed(2));
       renderStepGrid();
       setStatus(`Dub echo ${amount.toFixed(2)} on ${applied} ${trackName(hit)} notes`);
       return;
     }
-    const current = getHitData(hit, state.selected.step);
+    const current = getHitData(hit, state.selected.step, selectedBar);
     if (current.velocity <= 0.005) {
       setStatus("Select a note with volume first");
       return;
     }
-    setHitData(hit, state.selected.step, { options: patch });
-    selectStep(hit, state.selected.step, state.selected.mode || "step");
+    setHitData(hit, state.selected.step, { options: patch }, selectedBar);
+    selectStep(hit, state.selected.step, state.selected.mode || "step", selectedBar);
     setPairedControl(selectedDubEcho, selectedDubEchoNumber, selectedDubEchoValue, Number(amount.toFixed(2)), (next) => next.toFixed(2));
     renderStepGrid();
     setStatus(`Dub echo ${amount.toFixed(2)} on ${trackName(hit)} ${state.selected.step + 1}`);

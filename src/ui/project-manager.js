@@ -1,4 +1,4 @@
-// Project save/load (IndexedDB) and WAV export.
+// Project save/load (browser IndexedDB) and WAV export.
 //
 // Presents an explorer-style window with:
 //   • File list with selection, sortable by name / date
@@ -6,6 +6,8 @@
 //   • Double-click or Enter on a row to load
 //   • Inline rename on F2 / slow double-click
 //   • WAV export via MediaRecorder → decode → 16-bit PCM WAV download
+
+import { saveDefaultProject } from "../lib/config-io.js";
 
 const DB_NAME   = "rhythm-artist";
 const DB_STORE  = "kv";
@@ -87,57 +89,9 @@ export function createProjectManager({
     return project?.schema === PROJECT_SCHEMA && project.config ? project.config : project;
   }
 
-  function wrapProject(name, config, savedAt = new Date().toISOString()) {
-    return {
-      schema: PROJECT_SCHEMA,
-      name,
-      savedAt,
-      samplePacks: ["default-pack"],
-      config
-    };
-  }
-
-  async function fetchDiskProjectList() {
-    try {
-      const response = await fetch("/api/projects", { cache: "no-store" });
-      if (!response.ok) return [];
-      const data = await response.json();
-      return Array.isArray(data.projects) ? data.projects : [];
-    } catch {
-      return [];
-    }
-  }
-
-  async function fetchDiskProject(name) {
-    const response = await fetch(`/api/project?name=${encodeURIComponent(name)}`, { cache: "no-store" });
-    if (!response.ok) throw new Error("disk-project-not-found");
-    return response.json();
-  }
-
-  async function saveDiskProject(name, project) {
-    const response = await fetch("/api/project", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, project })
-    });
-    if (!response.ok) throw new Error("disk-project-save-failed");
-    return response.json();
-  }
-
   async function loadSlots() {
     const idbSlots = (await idbGet(SLOTS_KEY)) ?? [];
-    const diskProjects = await fetchDiskProjectList();
-    const merged = new Map();
-    idbSlots.forEach((slot) => merged.set(slot.name, { ...slot, source: "browser" }));
-    diskProjects.forEach((project) => {
-      const existing = merged.get(project.name);
-      merged.set(project.name, {
-        ...existing,
-        ...project,
-        source: "file"
-      });
-    });
-    return [...merged.values()].sort((a, b) => {
+    return idbSlots.map((slot) => ({ ...slot, source: "browser" })).sort((a, b) => {
       if (a.name === "Default Project") return -1;
       if (b.name === "Default Project") return 1;
       return String(b.savedAt || "").localeCompare(String(a.savedAt || ""));
@@ -148,12 +102,16 @@ export function createProjectManager({
   async function saveProject(name) {
     const config = JSON.parse(JSON.stringify(getConfig()));
     const now = new Date().toISOString();
-    const project = wrapProject(name, config, now);
-    try {
-      const result = await saveDiskProject(name, project);
-      return { name, savedAt: result.project?.savedAt || now, config, source: "file" };
-    } catch (error) {
-      console.warn("Disk project save failed; falling back to browser storage", error);
+    if (name === "Default Project") {
+      const result = await saveDefaultProject(config, name);
+      return {
+        name,
+        savedAt: result.project?.savedAt || now,
+        config,
+        source: "browser",
+        localSaved: result.localSaved,
+        localSaveError: result.localSaveError
+      };
     }
     const slots = ((await idbGet(SLOTS_KEY)) ?? []);
     const idx = slots.findIndex(s => s.name === name);
@@ -171,11 +129,6 @@ export function createProjectManager({
     const slots = await loadSlots();
     const entry = slots.find(s => s.name === name);
     if (!entry) throw new Error(`"${name}" not found`);
-    if (entry.source === "file") {
-      const diskProject = await fetchDiskProject(name);
-      applyLoadedConfig(configFromProject(diskProject));
-      return diskProject;
-    }
     applyLoadedConfig(configFromProject(entry.config));
     return entry;
   }
@@ -344,7 +297,7 @@ export function createProjectManager({
       row.tabIndex = 0;
       row.innerHTML = `
         <span class="pm-file-name">
-          <span class="pm-file-icon">${slot.source === "file" ? "▣" : "🎵"}</span>
+          <span class="pm-file-icon">♪</span>
           <span class="pm-file-name-text"></span>
         </span>
         <span class="pm-file-date">${fmt(slot.savedAt)}</span>`;
@@ -414,21 +367,36 @@ export function createProjectManager({
   async function doNew() {
     const name = await promptName(`Project ${new Date().toLocaleString()}`);
     if (!name) return;
-    await saveProject(name);
+    const saved = await saveProject(name);
     selectedName = name;
-    setStatus(`Saved "${name}"`);
+    setStatus(saveStatus(name, saved));
     await renderList();
+  }
+
+  function saveStatus(name, saved) {
+    if (name !== "Default Project") return `Saved "${name}"`;
+    if (saved?.localSaved) return "Saved Default Project to browser + bundled startup file";
+    if (saved?.localSaveError) return "Saved Default Project in browser; bundled file save failed";
+    return "Saved Default Project in this browser";
   }
 
   async function doSave() {
     // Save over the selected project, or prompt for a name if nothing selected
     if (selectedName) {
-      await saveProject(selectedName);
-      setStatus(`Saved "${selectedName}"`);
+      const saved = await saveProject(selectedName);
+      setStatus(saveStatus(selectedName, saved));
       await renderList();
     } else {
       await doNew();
     }
+  }
+
+  async function saveCurrentProject() {
+    const target = selectedName || "Default Project";
+    const saved = await saveProject(target);
+    selectedName = target;
+    setStatus(saveStatus(target, saved));
+    return saved;
   }
 
   async function doSaveAs() {
@@ -437,9 +405,9 @@ export function createProjectManager({
       : `Project ${new Date().toLocaleString()}`;
     const name = await promptName(defaultName);
     if (!name) return;
-    await saveProject(name);
+    const saved = await saveProject(name);
     selectedName = name;
-    setStatus(`Saved as "${name}"`);
+    setStatus(saveStatus(name, saved));
     await renderList();
   }
 
@@ -513,5 +481,5 @@ export function createProjectManager({
     await renderList();
   }
 
-  return { open, close, saveProject, loadProject, deleteProject, renameProject, exportWav, exportJson };
+  return { open, close, saveProject, saveCurrentProject, loadProject, deleteProject, renameProject, exportWav, exportJson };
 }

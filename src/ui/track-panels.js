@@ -1,5 +1,12 @@
 // Track panels controller.
 //
+import {
+  SAMPLE_SOURCE_BUNDLED,
+  SAMPLE_SOURCE_BROWSER_HANDLE,
+  SAMPLE_SOURCE_LOCAL_FILE,
+  resolveFileHandleSample
+} from "./sample-assets.js";
+
 // Owns the right-side track UI cluster:
 //   • Registry-driven grid-track management (add/remove voices & instances,
 //     ordering, reconciliation after load).
@@ -119,6 +126,70 @@ export function createTrackPanels(deps) {
     const requested = Math.round(Number.isFinite(number) ? number : DEFAULT_TRACK_STEPS_PER_BAR);
     return Math.max(1, Math.min(128, requested));
   };
+  const collapsedVoiceGroups = new Set();
+  let activeSampleGroupId = null;
+
+  const sampleGroups = () => {
+    if (!Array.isArray(state.config.sampleGroups)) state.config.sampleGroups = [];
+    return state.config.sampleGroups;
+  };
+
+  function sampleGroupIdForLabel(label) {
+    const base = String(label || "Sample Group")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      || "sample-group";
+    const used = new Set(sampleGroups().map((group) => group.id));
+    let id = base;
+    let suffix = 2;
+    while (used.has(id)) {
+      id = `${base}-${suffix}`;
+      suffix += 1;
+    }
+    return id;
+  }
+
+  function addSampleGroup(labelInput) {
+    const label = String(labelInput || "").trim();
+    if (!label) return null;
+    const group = { id: sampleGroupIdForLabel(label), label, collapsed: false };
+    state.config.sampleGroups = [...sampleGroups(), group];
+    activeSampleGroupId = group.id;
+    renderTrackExplorer();
+    syncJson();
+    setStatus(`Added sample group "${group.label}"`);
+    return group;
+  }
+
+  function addSampleGroupFromPrompt() {
+    const label = window.prompt("Sample group name", "Drums");
+    return addSampleGroup(label);
+  }
+
+  function toggleSampleGroupCollapsed(groupId) {
+    state.config.sampleGroups = sampleGroups().map((group) => (
+      group.id === groupId ? { ...group, collapsed: !group.collapsed } : group
+    ));
+    renderTrackExplorer();
+    syncJson();
+  }
+
+  function setActiveSampleGroup(groupId) {
+    activeSampleGroupId = groupId;
+    renderTrackExplorer();
+    document.querySelector("#sample-browser-section")?.scrollIntoView({ block: "nearest" });
+    const group = sampleGroups().find((entry) => entry.id === groupId);
+    setStatus(group ? `Sample Browser target: ${group.label}` : "Sample Browser target cleared");
+  }
+
+  function openAddTrackDialog(groupId = null) {
+    renderAddTrackDialog(groupId);
+    /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.showModal();
+  }
+
+  const visibleTrackGroups = () => TRACK_GROUPS.filter((group) => group.id !== "sampler");
 
   // ── Registry-driven grid track management ───────────────────
 
@@ -242,11 +313,24 @@ export function createTrackPanels(deps) {
   }
 
   /** Build the grouped checkbox list inside the Add Track dialog. */
-  function renderAddTrackDialog() {
+  function renderAddTrackDialog(focusGroupId = null) {
     const host = $("#add-track-groups");
     if (!host) return;
     host.innerHTML = "";
-    tracksByGroup().forEach(({ group, tracks }) => {
+    const dialog = $("#add-track-dialog");
+    const title = dialog?.querySelector("h2");
+    const hint = dialog?.querySelector(".add-track-hint");
+    const groups = tracksByGroup()
+      .filter(({ group }) => group.id !== "sampler")
+      .filter(({ group }) => !focusGroupId || group.id === focusGroupId);
+    const focusedGroup = groups[0]?.group || null;
+    if (title) title.textContent = focusedGroup ? `Add ${focusedGroup.label}` : "Add Track";
+    if (hint) {
+      hint.textContent = focusedGroup
+        ? `Pick instruments for ${focusedGroup.label}. Use ++ to add multiple independent instances of a voice.`
+        : "Pick instruments to add to the grid. Use ++ to add multiple independent instances of a voice.";
+    }
+    groups.forEach(({ group, tracks }) => {
       const section = document.createElement("div");
       section.className = "add-track-group";
       const heading = document.createElement("div");
@@ -309,41 +393,24 @@ export function createTrackPanels(deps) {
       host.appendChild(section);
     });
 
-    // ── Samples section ─────────────────────────────────────────
-    // Not registry-driven: clicking "Add Sample Track" opens the
-    // add-loop dialog so the user can load a .wav/.mp3 waveform
-    // to timestretch, slice, and place on the timeline.
-    const sampleSection = document.createElement("div");
-    sampleSection.className = "add-track-group";
-    const sampleHeading = document.createElement("div");
-    sampleHeading.className = "add-track-group-heading";
-    sampleHeading.style.setProperty("--group-accent", "#c084fc");
-    sampleHeading.textContent = "Samples & Loops";
-    sampleSection.appendChild(sampleHeading);
+    if (!focusGroupId) {
+      // Sample tracks are organized through + Sample Group and the Sample Browser,
+      // not through a separate registry voice family.
+      const sampleSection = document.createElement("div");
+      sampleSection.className = "add-track-group";
+      const sampleHeading = document.createElement("div");
+      sampleHeading.className = "add-track-group-heading";
+      sampleHeading.style.setProperty("--group-accent", "#c084fc");
+      sampleHeading.textContent = "Sample Groups";
+      sampleSection.appendChild(sampleHeading);
 
-    const sampleDesc = document.createElement("p");
-    sampleDesc.className = "add-track-hint";
-    sampleDesc.style.cssText = "margin: 0 0 8px; font-size: 11px; color: #9eacb6;";
-    sampleDesc.textContent = "Load a .wav or .mp3 — it appears as a waveform lane below the drum grid. Drag to place regions, set chops to slice, adjust gain & length.";
-    sampleSection.appendChild(sampleDesc);
-
-    const sampleList = document.createElement("div");
-    sampleList.className = "add-track-group-list";
-
-    const sampleChip = document.createElement("button");
-    sampleChip.type = "button";
-    sampleChip.className = "add-track-chip";
-    sampleChip.textContent = "+ Add Sample Track";
-    sampleChip.title = "Load an audio file as a waveform lane — timestretch, slice, and arrange regions";
-    sampleChip.addEventListener("click", () => {
-      // Close the add-track dialog, open the add-loop (sample) dialog
-      /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.close();
-      const loopDialog = /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"));
-      if (loopDialog) loopDialog.showModal();
-    });
-    sampleList.appendChild(sampleChip);
-    sampleSection.appendChild(sampleList);
-    host.appendChild(sampleSection);
+      const sampleDesc = document.createElement("p");
+      sampleDesc.className = "add-track-hint";
+      sampleDesc.style.cssText = "margin: 0 0 8px; font-size: 11px; color: #9eacb6;";
+      sampleDesc.textContent = "Use + Sample Group in the Tracks panel, then add audio from the Sample Browser.";
+      sampleSection.appendChild(sampleDesc);
+      host.appendChild(sampleSection);
+    }
   }
 
   // ── Track Explorer (right-side track list) ──────────────────
@@ -353,62 +420,157 @@ export function createTrackPanels(deps) {
     if (!trackExplorerList) return;
     trackExplorerList.innerHTML = "";
     const selectedSet = new Set(state.selectedTracks.length ? state.selectedTracks : (state.selected?.hit ? [state.selected.hit] : []));
-    TRACK_GROUPS.forEach((group) => {
+    visibleTrackGroups().forEach((group) => {
       const groupTrackIds = state.gridTrackIds.filter((id) => getTrackDef(id)?.group === group.id);
-      if (groupTrackIds.length === 0) return;
+      const registryGroup = TRACK_REGISTRY.filter((track) => track.group === group.id);
+      if (groupTrackIds.length === 0 && registryGroup.length === 0) return;
+      const collapsed = collapsedVoiceGroups.has(group.id);
       const groupEl = document.createElement("div");
-      groupEl.className = "track-explorer-group";
+      groupEl.className = `track-explorer-group ${collapsed ? "is-collapsed" : ""}`;
       const heading = document.createElement("div");
       heading.className = "track-explorer-group-heading";
-      heading.textContent = group.label;
       if (group.accent) heading.style.setProperty("--group-accent", group.accent);
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "track-explorer-group-toggle";
+      toggle.textContent = collapsed ? "+" : "-";
+      toggle.title = `${collapsed ? "Expand" : "Collapse"} ${group.label}`;
+      toggle.addEventListener("click", () => {
+        if (collapsedVoiceGroups.has(group.id)) collapsedVoiceGroups.delete(group.id);
+        else collapsedVoiceGroups.add(group.id);
+        renderTrackExplorer();
+      });
+      const label = document.createElement("span");
+      label.className = "track-explorer-group-label";
+      label.textContent = group.label;
+      heading.append(toggle, label);
       groupEl.appendChild(heading);
 
-      groupTrackIds.forEach((id) => {
-        const def = getTrackDef(id);
-        const row = document.createElement("div");
-        row.className = `track-explorer-row ${selectedSet.has(id) ? "is-selected" : ""}`;
-        row.dataset.trackId = id;
+      if (!collapsed) {
+        registryGroup.forEach((track) => {
+          const ids = trackIdsForBase(track.id);
+          const count = ids.length;
+          const primaryId = ids[0] || track.id;
+          const active = ids.some((id) => selectedSet.has(id));
+          const row = document.createElement("div");
+          row.className = `track-explorer-row ${active ? "is-selected" : ""} ${count === 0 ? "is-empty" : ""}`;
+          row.dataset.trackId = primaryId;
 
-        const name = document.createElement("button");
-        name.type = "button";
-        name.className = "track-explorer-name";
-        const trackLabel = isInstanceId(id) ? instanceLabel(id) : (def?.label || id);
-        name.textContent = trackLabel;
-        name.title = `${trackLabel} — Click to select · Shift-click to add a range · ⌘/Ctrl-click to toggle`;
-        const hasSample = Boolean(state.config.trackSamples?.[id]);
-        if (hasSample) {
-          const dot = document.createElement("span");
-          dot.className = "track-explorer-sample-dot";
-          dot.title = `Custom sample: ${state.config.trackSamples[id].label}`;
-          name.appendChild(dot);
+          const name = document.createElement("button");
+          name.type = "button";
+          name.className = "track-explorer-name";
+          const trackLabel = track.label || track.id;
+          name.textContent = trackLabel;
+          name.title = count > 0
+            ? `${trackLabel} — Click to select · Shift-click to add a range · ⌘/Ctrl-click to toggle`
+            : `${trackLabel} is not on the grid`;
+          name.disabled = count === 0;
+          const hasSample = ids.some((id) => Boolean(state.config.trackSamples?.[id]));
+          if (hasSample) {
+            const dot = document.createElement("span");
+            dot.className = "track-explorer-sample-dot";
+            dot.title = "Custom sample assigned";
+            name.appendChild(dot);
+          }
+          name.addEventListener("click", (event) => {
+            if (count === 0) return;
+            selectRowWithModifiers(primaryId, event);
+            renderStepGrid();
+          });
+
+          const countInput = document.createElement("input");
+          countInput.type = "number";
+          countInput.className = "track-explorer-count";
+          countInput.min = track.removable ? "0" : "1";
+          countInput.max = track.instanceable ? "32" : "1";
+          countInput.step = "1";
+          countInput.value = String(count);
+          countInput.title = `${trackLabel} count`;
+          countInput.disabled = !track.removable && !track.instanceable;
+          const commitCount = () => setTrackVoiceCount(track, countInput.value);
+          countInput.addEventListener("click", (event) => event.stopPropagation());
+          countInput.addEventListener("change", commitCount);
+          countInput.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            commitCount();
+            countInput.blur();
+          });
+
+          const soloBtn = document.createElement("button");
+          soloBtn.type = "button";
+          soloBtn.className = `track-explorer-solo ${ids.some((id) => state.soloTracks.has(id)) ? "is-active" : ""}`;
+          soloBtn.textContent = "S";
+          soloBtn.disabled = count === 0;
+          soloBtn.title = `Solo ${trackLabel}`;
+          soloBtn.addEventListener("click", (event) => {
+            event.stopPropagation();
+            if (count === 0) return;
+            toggleSolo(primaryId);
+            renderTrackExplorer();
+          });
+
+          row.append(name, countInput, soloBtn);
+          groupEl.appendChild(row);
+        });
+        if (registryGroup.length === 0) {
+          const empty = document.createElement("p");
+          empty.className = "track-explorer-empty";
+          empty.textContent = "No tracks in this group.";
+          groupEl.appendChild(empty);
         }
-        name.addEventListener("click", (event) => {
-          selectRowWithModifiers(id, event);
-          renderStepGrid();
-        });
-
-        const soloBtn = document.createElement("button");
-        soloBtn.type = "button";
-        soloBtn.className = `track-explorer-solo ${state.soloTracks.has(id) ? "is-active" : ""}`;
-        soloBtn.textContent = "S";
-        soloBtn.title = `Solo ${def?.label || id}`;
-        soloBtn.addEventListener("click", (event) => {
-          event.stopPropagation();
-          toggleSolo(id);
-          renderTrackExplorer();
-        });
-
-        row.append(name, soloBtn);
-
-        groupEl.appendChild(row);
-      });
+      }
       trackExplorerList.appendChild(groupEl);
     });
+
+    const groups = sampleGroups();
+    if (activeSampleGroupId && !groups.some((group) => group.id === activeSampleGroupId)) {
+      activeSampleGroupId = null;
+    }
+    if (groups.length) {
+      const section = document.createElement("div");
+      section.className = "track-explorer-sample-groups";
+      const sectionLabel = document.createElement("div");
+      sectionLabel.className = "track-explorer-subheading";
+      sectionLabel.textContent = "Sample Groups";
+      section.appendChild(sectionLabel);
+      groups.forEach((group) => {
+        const collapsed = Boolean(group.collapsed);
+        const groupEl = document.createElement("div");
+        groupEl.className = `track-explorer-group track-explorer-group--sample ${activeSampleGroupId === group.id ? "is-active-target" : ""}`;
+        const heading = document.createElement("div");
+        heading.className = "track-explorer-group-heading";
+        heading.style.setProperty("--group-accent", "#fcd34d");
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "track-explorer-group-toggle";
+        toggle.textContent = collapsed ? "+" : "-";
+        toggle.title = `${collapsed ? "Expand" : "Collapse"} ${group.label}`;
+        toggle.addEventListener("click", () => toggleSampleGroupCollapsed(group.id));
+        const label = document.createElement("button");
+        label.type = "button";
+        label.className = "track-explorer-group-label track-explorer-group-target";
+        label.textContent = group.label;
+        label.title = `Send Sample Browser adds to ${group.label}`;
+        label.addEventListener("click", () => setActiveSampleGroup(group.id));
+        heading.append(toggle, label);
+        groupEl.appendChild(heading);
+        if (!collapsed) {
+          const hint = document.createElement("p");
+          hint.className = "track-explorer-empty";
+          hint.textContent = activeSampleGroupId === group.id
+            ? "Sample Browser adds go here."
+            : "Click the group name, then choose samples in Sample Browser.";
+          groupEl.appendChild(hint);
+        }
+        section.appendChild(groupEl);
+      });
+      trackExplorerList.appendChild(section);
+    }
     if (!trackExplorerList.children.length) {
       const empty = document.createElement("p");
       empty.className = "track-explorer-empty";
-      empty.textContent = "No tracks yet. Use “+ Track”.";
+      empty.textContent = "No tracks yet. Use “+ Sample Group” or add a voice group track.";
       trackExplorerList.appendChild(empty);
     }
   }
@@ -499,9 +661,47 @@ export function createTrackPanels(deps) {
     state.config.trackStepCounts = next;
     applyConfig();
     buildStepGrid();
+    renderTrackExplorer();
     renderTrackInspector();
     syncJson();
     setStatus(`${instanceLabel(hit)} grid set to ${nextValue} steps/bar`);
+  }
+
+  function trackIdsForBase(baseId) {
+    return state.gridTrackIds.filter((id) => baseTrackId(id) === baseId);
+  }
+
+  function setTrackVoiceCount(track, value) {
+    if (!track) return;
+    const max = track.instanceable ? 32 : 1;
+    const min = track.removable ? 0 : 1;
+    let target = Math.round(Number(value));
+    if (!Number.isFinite(target)) target = trackIdsForBase(track.id).length;
+    target = Math.max(min, Math.min(max, target));
+
+    let ids = trackIdsForBase(track.id);
+    if (!track.instanceable) {
+      if (target === 0 && ids.length) removeGridTrack(track.id);
+      if (target === 1 && !ids.length) addGridTrack(track.id);
+      renderTrackExplorer();
+      return;
+    }
+
+    if (target > 0 && !state.gridTrackIds.includes(track.id)) {
+      addGridTrack(track.id);
+    }
+    ids = trackIdsForBase(track.id);
+    while (ids.length < target) {
+      addTrackInstance(track.id, { select: false });
+      ids = trackIdsForBase(track.id);
+    }
+    while (ids.length > target) {
+      const removableId = [...ids].reverse().find((id) => id !== track.id) || (track.removable ? track.id : null);
+      if (!removableId) break;
+      removeGridTrack(removableId);
+      ids = trackIdsForBase(track.id);
+    }
+    renderTrackExplorer();
   }
 
   /**
@@ -719,11 +919,32 @@ export function createTrackPanels(deps) {
   /** Apply a custom sample to a track (config + engine) and refresh UI. */
   async function assignSampleToTrack(hit, sample) {
     if (!hit) return;
+    const source = sample.source || (sample.handleId ? SAMPLE_SOURCE_BROWSER_HANDLE : sample.url ? SAMPLE_SOURCE_BUNDLED : SAMPLE_SOURCE_LOCAL_FILE);
+    const stored = {
+      source,
+      label: sample.label,
+      root: sample.root ?? null,
+      path: sample.path ?? null,
+      handleId: sample.handleId ?? null,
+      relinkRequired: Boolean(sample.relinkRequired)
+    };
+    if (sample.url && source === SAMPLE_SOURCE_BUNDLED) stored.url = sample.url;
     state.config.trackSamples = {
       ...(state.config.trackSamples || {}),
-      [hit]: { url: sample.url, label: sample.label, root: sample.root ?? null, path: sample.path ?? null }
+      [hit]: stored
     };
-    const ok = await getEngine().setTrackSample(hit, sample.url);
+    const resolved = !sample.url && sample.handleId
+      ? await resolveFileHandleSample(sample.handleId, { requestPermission: false }).catch(() => null)
+      : null;
+    const playbackUrl = sample.url || resolved?.url || null;
+    if (!playbackUrl) {
+      renderTrackInspector();
+      renderTrackExplorer();
+      syncJson();
+      setStatus(`${sample.label} will need relinking after reload`);
+      return;
+    }
+    const ok = await getEngine().setTrackSample(hit, playbackUrl);
     if (!ok) {
       setStatus(`Could not load ${sample.label}`);
       return;
@@ -757,9 +978,15 @@ export function createTrackPanels(deps) {
     (engine.customSampleUrls ? Array.from(engine.customSampleUrls.keys()) : [])
       .filter((hit) => !samples[hit])
       .forEach((hit) => engine.clearTrackSample(hit));
-    await Promise.all(Object.entries(samples).map(([hit, entry]) =>
-      engine.setTrackSample(hit, entry.url).catch(() => false)
-    ));
+    await Promise.all(Object.entries(samples).map(async ([hit, entry]) => {
+      let url = entry.url && !entry.url.startsWith("blob:") ? entry.url : null;
+      if (!url && entry.handleId) {
+        const resolved = await resolveFileHandleSample(entry.handleId, { requestPermission: false }).catch(() => null);
+        url = resolved?.url || null;
+      }
+      if (!url) return false;
+      return engine.setTrackSample(hit, url).catch(() => false);
+    }));
   }
 
   return {
@@ -771,6 +998,9 @@ export function createTrackPanels(deps) {
     removeGridTrack,
     instanceLabel,
     renderAddTrackDialog,
+    openAddTrackDialog,
+    addSampleGroupFromPrompt,
+    activeSampleGroupId: () => activeSampleGroupId,
     // explorer + inspector
     renderTrackExplorer,
     renderTrackInspector,

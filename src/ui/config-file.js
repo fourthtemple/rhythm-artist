@@ -1,7 +1,7 @@
 // Config file load/save controller.
 //
-// Owns the "Save File" (download / project-save) and "Load File" flows plus
-// the auto-load of the saved game rhythm. `applyLoadedConfig` is the shared
+// Owns the "Save File" (browser-cache save) and "Load File" flows plus the
+// auto-load of the default project. `applyLoadedConfig` is the shared
 // "swap in a fresh config and rebuild every dependent view" routine.
 //
 // It reaches the rest of the editor through the shared `state` object and a set
@@ -12,13 +12,15 @@
  * @param {object} deps
  * @param {object} deps.state Shared editor state (mutated in place).
  * @param {(msg: string) => void} deps.setStatus Status-line setter.
- * @param {boolean} deps.runningFromFile
  * @param {string} deps.SAVED_RHYTHM_URL
  * @param {(config?: any) => any} deps.normalizeEditorConfig
+ * @param {() => any} [deps.getSerializableConfig]
  * @param {() => void} deps.syncJson
  * @param {() => void} deps.applyConfig
  * @param {(content: string, name: string) => void} deps.downloadJsonFile
- * @param {(name: string, content: string) => Promise<any>} deps.saveGameAsset
+ * @param {(project: any, name?: string) => Promise<any>} deps.saveDefaultProject
+ * @param {() => Promise<any>} deps.loadDefaultProject
+ * @param {() => Promise<any>} deps.getLocalServerMode
  * @param {(url: string) => Promise<any>} deps.fetchSavedConfig
  * @param {() => void} deps.reconcileGridTracks
  * @param {() => void} deps.resetSelectedPanel
@@ -28,6 +30,7 @@
  * @param {() => void} deps.renderTrackExplorer
  * @param {() => void} deps.renderTrackInspector
  * @param {() => (void|Promise<any>)} deps.reapplyTrackSamples
+ * @param {(tracks: any[]) => (void|Promise<any>)} [deps.restoreLoopTracks]
  * @param {() => void} deps.updateTwoBarClipboardButtons
  * @param {() => void} deps.updateTrackClipboardButtons
  */
@@ -35,13 +38,15 @@ export function createConfigFile(deps) {
   const {
     state,
     setStatus,
-    runningFromFile,
     SAVED_RHYTHM_URL,
     normalizeEditorConfig,
+    getSerializableConfig = () => state.config,
     syncJson,
     applyConfig,
     downloadJsonFile,
-    saveGameAsset,
+    saveDefaultProject,
+    loadDefaultProject,
+    getLocalServerMode,
     fetchSavedConfig,
     reconcileGridTracks,
     resetSelectedPanel,
@@ -51,12 +56,23 @@ export function createConfigFile(deps) {
     renderTrackExplorer,
     renderTrackInspector,
     reapplyTrackSamples,
+    restoreLoopTracks = () => {},
     updateTwoBarClipboardButtons,
     updateTrackClipboardButtons
   } = deps;
 
-  function downloadConfigFallback(content) {
-    downloadJsonFile(content, "kamorebi-rhythm-sequence.json");
+  function wrapProject(config, name = "Default Project") {
+    return {
+      schema: "rhythm-artist/project@1",
+      name,
+      savedAt: new Date().toISOString(),
+      samplePacks: ["default-pack"],
+      config
+    };
+  }
+
+  function downloadConfigFallback(project) {
+    downloadJsonFile(JSON.stringify(project, null, 2) + "\n", "rhythm-artist-default-project.json");
   }
 
   function configFromPayload(payload) {
@@ -66,23 +82,16 @@ export function createConfigFile(deps) {
   }
 
   async function downloadConfig() {
-    state.config = normalizeEditorConfig(state.config);
+    state.config = normalizeEditorConfig(getSerializableConfig());
     syncJson();
-    const content = JSON.stringify(state.config, null, 2) + "\n";
-    if (runningFromFile) {
-      downloadConfigFallback(content);
-      setStatus("Downloaded rhythm JSON; open the localhost version to save into the game");
-      return;
-    }
+    const project = wrapProject(state.config);
     try {
-      const result = await saveGameAsset("rhythm-sequence.json", content);
-      setStatus(result.backupPath
-        ? `Saved game rhythm and backup ${result.backupPath}`
-        : "Saved game rhythm");
+      await saveDefaultProject(project, project.name);
+      setStatus("Saved Default Project in this browser");
     } catch (error) {
-      console.error("Rhythm save failed", error);
-      downloadConfigFallback(content);
-      setStatus("Project save failed; downloaded JSON fallback");
+      console.error("Browser project save failed", error);
+      downloadConfigFallback(project);
+      setStatus("Browser save failed; downloaded JSON fallback");
     }
   }
 
@@ -100,6 +109,7 @@ export function createConfigFile(deps) {
     buildLoopTabs();
     buildBarTabs();
     buildStepGrid();
+    void restoreLoopTracks(state.config.loopTracks || []);
     renderTrackExplorer();
     renderTrackInspector();
     void reapplyTrackSamples();
@@ -114,17 +124,31 @@ export function createConfigFile(deps) {
   }
 
   async function loadSavedRhythmConfig() {
-    if (runningFromFile) return;
+    const localMode = await getLocalServerMode();
+    let browserError = null;
+    if (!localMode.preferBundledDefault) {
+      try {
+        const payload = await loadDefaultProject();
+        if (!payload) throw new Error("default-project-cache-empty");
+        applyLoadedConfig(configFromPayload(payload));
+        setStatus(payload?.name ? `Loaded ${payload.name}` : "Loaded browser default project");
+        return;
+      } catch (error) {
+        browserError = error;
+      }
+    }
     try {
       const payload = await fetchSavedConfig(SAVED_RHYTHM_URL);
       applyLoadedConfig(configFromPayload(payload));
-      setStatus(payload?.name ? `Loaded ${payload.name}` : "Loaded default project");
-    } catch (error) {
+      setStatus(localMode.preferBundledDefault
+        ? "Loaded bundled Default Project for editing"
+        : payload?.name ? `Loaded ${payload.name}` : "Loaded bundled default project");
+    } catch (fallbackError) {
       try {
         applyLoadedConfig(await fetchSavedConfig("./assets/game/rhythm-sequence.json"));
         setStatus("Loaded legacy game rhythm");
-      } catch (fallbackError) {
-        console.warn("Using sequencer defaults", error, fallbackError);
+      } catch (legacyError) {
+        console.warn("Using sequencer defaults", browserError, fallbackError, legacyError);
       }
     }
   }

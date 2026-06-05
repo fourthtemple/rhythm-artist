@@ -1,3 +1,9 @@
+import {
+  localFileReference,
+  storeFileHandle,
+  supportsPersistentFileHandles
+} from "./sample-assets.js";
+
 /**
  * Event-wiring controller.
  *
@@ -26,8 +32,8 @@ export function createEventWiring(deps) {
     copyTwoBars, pasteTwoBars, fillRestWithTwoBars,
     copyTrackTwoBars, pasteTrackTwoBars, fillRestWithTrackTwoBars,
     setLoopCount,
-    // segments / time-sig
-    applySegments, applyTimeSig,
+    // segments / arrangement / time-sig
+    applySegments, applyVerseBarCount, applySectionBarCount, applyMetronomeEnabled, applyMetronomeVolume, applyTimeSig,
     // previews
     previewDuckSound, previewHitSound, previewGameSound,
     // mix
@@ -44,11 +50,13 @@ export function createEventWiring(deps) {
     resetSelectedPanel,
     normalizeEditorConfig, clone, DEFAULT_RHYTHM_CONFIG,
     // track panels
-    renderAddTrackDialog,
+    renderAddTrackDialog, openAddTrackDialog, addSampleGroupFromPrompt,
     openGlobalMixView, closeGlobalMixView, resetMasterEq,
     projectManager,
     sampleBrowser,
     closeContextMenu,
+    undoEdit,
+    redoEdit,
     // loop panel
     loopPanel,
     // note inspector DOM refs
@@ -85,6 +93,15 @@ export function createEventWiring(deps) {
       }
     }
     if (transportBpmNumber) wireNumberControl(transportBpmNumber, applyTransportBpm);
+    const metronomeEnabled = /** @type {HTMLInputElement|null} */ ($("#metronome-enabled"));
+    if (metronomeEnabled) {
+      metronomeEnabled.checked = Boolean(state.config.metronomeEnabled);
+      metronomeEnabled.addEventListener("change", () => applyMetronomeEnabled(metronomeEnabled.checked));
+    }
+    const metronomeVolume = /** @type {HTMLInputElement|null} */ ($("#metronome-volume"));
+    if (metronomeVolume) {
+      wireNumberControl(metronomeVolume, applyMetronomeVolume);
+    }
   }
 
   // ── Arrangement ───────────────────────────────────────────────────────────
@@ -100,20 +117,97 @@ export function createEventWiring(deps) {
     if (segmentsInput) {
       segmentsInput.addEventListener("input", () => applySegments(Number(segmentsInput.value)));
     }
-    const cameraModeInput = $("#camera-mode");
-    if (cameraModeInput) {
-      cameraModeInput.checked = Boolean(state.cameraMode);
-      cameraModeInput.addEventListener("change", () => {
-        state.cameraMode = cameraModeInput.checked;
-        if (!state.cameraMode) $("#step-grid").scrollLeft = 0;
-        buildStepGrid();
-        status.textContent = state.cameraMode ? "Camera mode on" : "Camera mode off";
-      });
+    const verseBarsInput = /** @type {HTMLInputElement|null} */ ($("#verse-bars"));
+    if (verseBarsInput) {
+      wireNumberControl(verseBarsInput, applyVerseBarCount);
+    }
+    const sectionBarsInput = /** @type {HTMLInputElement|null} */ ($("#section-bars"));
+    if (sectionBarsInput) {
+      wireNumberControl(sectionBarsInput, applySectionBarCount);
     }
     const timeSigSelect = $("#time-sig-select");
+    const timeSigNumerator = $("#time-sig-numerator");
+    const timeSigDenominator = $("#time-sig-denominator");
+    const timeSigMenuButton = $("#time-sig-menu-button");
+    const timeSigMenu = $("#time-sig-menu");
+    const timeSigMenuOptions = timeSigMenu ? [...timeSigMenu.querySelectorAll("[data-time-sig]")] : [];
+    const syncTimeSigInputs = (value = state.config.timeSignature || state.timeSig || "4/4") => {
+      const [numerator = "4", denominator = "4"] = String(value).split("/");
+      if (timeSigNumerator) timeSigNumerator.value = numerator;
+      if (timeSigDenominator) timeSigDenominator.value = denominator;
+      if (timeSigSelect) {
+        timeSigSelect.value = [...timeSigSelect.options].some((option) => option.value === value) ? value : "";
+      }
+      timeSigMenuOptions.forEach((option) => {
+        const active = option.dataset.timeSig === value;
+        option.classList.toggle("is-active", active);
+        option.setAttribute("aria-selected", active ? "true" : "false");
+      });
+    };
+    const closeTimeSigMenu = () => {
+      if (!timeSigMenu || !timeSigMenuButton) return;
+      timeSigMenu.hidden = true;
+      timeSigMenuButton.setAttribute("aria-expanded", "false");
+    };
+    const openTimeSigMenu = () => {
+      if (!timeSigMenu || !timeSigMenuButton) return;
+      syncTimeSigInputs(state.config.timeSignature || state.timeSig || "4/4");
+      timeSigMenu.hidden = false;
+      timeSigMenuButton.setAttribute("aria-expanded", "true");
+    };
+    const toggleTimeSigMenu = () => {
+      if (!timeSigMenu) return;
+      if (timeSigMenu.hidden) openTimeSigMenu();
+      else closeTimeSigMenu();
+    };
+    const applyTimeSigInputs = () => {
+      const numerator = timeSigNumerator?.value || "4";
+      const denominator = timeSigDenominator?.value || "4";
+      applyTimeSig(`${numerator}/${denominator}`);
+      syncTimeSigInputs(state.config.timeSignature || state.timeSig || "4/4");
+      closeTimeSigMenu();
+    };
     if (timeSigSelect) {
-      timeSigSelect.addEventListener("change", () => applyTimeSig(timeSigSelect.value));
+      timeSigSelect.value = state.config.timeSignature || state.timeSig || "4/4";
+      syncTimeSigInputs(timeSigSelect.value);
+      timeSigSelect.addEventListener("change", () => {
+        applyTimeSig(timeSigSelect.value);
+        syncTimeSigInputs(timeSigSelect.value);
+      });
     }
+    if (timeSigMenuButton && timeSigMenu) {
+      timeSigMenuButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toggleTimeSigMenu();
+      });
+      timeSigMenuOptions.forEach((option) => {
+        option.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const next = option.dataset.timeSig || "4/4";
+          applyTimeSig(next);
+          syncTimeSigInputs(next);
+          closeTimeSigMenu();
+        });
+      });
+      document.addEventListener("mousedown", (event) => {
+        if (timeSigMenu.hidden) return;
+        const target = event.target;
+        if (timeSigMenu.contains(target) || timeSigMenuButton.contains(target)) return;
+        closeTimeSigMenu();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeTimeSigMenu();
+      });
+    }
+    [timeSigNumerator, timeSigDenominator].forEach((input) => {
+      if (!input) return;
+      input.addEventListener("change", applyTimeSigInputs);
+      input.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        applyTimeSigInputs();
+      });
+    });
   }
 
   // ── Sound previews ────────────────────────────────────────────────────────
@@ -163,7 +257,29 @@ export function createEventWiring(deps) {
   // Legacy Save File / Load File / Copy JSON / Reset buttons have been removed
   // from the HTML. Project save/load is now handled by the project manager overlay.
   function wireFileEvents() {
-    // nothing to wire here anymore
+    const saveProjectButton = $("#save-project");
+    saveProjectButton?.addEventListener("click", () => {
+      void projectManager.saveCurrentProject?.();
+    });
+    document.addEventListener("keydown", (event) => {
+      const key = String(event.key || "").toLowerCase();
+      if (!(event.metaKey || event.ctrlKey)) return;
+      if (event.target instanceof Element && event.target.closest("#project-manager-overlay")) return;
+      if (key === "s") {
+        event.preventDefault();
+        void projectManager.saveCurrentProject?.();
+        return;
+      }
+      if (key === "z") {
+        const didUndo = event.shiftKey ? redoEdit?.() : undoEdit?.();
+        if (didUndo) event.preventDefault();
+        return;
+      }
+      if (key === "y") {
+        const didRedo = redoEdit?.();
+        if (didRedo) event.preventDefault();
+      }
+    });
   }
 
   // ── Right-side track panels ───────────────────────────────────────────────
@@ -176,12 +292,10 @@ export function createEventWiring(deps) {
       /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.close();
     });
     $("#add-track-btn-panel")?.addEventListener("click", () => {
-      renderAddTrackDialog();
-      /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.showModal();
+      openAddTrackDialog?.();
     });
     $("#manage-groups-btn")?.addEventListener("click", () => {
-      renderAddTrackDialog();
-      /** @type {HTMLDialogElement} */ ($("#add-track-dialog"))?.showModal();
+      addSampleGroupFromPrompt?.();
     });
     $("#open-global-mix")?.addEventListener("click", openGlobalMixView);
     $("#open-project-manager")?.addEventListener("click", () => projectManager.open());
@@ -237,98 +351,151 @@ export function createEventWiring(deps) {
 
   function wireLoopTrackEvents() {
     let _analysisCtx = null;
+    let selectedLoopFile = null;
+    let selectedLoopSource = null;
+
+    function setLoopFileSelected(fileInput, file) {
+      selectedLoopFile = file;
+      fileInput.title = file.name;
+      fileInput.dataset.selectedFileName = file.name;
+      fileInput.setCustomValidity("");
+    }
+
+    function resetLoopFileState() {
+      const fileInput = /** @type {HTMLInputElement} */ ($("#loop-track-file"));
+      selectedLoopFile = null;
+      selectedLoopSource = null;
+      if (fileInput) {
+        fileInput.value = "";
+        fileInput.title = "";
+        delete fileInput.dataset.selectedFileName;
+        fileInput.setCustomValidity("");
+      }
+    }
+
+    async function analyzeLoopFile(file) {
+      const analysisEl = $("#loop-track-analysis");
+      const analyzingEl = $("#loop-track-analyzing");
+      const nameInput = /** @type {HTMLInputElement} */ ($("#loop-track-name"));
+      const barsInput = /** @type {HTMLInputElement} */ ($("#loop-track-bars"));
+      const bpmEl = $("#loop-detected-bpm");
+      const durEl = $("#loop-detected-dur");
+      const barsEl = $("#loop-detected-bars");
+      const noteEl = $("#loop-detected-note");
+
+      if (!file) return;
+
+      if (nameInput && !nameInput.value) {
+        nameInput.value = file.name.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      }
+
+      if (analysisEl) analysisEl.hidden = true;
+      if (analyzingEl) analyzingEl.hidden = false;
+
+      let result = null;
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        result = await detectBpm(arrayBuffer);
+      } catch (err) {
+        console.warn("[loop] BPM analysis failed:", err);
+      } finally {
+        if (analyzingEl) analyzingEl.hidden = true;
+      }
+      if (!result) return;
+
+      const { bpm, duration } = result;
+      const projectBpm = Number(state?.config?.patterns?.jazz?.bpm || 120);
+      const secPerBeat = 60 / bpm;
+      const secPerBar = secPerBeat * 4;
+      const rawBars = duration / secPerBar;
+      const roundedBars = Math.max(1, Math.round(rawBars));
+      const projectSecPerBar = (60 / projectBpm) * 4;
+      const barsAtProject = Math.max(1, Math.round(duration / projectSecPerBar));
+
+      if (bpmEl) bpmEl.textContent = `${bpm} BPM`;
+      if (durEl) durEl.textContent = `${duration.toFixed(2)}s`;
+      if (barsEl) barsEl.textContent = String(barsAtProject);
+      if (noteEl) {
+        const diff = Math.abs(bpm - projectBpm);
+        noteEl.textContent = diff < 2
+          ? "✓ matches project tempo"
+          : `(file is ${bpm} BPM, project is ${projectBpm} BPM)`;
+      }
+      if (barsInput) barsInput.value = String(barsAtProject);
+      if (analysisEl) analysisEl.hidden = false;
+    }
 
     // Auto-analyse when a file is picked
     const fileInput = /** @type {HTMLInputElement} */ ($("#loop-track-file"));
     if (fileInput) {
+      if (supportsPersistentFileHandles()) {
+        fileInput.required = false;
+        fileInput.addEventListener("click", async (event) => {
+          event.preventDefault();
+          try {
+            const [handle] = await window.showOpenFilePicker({
+              multiple: false,
+              types: [{
+                description: "Audio files",
+                accept: { "audio/*": [".wav", ".mp3", ".ogg", ".flac", ".aif", ".aiff", ".m4a"] }
+              }]
+            });
+            if (!handle) return;
+            const file = await handle.getFile();
+            setLoopFileSelected(fileInput, file);
+            selectedLoopSource = await storeFileHandle(handle, { label: file.name, path: file.name });
+            await analyzeLoopFile(file);
+          } catch {
+            // User cancelled or the browser denied access.
+          }
+        });
+      }
       fileInput.addEventListener("change", async () => {
         const file = fileInput.files?.[0];
-        const analysisEl = $("#loop-track-analysis");
-        const analyzingEl = $("#loop-track-analyzing");
-        const nameInput = /** @type {HTMLInputElement} */ ($("#loop-track-name"));
-        const barsInput = /** @type {HTMLInputElement} */ ($("#loop-track-bars"));
-        const bpmEl = $("#loop-detected-bpm");
-        const durEl = $("#loop-detected-dur");
-        const barsEl = $("#loop-detected-bars");
-        const noteEl = $("#loop-detected-note");
-
         if (!file) return;
-
-        // Pre-fill name from filename (strip extension)
-        if (nameInput && !nameInput.value) {
-          nameInput.value = file.name.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-        }
-
-        if (analysisEl) analysisEl.hidden = true;
-        if (analyzingEl) analyzingEl.hidden = false;
-
-        let result = null;
-        try {
-          const arrayBuffer = await file.arrayBuffer();
-          result = await detectBpm(arrayBuffer);
-        } catch (err) {
-          console.warn("[loop] BPM analysis failed:", err);
-        } finally {
-          if (analyzingEl) analyzingEl.hidden = true;
-        }
-        if (!result) return;
-
-        const { bpm, duration } = result;
-        // Get project BPM from the BPM slider/input
-        const projectBpm = Number(state?.config?.patterns?.jazz?.bpm || 120);
-        // Bars = duration / (60 / bpm * beatsPerBar)
-        const secPerBeat = 60 / bpm;
-        const secPerBar = secPerBeat * 4;
-        const rawBars = duration / secPerBar;
-        const roundedBars = Math.max(1, Math.round(rawBars));
-
-        // How many bars would this be at the project BPM?
-        const projectSecPerBar = (60 / projectBpm) * 4;
-        const barsAtProject = Math.max(1, Math.round(duration / projectSecPerBar));
-
-        if (bpmEl) bpmEl.textContent = `${bpm} BPM`;
-        if (durEl) durEl.textContent = `${duration.toFixed(2)}s`;
-        if (barsEl) barsEl.textContent = String(barsAtProject);
-        if (noteEl) {
-          const diff = Math.abs(bpm - projectBpm);
-          noteEl.textContent = diff < 2
-            ? "✓ matches project tempo"
-            : `(file is ${bpm} BPM, project is ${projectBpm} BPM)`;
-        }
-        if (barsInput) barsInput.value = String(barsAtProject);
-        if (analysisEl) analysisEl.hidden = false;
+        setLoopFileSelected(fileInput, file);
+        selectedLoopSource = localFileReference({ label: file.name, path: file.name });
+        await analyzeLoopFile(file);
       });
     }
 
-    $("#add-loop-track-btn")?.addEventListener("click", () => {
-      const dialog = /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"));
-      if (dialog) dialog.showModal();
-    });
     $("#add-loop-cancel")?.addEventListener("click", () => {
+      resetLoopFileState();
       /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"))?.close();
     });
     $("#add-loop-form")?.addEventListener("submit", (event) => {
       event.preventDefault();
-      const nameInput = /** @type {HTMLInputElement} */ ($("#loop-track-name"));
-      const fileInput2 = /** @type {HTMLInputElement} */ ($("#loop-track-file"));
-      const barsInput = /** @type {HTMLInputElement} */ ($("#loop-track-bars"));
-      const beatmatchInput = /** @type {HTMLInputElement} */ ($("#loop-track-beatmatch"));
-      const name = nameInput?.value.trim();
-      const file = fileInput2?.files?.[0];
-      const barsInFile = Math.max(1, Math.round(Number(barsInput?.value) || 4));
-      const beatmatch = beatmatchInput?.checked ?? false;
-      if (!name || !file) return;
-      void loopPanel.addTrack(name, file, barsInFile, beatmatch);
-      /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"))?.close();
-      // Reset for next use
-      if (nameInput) nameInput.value = "";
-      if (fileInput2) fileInput2.value = "";
-      if (barsInput) barsInput.value = "4";
-      if (beatmatchInput) beatmatchInput.checked = false;
-      const analysisEl = $("#loop-track-analysis");
-      const analyzingEl = $("#loop-track-analyzing");
-      if (analysisEl) analysisEl.hidden = true;
-      if (analyzingEl) analyzingEl.hidden = true;
+      void (async () => {
+        const nameInput = /** @type {HTMLInputElement} */ ($("#loop-track-name"));
+        const fileInput2 = /** @type {HTMLInputElement} */ ($("#loop-track-file"));
+        const barsInput = /** @type {HTMLInputElement} */ ($("#loop-track-bars"));
+        const beatmatchInput = /** @type {HTMLInputElement} */ ($("#loop-track-beatmatch"));
+        const name = nameInput?.value.trim();
+        const file = selectedLoopFile || fileInput2?.files?.[0];
+        const barsInFile = Math.max(1, Math.round(Number(barsInput?.value) || 4));
+        const beatmatch = beatmatchInput?.checked ?? false;
+        if (!file) {
+          if (fileInput2) {
+            fileInput2.setCustomValidity("Please select a file");
+            fileInput2.reportValidity();
+          }
+          status.textContent = "Choose an audio file for the sample track";
+          return;
+        }
+        if (!name) return;
+        const source = selectedLoopSource || localFileReference({ label: file.name, path: file.name });
+        void loopPanel.addTrack(name, file, barsInFile, beatmatch, source);
+        /** @type {HTMLDialogElement} */ ($("#add-loop-dialog"))?.close();
+        // Reset for next use
+        if (nameInput) nameInput.value = "";
+        resetLoopFileState();
+        if (barsInput) barsInput.value = "4";
+        if (beatmatchInput) beatmatchInput.checked = false;
+        const analysisEl = $("#loop-track-analysis");
+        const analyzingEl = $("#loop-track-analyzing");
+        if (analysisEl) analysisEl.hidden = true;
+        if (analyzingEl) analyzingEl.hidden = true;
+      })();
     });
     $("#loop-region-start")?.addEventListener("change", () => loopPanel.updateSelectedRegion());
     $("#loop-region-len")?.addEventListener("change", () => loopPanel.updateSelectedRegion());

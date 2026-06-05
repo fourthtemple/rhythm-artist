@@ -10,13 +10,21 @@ import {
   pixelsToBars,
   regionPercent
 } from "./loop-region.js";
+import {
+  localFileReference,
+  resolveFileHandleSample,
+  resolveSampleFromFolder,
+  SAMPLE_SOURCE_BROWSER_HANDLE,
+  storeFileHandle,
+  supportsPersistentFileHandles
+} from "./sample-assets.js";
 
 /**
  * @typedef {{ bar: number, len: number, gain: number, chops: number, sliceSensitivity: number, mode: "cut"|"stretch", srcStartFrac?: number, srcEndFrac?: number, sampleOffset?: number }} LoopRegion
  * `srcStartFrac`/`srcEndFrac` describe which slice of the audio buffer this
  * region plays/draws, as fractions (0–1) of the buffer. Default 0–1 (whole file).
  * `sampleOffset` is the legacy seconds-based start point, migrated on read.
- * @typedef {{ id: string, name: string, barsInFile: number, audioUrl: string, buffer: AudioBuffer|null, regions: LoopRegion[], selected: boolean }} LoopTrack
+ * @typedef {{ id: string, name: string, barsInFile: number, audioUrl: string|null, source?: string, url?: string|null, root?: string|null, path?: string|null, fileName?: string|null, handleId?: string|null, relinkRequired?: boolean, missing?: boolean, buffer: AudioBuffer|null, regions: LoopRegion[], selected: boolean }} LoopTrack
  */
 
 const LANE_H = 64; // px – must match CSS .sample-lane height
@@ -216,11 +224,12 @@ function getWaveformOverview(buffer) {
 /**
  * Render a mono overview waveform for `buffer` into `canvas`.
  * `startFrac`/`endFrac` select WHICH slice of the buffer to read (fractions
- * 0–1). The selected slice is always painted across the FULL width of the
- * canvas, so each region block shows exactly the audio it plays, edge-to-edge.
+ * 0–1). By default the selected slice is painted across the full canvas;
+ * target pixel bounds can limit drawing when a cut-mode region contains
+ * visible silence after the source audio ends.
  * @param {boolean} [clear=true] Whether to clearRect first (false = paint on top).
  */
-function drawWaveform(canvas, buffer, startFrac = 0, endFrac = 1, color = "#5b9bd5", clear = true) {
+function drawWaveform(canvas, buffer, startFrac = 0, endFrac = 1, color = "#5b9bd5", clear = true, targetStartPx = 0, targetEndPx = canvas.width) {
   const ctx = canvas.getContext("2d");
   const W = canvas.width;
   const H = canvas.height;
@@ -234,16 +243,20 @@ function drawWaveform(canvas, buffer, startFrac = 0, endFrac = 1, color = "#5b9b
   const overview = getWaveformOverview(buffer);
   const { mins, maxes, bucketCount } = overview;
   const firstBucket = s * bucketCount;
-  const bucketsPerPx = (span * bucketCount) / Math.max(1, W);
+  const targetStart = clampNumber(Math.floor(finiteNumber(targetStartPx, 0)), 0, W);
+  const targetEnd = clampNumber(Math.ceil(finiteNumber(targetEndPx, W)), targetStart, W);
+  const targetW = Math.max(1, targetEnd - targetStart);
+  const bucketsPerPx = (span * bucketCount) / targetW;
 
   ctx.fillStyle = color + "33";
   ctx.strokeStyle = color;
   ctx.lineWidth = 1;
 
-  // Draw filled waveform (min/max per pixel column), painted across full width
-  for (let px = 0; px < W; px++) {
-    const b0 = Math.max(0, Math.min(bucketCount - 1, Math.floor(firstBucket + px * bucketsPerPx)));
-    const b1 = Math.max(b0 + 1, Math.min(bucketCount, Math.ceil(firstBucket + (px + 1) * bucketsPerPx)));
+  // Draw filled waveform (min/max per pixel column) inside the requested target range.
+  for (let px = targetStart; px < targetEnd; px++) {
+    const localPx = px - targetStart;
+    const b0 = Math.max(0, Math.min(bucketCount - 1, Math.floor(firstBucket + localPx * bucketsPerPx)));
+    const b1 = Math.max(b0 + 1, Math.min(bucketCount, Math.ceil(firstBucket + (localPx + 1) * bucketsPerPx)));
     let min = 0, max = 0;
     for (let bucket = b0; bucket < b1; bucket += 1) {
       const lo = mins[bucket];
@@ -259,8 +272,8 @@ function drawWaveform(canvas, buffer, startFrac = 0, endFrac = 1, color = "#5b9b
   // Centre line
   ctx.strokeStyle = color + "44";
   ctx.beginPath();
-  ctx.moveTo(0, H / 2);
-  ctx.lineTo(W, H / 2);
+  ctx.moveTo(targetStart, H / 2);
+  ctx.lineTo(targetEnd, H / 2);
   ctx.stroke();
 }
 
@@ -317,6 +330,11 @@ export function createLoopTrackPanel({
   getEngine = () => null,
   getQuantize = () => ({ enabled: false, value: 0.25 }),
   getCameraMode = () => false,
+  getSampleGroups = () => [],
+  getSelectedPatternTrack = () => null,
+  assignSampleToTrack = null,
+  trackName = (id) => id,
+  onSoloChange = null,
   onNavigate = null   // (bar: number) => void  — called to scroll view to a bar
 }) {
   /** @type {LoopTrack[]} */
@@ -339,6 +357,8 @@ export function createLoopTrackPanel({
   let _playheadScheduledTime = 0;
   /** rAF handle for playhead animation */
   let _playheadRaf = null;
+  /** @type {{ trackId: string, trackName: string, len: number, regions: LoopRegion[] } | null} */
+  let waveEditClipboard = null;
 
   // ── Undo / Redo history ────────────────────────────────────────────────────
   // We snapshot every track's region list (deep-ish copy of plain region
@@ -352,6 +372,193 @@ export function createLoopTrackPanel({
 
   function snapshot() {
     return loopTracks.map((t) => ({ id: t.id, regions: t.regions.map((r) => ({ ...r })) }));
+  }
+
+  function serializeRegion(region) {
+    return {
+      bar: finiteNumber(region.bar, 0),
+      len: Math.max(MIN_REGION_BARS, finiteNumber(region.len, 1)),
+      gain: clampNumber(finiteNumber(region.gain, 1), 0, 2),
+      chops: Math.max(1, Math.min(32, Math.round(finiteNumber(region.chops, 4)))),
+      sliceSensitivity: clampNumber(finiteNumber(region.sliceSensitivity, 0.12), 0.01, 0.5),
+      mode: region.mode === "stretch" ? "stretch" : "cut",
+      ...(Number.isFinite(Number(region.srcStartFrac)) ? { srcStartFrac: clampNumber(Number(region.srcStartFrac), 0, 1) } : {}),
+      ...(Number.isFinite(Number(region.srcEndFrac)) ? { srcEndFrac: clampNumber(Number(region.srcEndFrac), 0, 1) } : {})
+    };
+  }
+
+  function wavBlobFromBufferSlice(buffer, startFrac = 0, endFrac = 1) {
+    const channels = Math.max(1, buffer.numberOfChannels || 1);
+    const sampleRate = buffer.sampleRate || 44100;
+    const startFrame = Math.max(0, Math.min(buffer.length - 1, Math.floor(clampNumber(startFrac, 0, 1) * buffer.length)));
+    const endFrame = Math.max(startFrame + 1, Math.min(buffer.length, Math.ceil(clampNumber(endFrac, 0, 1) * buffer.length)));
+    const frameCount = Math.max(1, endFrame - startFrame);
+    const bytesPerSample = 2;
+    const blockAlign = channels * bytesPerSample;
+    const dataSize = frameCount * blockAlign;
+    const bytes = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(bytes);
+    const writeString = (offset, value) => {
+      for (let index = 0; index < value.length; index += 1) {
+        view.setUint8(offset + index, value.charCodeAt(index));
+      }
+    };
+    writeString(0, "RIFF");
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(8, "WAVE");
+    writeString(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, channels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, 16, true);
+    writeString(36, "data");
+    view.setUint32(40, dataSize, true);
+    let offset = 44;
+    for (let frame = startFrame; frame < endFrame; frame += 1) {
+      for (let channel = 0; channel < channels; channel += 1) {
+        const data = buffer.getChannelData(Math.min(channel, buffer.numberOfChannels - 1));
+        const sample = Math.max(-1, Math.min(1, data[frame] || 0));
+        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+        offset += bytesPerSample;
+      }
+    }
+    return new Blob([bytes], { type: "audio/wav" });
+  }
+
+  function copiedRegionsForSelection(track, startBar, len) {
+    const bufferDuration = track.buffer ? track.buffer.duration : 0;
+    const clipped = cutRegionsToSelection(track, startBar, len, bufferDuration, currentBarDurationSec());
+    if (clipped.length) {
+      return clipped.map((region) => ({
+        ...serializeRegion(region),
+        bar: Math.max(0, finiteNumber(region.bar, startBar) - startBar)
+      }));
+    }
+    const fileBars = Math.max(MIN_REGION_BARS, finiteNumber(track.barsInFile, totalSongBars()));
+    const srcStartFrac = clampNumber(startBar / fileBars, 0, 1);
+    const srcEndFrac = Math.max(srcStartFrac + 1e-9, clampNumber((startBar + len) / fileBars, 0, 1));
+    return [{
+      bar: 0,
+      len: Math.max(MIN_REGION_BARS, len),
+      gain: 1,
+      chops: 4,
+      sliceSensitivity: 0.12,
+      mode: "cut",
+      srcStartFrac,
+      srcEndFrac
+    }];
+  }
+
+  function copyWaveEditSelection(track, startBar, len) {
+    const regions = copiedRegionsForSelection(track, startBar, len);
+    waveEditClipboard = {
+      trackId: track.id,
+      trackName: track.name,
+      len: Math.max(MIN_REGION_BARS, len),
+      regions: regions.map((region) => ({ ...region }))
+    };
+    setStatus(`Copied wave edit from "${track.name}"`);
+  }
+
+  function pasteWaveEdit(track, startBar, targetLen = null) {
+    if (!waveEditClipboard?.regions?.length) {
+      setStatus("Copy a wave edit selection first");
+      return;
+    }
+    if (waveEditClipboard.trackId !== track.id) {
+      setStatus(`Paste this wave edit back onto "${waveEditClipboard.trackName}"`);
+      return;
+    }
+    const sourceLen = Math.max(MIN_REGION_BARS, finiteNumber(waveEditClipboard.len, 1));
+    const scale = targetLen && targetLen > MIN_REGION_BARS ? Math.max(MIN_REGION_BARS, targetLen) / sourceLen : 1;
+    const inserted = [];
+    pushHistory();
+    waveEditClipboard.regions.forEach((region) => {
+      const pasted = {
+        ...serializeRegion(region),
+        bar: startBar + finiteNumber(region.bar, 0) * scale,
+        len: Math.max(MIN_REGION_BARS, finiteNumber(region.len, sourceLen) * scale)
+      };
+      inserted.push(pasted);
+      track.regions.push(pasted);
+    });
+    track.regions.sort((a, b) => a.bar - b.bar);
+    const pastedIndex = track.regions.indexOf(inserted[0]);
+    selectRegion(track.id, pastedIndex >= 0 ? pastedIndex : track.regions.length - 1);
+    renderLane(track.id);
+    setStatus(`Pasted wave edit into "${track.name}"`);
+  }
+
+  async function assignRegionSliceToSelectedDrumTrack(track, region, labelStartBar = 0) {
+    const hit = getSelectedPatternTrack?.();
+    if (!hit) {
+      setStatus("Select a drum track first");
+      return;
+    }
+    if (!assignSampleToTrack) {
+      setStatus("Drum-track paste is not available");
+      return;
+    }
+    if (!track.buffer) {
+      setStatus(`"${track.name}" needs audio before pasting to a drum track`);
+      return;
+    }
+    const srcStartFrac = Number.isFinite(Number(region?.srcStartFrac)) ? Number(region.srcStartFrac) : 0;
+    const srcEndFrac = Number.isFinite(Number(region?.srcEndFrac)) ? Number(region.srcEndFrac) : 1;
+    const safeEndFrac = Math.max(srcStartFrac + 1e-9, Math.min(1, srcEndFrac));
+    const blob = wavBlobFromBufferSlice(track.buffer, srcStartFrac, safeEndFrac);
+    const label = `${track.name} edit ${formatBars(labelStartBar + 1)}`;
+    const url = URL.createObjectURL(blob);
+    await assignSampleToTrack(hit, {
+      ...localFileReference({ label, path: `${label}.wav` }),
+      label,
+      url
+    });
+    setStatus(`Pasted wave edit to ${trackName(hit)}`);
+  }
+
+  async function pasteSelectionToDrumTrack(track, startBar, len) {
+    const regions = copiedRegionsForSelection(track, startBar, len);
+    const slice = regions[0];
+    await assignRegionSliceToSelectedDrumTrack(track, slice, startBar);
+  }
+
+  async function pasteClipboardToDrumTrack() {
+    if (!waveEditClipboard?.regions?.length) {
+      setStatus("Copy a wave edit selection first");
+      return;
+    }
+    const track = trackById(waveEditClipboard.trackId);
+    if (!track) {
+      setStatus("Copied wave edit source is gone");
+      return;
+    }
+    await assignRegionSliceToSelectedDrumTrack(track, waveEditClipboard.regions[0], 0);
+  }
+
+  function serializeTracks() {
+    return loopTracks
+      .filter((track) => {
+        const hasBundledUrl = typeof track.url === "string" && track.url && !track.url.startsWith("blob:");
+        return hasBundledUrl || track.handleId || track.relinkRequired;
+      })
+      .map((track) => ({
+        id: track.id,
+        name: track.name,
+        barsInFile: Math.max(1, Math.round(finiteNumber(track.barsInFile, 1))),
+        source: track.source || (track.handleId ? "browser-file-handle" : track.url ? "bundled-sample" : "local-file"),
+        ...(typeof track.url === "string" && track.url && !track.url.startsWith("blob:") ? { url: track.url } : {}),
+        root: track.root ?? null,
+        path: track.path ?? null,
+        fileName: track.fileName ?? null,
+        sampleGroupId: track.sampleGroupId ?? null,
+        handleId: track.handleId ?? null,
+        relinkRequired: Boolean(track.relinkRequired),
+        regions: track.regions.map(serializeRegion)
+      }));
   }
   function pushHistory() {
     undoStack.push(snapshot());
@@ -369,16 +576,18 @@ export function createLoopTrackPanel({
     loopTracks.forEach((t) => renderLane(t.id));
   }
   function undo() {
-    if (!undoStack.length) { setStatus("Nothing to undo"); return; }
+    if (!undoStack.length) return false;
     redoStack.push(snapshot());
     applySnapshot(undoStack.pop());
     setStatus("Undo");
+    return true;
   }
   function redo() {
-    if (!redoStack.length) { setStatus("Nothing to redo"); return; }
+    if (!redoStack.length) return false;
     undoStack.push(snapshot());
     applySnapshot(redoStack.pop());
     setStatus("Redo");
+    return true;
   }
 
   // Global keyboard shortcuts: ⌘/Ctrl-Z undo, ⌘/Ctrl-Shift-Z or Ctrl-Y redo.
@@ -387,11 +596,10 @@ export function createLoopTrackPanel({
     if (!mod) return;
     const key = e.key.toLowerCase();
     if (key === "z") {
-      e.preventDefault();
-      if (e.shiftKey) redo(); else undo();
+      const handled = e.shiftKey ? redo() : undo();
+      if (handled) e.preventDefault();
     } else if (key === "y") {
-      e.preventDefault();
-      redo();
+      if (redo()) e.preventDefault();
     }
   });
 
@@ -621,6 +829,18 @@ export function createLoopTrackPanel({
     const bpm = getEngine()?.currentBpm?.() ?? 120;
     return (60 / Math.max(1, finiteNumber(bpm, 120))) * 4;
   };
+  function renderLoopSoloButtons() {
+    stepGrid.querySelectorAll("[data-loop-solo-track]").forEach((button) => {
+      button.classList.toggle("is-active", soloTracks.has(button.dataset.loopSoloTrack));
+    });
+  }
+  function syncLoopSoloState() {
+    renderLoopSoloButtons();
+    onSoloChange?.({
+      active: soloTracks.size > 0,
+      tracks: Array.from(soloTracks)
+    });
+  }
 
   // Snap a bar position to the current quantize grid (or return as-is if off).
   function snapQ(bar) {
@@ -634,6 +854,17 @@ export function createLoopTrackPanel({
     if (!q.enabled || !(q.value > 0)) return frac;
     const rawBar = frac * visibleBars;
     return Math.round(rawBar / q.value) * q.value / visibleBars;
+  }
+
+  function barFromLaneClientX(lane, clientX, visibleBars = totalBars()) {
+    const maxBar = Math.max(0, totalSongBars() - MIN_REGION_BARS);
+    const rect = lane?.getBoundingClientRect?.();
+    if (!rect || rect.width <= 0) {
+      return clampNumber(snapQ(getActiveBar()), 0, maxBar);
+    }
+    const clickFrac = clampNumber((clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+    const rawBar = clampNumber(getActiveBar() + clickFrac * Math.max(1, visibleBars), 0, maxBar);
+    return clampNumber(snapQ(rawBar), 0, maxBar);
   }
 
   function applyRegionElementWindowStyle(el, region, visibleBars) {
@@ -676,11 +907,246 @@ export function createLoopTrackPanel({
     return nextStart - currentStart;
   }
 
-  async function addTrack(name, file, barsInFile, beatmatch = false) {
-    const audioUrl = URL.createObjectURL(file);
-    const id = `loop_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  async function decodeTrackAudio(track, file = null) {
+    const arrayBuffer = file
+      ? await file.arrayBuffer()
+      : await fetch(track.audioUrl, { cache: "no-store" }).then((response) => {
+        if (!response.ok) throw new Error(`audio-fetch-${response.status}`);
+        return response.arrayBuffer();
+      });
+    track._rawBytes = new Uint8Array(arrayBuffer.slice(0));
+    track.buffer = await decodeAudio(new Uint8Array(track._rawBytes));
+  }
+
+  function pickRelinkAudioFileFallback() {
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".wav,.mp3,.ogg,.flac,.aif,.aiff,.m4a,audio/*";
+      input.style.position = "fixed";
+      input.style.left = "-9999px";
+      input.style.top = "0";
+
+      const cleanup = () => {
+        window.removeEventListener("focus", onFocus);
+        input.remove();
+      };
+      const finish = (file = null) => {
+        cleanup();
+        resolve(file
+          ? { file, source: localFileReference({ label: file.name, path: file.name }) }
+          : null);
+      };
+      const onFocus = () => {
+        setTimeout(() => {
+          if (!input.files?.length) finish(null);
+        }, 200);
+      };
+
+      input.addEventListener("change", () => finish(input.files?.[0] || null), { once: true });
+      input.addEventListener("cancel", () => finish(null), { once: true });
+      document.body.appendChild(input);
+      setTimeout(() => window.addEventListener("focus", onFocus, { once: true }), 0);
+      input.click();
+    });
+  }
+
+  function expectedTrackFileName(track) {
+    return track.fileName || String(track.path || "").split(/[\\/]/).pop() || track.name || "sample";
+  }
+
+  function isExpectedSampleFolderMiss(error) {
+    return [
+      "sample-folder-not-found",
+      "sample-folder-permission-required",
+      "sample-file-not-found-in-folder"
+    ].includes(error?.message);
+  }
+
+  function isExpectedSavedHandleMiss(error) {
+    return error?.message === "sample-handle-not-found" || isExpectedSampleFolderMiss(error);
+  }
+
+  async function reopenSavedTrackFile(track) {
+    if (!track.handleId) return null;
+    const expectedName = expectedTrackFileName(track);
+    setStatus(`Looking for "${expectedName}"`);
+    try {
+      const resolved = await resolveFileHandleSample(track.handleId, { requestPermission: true });
+      return {
+        file: resolved.file,
+        audioUrl: resolved.url,
+        source: {
+          source: SAMPLE_SOURCE_BROWSER_HANDLE,
+          handleId: track.handleId,
+          label: resolved.label || expectedName,
+          path: resolved.path || track.path || expectedName,
+          relinkRequired: false
+        }
+      };
+    } catch (error) {
+      console.warn("Saved loop sample handle unavailable", track.name, error);
+      return null;
+    }
+  }
+
+  async function reopenSampleFolderFile(track, { requestPermission = true, resolveFile = null, logFailure = true } = {}) {
+    const expectedName = expectedTrackFileName(track);
+    setStatus(`Looking for "${expectedName}" in sample folder`);
+    if (resolveFile) {
+      try {
+        const picked = await resolveFile({
+          path: track.path || track.fileName || expectedName,
+          fileName: expectedName
+        });
+        if (picked?.file) return picked;
+      } catch (error) {
+        if (logFailure && !isExpectedSampleFolderMiss(error)) {
+          console.warn("Selected sample folder could not relink loop sample", track.name, error);
+        }
+      }
+    }
+    try {
+      const resolved = await resolveSampleFromFolder({
+        path: track.path || track.fileName || expectedName,
+        fileName: expectedName,
+        requestPermission,
+        promptForFolder: false
+      });
+      const source = await storeFileHandle(resolved.handle, {
+        label: resolved.label || expectedName,
+        path: resolved.path || expectedName
+      });
+      return {
+        file: resolved.file,
+        audioUrl: resolved.url,
+        source: {
+          ...source,
+          label: resolved.label || source.label,
+          path: resolved.path || source.path
+        }
+      };
+    } catch (error) {
+      if (logFailure && !isExpectedSampleFolderMiss(error)) {
+        console.warn("Configured sample folder could not relink loop sample", track.name, error);
+      }
+      return null;
+    }
+  }
+
+  async function pickRelinkAudioFile() {
+    if (supportsPersistentFileHandles()) {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          multiple: false,
+          types: [{
+            description: "Audio files",
+            accept: { "audio/*": [".wav", ".mp3", ".ogg", ".flac", ".aif", ".aiff", ".m4a"] }
+          }]
+        });
+        if (!handle) return null;
+        const file = await handle.getFile();
+        return {
+          file,
+          source: await storeFileHandle(handle, { label: file.name, path: file.name })
+        };
+      } catch {
+        return null;
+      }
+    }
+    return pickRelinkAudioFileFallback();
+  }
+
+  async function relinkTrack(trackId) {
+    const track = trackById(trackId);
+    if (!track) return;
+    const picked = await reopenSavedTrackFile(track)
+      || await reopenSampleFolderFile(track)
+      || await pickRelinkAudioFile();
+    if (!picked?.file) {
+      setStatus(`Relink canceled for "${track.name}"`);
+      return;
+    }
+    await applyRelinkedTrackFile(track, picked);
+  }
+
+  async function applyRelinkedTrackFile(track, picked) {
+    const { file, source } = picked;
+    if (track.audioUrl?.startsWith?.("blob:")) URL.revokeObjectURL(track.audioUrl);
+    const audioUrl = picked.audioUrl || URL.createObjectURL(file);
+    Object.assign(track, {
+      audioUrl,
+      source: source.source || (source.handleId ? "browser-file-handle" : "local-file"),
+      url: source.url && !source.url.startsWith?.("blob:") ? source.url : null,
+      root: source.root ?? null,
+      path: source.path ?? file.name,
+      fileName: file.name,
+      handleId: source.handleId ?? null,
+      relinkRequired: Boolean(source.relinkRequired),
+      missing: false,
+      buffer: null,
+      _rawBytes: null
+    });
+    renderTrackList();
+    rebuildStepGridRows();
+    setStatus(`Relinking "${track.name}"`);
+
+    try {
+      await decodeTrackAudio(track, file);
+      attachScheduler();
+      renderLane(track.id);
+      setStatus(`Relinked "${track.name}"`);
+    } catch (error) {
+      console.warn("Loop track relink decode failed", track.name, error);
+      track.missing = true;
+      track.buffer = null;
+      renderTrackList();
+      renderLane(track.id);
+      setStatus(`Could not relink "${track.name}"`);
+    }
+  }
+
+  async function relinkMissingFromSampleFolder(options = {}) {
+    const missingTracks = loopTracks.filter((track) => track.missing);
+    if (!missingTracks.length) return 0;
+    let relinked = 0;
+    for (const track of missingTracks) {
+      const picked = await reopenSampleFolderFile(track, options);
+      if (!picked?.file) continue;
+      await applyRelinkedTrackFile(track, picked);
+      if (!track.missing) relinked += 1;
+    }
+    if (relinked) {
+      setStatus(`Relinked ${relinked} sample track${relinked === 1 ? "" : "s"} from sample folder`);
+    } else {
+      setStatus("No missing sample tracks found in sample folder");
+    }
+    return relinked;
+  }
+
+  async function addTrack(name, file, barsInFile, beatmatch = false, source = {}) {
+    const audioUrl = source.url || URL.createObjectURL(file);
+    const id = source.id || `loop_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     /** @type {LoopTrack} */
-    const track = { id, name, barsInFile, audioUrl, buffer: null, regions: [], selected: false, _rawBytes: null };
+    const track = {
+      id,
+      name,
+      barsInFile,
+      audioUrl,
+      source: source.source || (source.handleId ? "browser-file-handle" : source.url ? "bundled-sample" : "local-file"),
+      url: source.url && !source.url.startsWith?.("blob:") ? source.url : null,
+      root: source.root ?? null,
+      path: source.path ?? null,
+      fileName: source.fileName ?? file?.name ?? null,
+      sampleGroupId: source.sampleGroupId ?? null,
+      handleId: source.handleId ?? null,
+      relinkRequired: Boolean(source.relinkRequired),
+      missing: false,
+      buffer: null,
+      regions: [],
+      selected: false,
+      _rawBytes: null
+    };
     loopTracks.push(track);
 
     // Seed a default region that covers the song lane. The detected/source bar
@@ -713,11 +1179,7 @@ export function createLoopTrackPanel({
     // Decode audio, then repaint the already-visible lane as soon as the
     // waveform buffer is ready.
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      // Keep a Uint8Array copy BEFORE decodeAudio() because decodeAudioData()
-      // transfers (detaches) the underlying ArrayBuffer making it unusable.
-      track._rawBytes = new Uint8Array(arrayBuffer.slice(0));
-      track.buffer = await decodeAudio(new Uint8Array(track._rawBytes));
+      await decodeTrackAudio(track, file);
       console.log("[loop] addTrack decoded", name, "dur=", track.buffer?.duration?.toFixed(2), "engineCtx?", !!getEngine()?.context);
       renderLane(track.id);
       setStatus(`Added loop track "${name}"`);
@@ -727,18 +1189,105 @@ export function createLoopTrackPanel({
     }
   }
 
+  async function restoreTracks(savedTracks = []) {
+    const tracks = Array.isArray(savedTracks) ? savedTracks : [];
+    loopTracks.forEach((track) => {
+      if (track.audioUrl?.startsWith?.("blob:")) URL.revokeObjectURL(track.audioUrl);
+    });
+    loopTracks.length = 0;
+    undoStack.length = 0;
+    redoStack.length = 0;
+    selectedLoopRegion = null;
+    activeRegionEdit = null;
+    const hadLoopSolo = soloTracks.size > 0;
+    soloTracks.clear();
+    if (hadLoopSolo) syncLoopSoloState();
+    activeSources.forEach((source) => {
+      try { source.stop(); } catch {}
+    });
+    activeSources.clear();
+
+    tracks.forEach((saved, index) => {
+      if (!saved || typeof saved !== "object") return;
+      const hasUrl = typeof saved.url === "string" && saved.url && !saved.url.startsWith("blob:");
+      const hasHandle = typeof saved.handleId === "string" && saved.handleId;
+      const relinkRequired = Boolean(saved.relinkRequired || saved.source === "local-file");
+      if (!hasUrl && !hasHandle && !relinkRequired) return;
+      const id = typeof saved.id === "string" && saved.id ? saved.id : `loop_saved_${index}_${Date.now()}`;
+      const regions = Array.isArray(saved.regions) && saved.regions.length
+        ? saved.regions.map(serializeRegion)
+        : [{ bar: 0, len: totalSongBars(), gain: 1, chops: 4, sliceSensitivity: 0.12, mode: "cut" }];
+      loopTracks.push({
+        id,
+        name: typeof saved.name === "string" && saved.name ? saved.name : saved.url?.split("/").pop() || "Loop",
+        barsInFile: Math.max(1, Math.round(finiteNumber(saved.barsInFile, 1))),
+        source: typeof saved.source === "string" ? saved.source : hasHandle ? "browser-file-handle" : hasUrl ? "bundled-sample" : "local-file",
+        audioUrl: hasUrl ? saved.url : null,
+        url: hasUrl ? saved.url : null,
+        root: typeof saved.root === "string" ? saved.root : null,
+        path: typeof saved.path === "string" ? saved.path : null,
+        fileName: typeof saved.fileName === "string" ? saved.fileName : null,
+        sampleGroupId: typeof saved.sampleGroupId === "string" ? saved.sampleGroupId : null,
+        handleId: hasHandle ? saved.handleId : null,
+        relinkRequired,
+        missing: !hasUrl && !hasHandle,
+        buffer: null,
+        regions,
+        selected: false,
+        _rawBytes: null
+      });
+    });
+
+    renderTrackList();
+    rebuildStepGridRows();
+    attachScheduler();
+    await Promise.all(loopTracks.map(async (track) => {
+      const restoreFromSampleFolder = async () => {
+        const picked = await reopenSampleFolderFile(track, { requestPermission: false, logFailure: false });
+        if (!picked?.file) return false;
+        await applyRelinkedTrackFile(track, picked);
+        return !track.missing;
+      };
+      try {
+        if (!track.audioUrl && track.handleId) {
+          const resolved = await resolveFileHandleSample(track.handleId, { requestPermission: false });
+          track.audioUrl = resolved.url;
+          track.missing = false;
+        }
+        if (!track.audioUrl) {
+          if (await restoreFromSampleFolder()) return;
+          track.missing = true;
+          renderLane(track.id);
+          return;
+        }
+        await decodeTrackAudio(track);
+        renderLane(track.id);
+      } catch (error) {
+        if (await restoreFromSampleFolder()) return;
+        track.missing = true;
+        renderLane(track.id);
+        if (!isExpectedSavedHandleMiss(error)) {
+          console.warn("Loop track restore decode failed", track.name, error);
+        }
+      }
+    }));
+    if (loopTracks.length) setStatus(`Restored ${loopTracks.length} sample track${loopTracks.length === 1 ? "" : "s"}`);
+  }
+
   function removeTrack(id) {
     const idx = loopTracks.findIndex((t) => t.id === id);
     if (idx < 0) return;
     const track = loopTracks[idx];
-    URL.revokeObjectURL(track.audioUrl);
+    if (track.audioUrl?.startsWith?.("blob:")) URL.revokeObjectURL(track.audioUrl);
     loopTracks.splice(idx, 1);
+    const hadLoopSolo = soloTracks.delete(id);
     if (selectedLoopRegion?.trackId === id) {
       selectedLoopRegion = null;
       syncRegionPanel();
     }
     renderTrackList();
     rebuildStepGridRows();
+    if (hadLoopSolo) syncLoopSoloState();
     setStatus(`Removed loop track "${track.name}"`);
   }
 
@@ -836,7 +1385,7 @@ export function createLoopTrackPanel({
 
   // ── Region context menu ───────────────────────────────────────────────────
 
-  function showRegionContextMenu(x, y, track, region, regionIdx, totalBarsCount) {
+  function showRegionContextMenu(x, y, track, region, regionIdx, totalBarsCount, clickBar = finiteNumber(region.bar, 0)) {
     // Remove any existing menu
     document.querySelector(".loop-region-ctx-menu")?.remove();
 
@@ -851,7 +1400,7 @@ export function createLoopTrackPanel({
       btn.disabled = disabled;
       btn.addEventListener("click", () => {
         menu.remove();
-        action();
+        void action();
       });
       menu.appendChild(btn);
     };
@@ -895,6 +1444,29 @@ export function createLoopTrackPanel({
 
     sep();
 
+    addItem("⧉  Copy region as wave edit", () => {
+      waveEditClipboard = {
+        trackId: track.id,
+        trackName: track.name,
+        len: Math.max(MIN_REGION_BARS, finiteNumber(region.len, 1)),
+        regions: [{
+          ...serializeRegion(region),
+          bar: 0
+        }]
+      };
+      setStatus(`Copied region from "${track.name}"`);
+    });
+
+    addItem("⇣  Paste copied wave edit here", () => {
+      pasteWaveEdit(track, clickBar);
+    }, !waveEditClipboard || waveEditClipboard.trackId !== track.id);
+
+    addItem(`▣  Paste region to selected drum track${getSelectedPatternTrack?.() ? ` (${trackName(getSelectedPatternTrack())})` : ""}`, () => {
+      void pasteSelectionToDrumTrack(track, finiteNumber(region.bar, 0), Math.max(MIN_REGION_BARS, finiteNumber(region.len, 1)));
+    });
+
+    sep();
+
     // ── Delete
     addItem("🗑  Delete region", () => {
       pushHistory();
@@ -929,11 +1501,13 @@ export function createLoopTrackPanel({
     popup.className = "context-menu marquee-action-popup";
     popup.style.cssText = `left:${x}px;top:${y}px`;
 
-    const addItem = (label, action) => {
+    const addItem = (label, action, disabled = false) => {
       const btn = document.createElement("button");
       btn.className = "context-menu-item";
       btn.textContent = label;
+      btn.disabled = disabled;
       btn.addEventListener("click", () => {
+        if (disabled) return;
         // Read selection FIRST, before removing the marquee from the DOM
         const sel = getSelection();
         popup.remove();
@@ -941,7 +1515,7 @@ export function createLoopTrackPanel({
         marqueeEl.parentElement?.querySelectorAll?.(".lane-marquee")?.forEach?.(el => el.remove());
         document.querySelectorAll(".lane-marquee").forEach(el => el.remove());
         const { startBar, len, leftFrac, rightFrac } = sel;
-        action(startBar, len, leftFrac, rightFrac);
+        void action(startBar, len, leftFrac, rightFrac);
       });
       popup.appendChild(btn);
     };
@@ -949,11 +1523,29 @@ export function createLoopTrackPanel({
 
     // ── Loop: create a region spanning the selection
     addItem("↺  Loop selection", (startBar, len) => {
-      const songBars = totalSongBars();
-      const clampedLen = Math.max(MIN_REGION_BARS, Math.min(len, songBars - startBar));
-      track.regions.push({ bar: startBar, len: clampedLen, gain: 1, chops: 4, sliceSensitivity: 0.12, mode: "cut" });
+      const regions = copiedRegionsForSelection(track, startBar, len);
+      const region = {
+        ...serializeRegion(regions[0] || {}),
+        bar: startBar,
+        len: Math.max(MIN_REGION_BARS, len),
+        mode: regions[0]?.mode === "stretch" ? "stretch" : "cut"
+      };
+      pushHistory();
+      track.regions.push(region);
       selectRegion(track.id, track.regions.length - 1);
       renderLane(track.id);
+    });
+
+    addItem("⧉  Copy selection", (startBar, len) => {
+      copyWaveEditSelection(track, startBar, len);
+    });
+
+    addItem("⇣  Paste copied wave edit into selection", (startBar, len) => {
+      pasteWaveEdit(track, startBar, len);
+    }, !waveEditClipboard || waveEditClipboard.trackId !== track.id);
+
+    addItem(`▣  Paste selection to selected drum track${getSelectedPatternTrack?.() ? ` (${trackName(getSelectedPatternTrack())})` : ""}`, async (startBar, len) => {
+      await pasteSelectionToDrumTrack(track, startBar, len);
     });
 
     sep();
@@ -985,6 +1577,7 @@ export function createLoopTrackPanel({
       const clampedLen = Math.max(MIN_REGION_BARS, endBar - startBar);
 
       let applied = false;
+      pushHistory();
       track.regions.forEach((region) => {
         const rEnd = region.bar + region.len;
         // Any region that overlaps the selection gets its mode flipped to stretch
@@ -1147,14 +1740,14 @@ export function createLoopTrackPanel({
     const list = $("#loop-track-list");
     if (!list) return;
     list.innerHTML = "";
-    loopTracks.forEach((track) => {
+    const renderTrackItem = (track) => {
       const item = document.createElement("div");
-      item.className = `loop-track-item${track.selected ? " is-selected" : ""}`;
+      item.className = `loop-track-item${track.selected ? " is-selected" : ""}${track.missing ? " loop-track-item--missing" : ""}`;
       item.dataset.loopTrackId = track.id;
       const name = document.createElement("span");
       name.className = "loop-track-item-name";
-      name.textContent = `${track.name} (${track.barsInFile} bars)`;
-      name.title = `${track.name} (${track.barsInFile} bars)`;
+      name.textContent = `${track.name} (${track.barsInFile} bars)${track.missing ? " · relink" : ""}`;
+      name.title = track.missing ? `Double-click to relink "${track.name}"` : `${track.name} (${track.barsInFile} bars)`;
       const removeBtn = document.createElement("button");
       removeBtn.type = "button";
       removeBtn.className = "loop-track-item-remove";
@@ -1167,8 +1760,33 @@ export function createLoopTrackPanel({
         track.selected = true;
         renderTrackList();
       });
+      item.addEventListener("dblclick", (event) => {
+        if (!track.missing) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void relinkTrack(track.id);
+      });
       list.appendChild(item);
-    });
+    };
+    const groups = Array.isArray(getSampleGroups()) ? getSampleGroups() : [];
+    const knownGroupIds = new Set(groups.map((group) => group.id));
+    const groupedTracks = groups
+      .map((group) => ({
+        group,
+        tracks: loopTracks.filter((track) => track.sampleGroupId === group.id)
+      }))
+      .filter((entry) => entry.tracks.length > 0);
+    const ungroupedTracks = loopTracks.filter((track) => !track.sampleGroupId || !knownGroupIds.has(track.sampleGroupId));
+    [...groupedTracks, ...(ungroupedTracks.length ? [{ group: { label: "Ungrouped" }, tracks: ungroupedTracks }] : [])]
+      .forEach(({ group, tracks }) => {
+        if (groups.length || groupedTracks.length) {
+          const heading = document.createElement("div");
+          heading.className = "loop-track-group-heading";
+          heading.textContent = group.label;
+          list.appendChild(heading);
+        }
+        tracks.forEach(renderTrackItem);
+      });
   }
 
   /** Paint a single lane's region blocks + waveform snippets on top of the ruler canvas. */
@@ -1209,8 +1827,11 @@ export function createLoopTrackPanel({
 
       const el = document.createElement("div");
       el.className = "sample-region";
+      if (track.missing) el.classList.add("sample-region--missing");
       if (region.revealPreview) el.classList.add("sample-region--reveal-preview");
-      el.title = `${track.name} · ${region.mode === "stretch" ? "stretched" : "cut"} · bar ${formatBars(region.bar + 1)} · ${formatBars(region.len)} bars`;
+      el.title = track.missing
+        ? `Double-click to relink "${track.name}"`
+        : `${track.name} · ${region.mode === "stretch" ? "stretched" : "cut"} · bar ${formatBars(region.bar + 1)} · ${formatBars(region.len)} bars`;
       el.style.left  = `${(visStart / bars) * 100}%`;
       el.style.width = `${(visLen   / bars) * 100}%`;
 
@@ -1238,7 +1859,15 @@ export function createLoopTrackPanel({
         const elW = Math.max(4, Math.round(rectW || el.offsetWidth || predictedW));
         waveCanvas.width = elW;
         waveCanvas.height = LANE_H;
-        if (track.buffer) {
+        if (track.missing) {
+          drawWaveform(waveCanvas, null);
+          const ctx = waveCanvas.getContext("2d");
+          if (ctx) {
+            ctx.fillStyle = "rgba(150, 168, 190, 0.8)";
+            ctx.font = "11px ui-sans-serif, system-ui";
+            ctx.fillText("relink sample", 10, 36);
+          }
+        } else if (track.buffer) {
           const liveWinStart = getActiveBar();
           const liveWinEnd = liveWinStart + totalBars();
           const liveRegionStart = finiteNumber(region.bar, 0);
@@ -1249,15 +1878,44 @@ export function createLoopTrackPanel({
             drawWaveform(waveCanvas, null);
             return;
           }
+          const mode = region.mode === "stretch" ? "stretch" : "cut";
+          const barDurationSec = currentBarDurationSec();
+          let drawStartBar = liveSliceStart;
+          let drawEndBar = liveSliceEnd;
+          let targetStartPx = 0;
+          let targetEndPx = elW;
+          if (mode === "cut" && track.buffer.duration > 0 && barDurationSec > 0) {
+            const { startFrac, endFrac } = regionSrc(region, track.buffer.duration);
+            const sourceBars = ((endFrac - startFrac) * track.buffer.duration) / barDurationSec;
+            const naturalAudioEndBar = Math.min(liveRegionEnd, liveRegionStart + sourceBars);
+            drawStartBar = Math.max(liveSliceStart, liveRegionStart);
+            drawEndBar = Math.min(liveSliceEnd, naturalAudioEndBar);
+            if (drawEndBar <= drawStartBar + BAR_EPSILON) {
+              drawWaveform(waveCanvas, null);
+              return;
+            }
+            const visibleSpanBars = Math.max(MIN_REGION_BARS, liveSliceEnd - liveSliceStart);
+            targetStartPx = ((drawStartBar - liveSliceStart) / visibleSpanBars) * elW;
+            targetEndPx = ((drawEndBar - liveSliceStart) / visibleSpanBars) * elW;
+          }
           const { startFrac: visStartFrac, endFrac: visEndFrac } = regionSourceSlice(
             region,
             track,
-            liveSliceStart,
-            liveSliceEnd,
+            drawStartBar,
+            drawEndBar,
             track.buffer.duration,
-            currentBarDurationSec()
+            barDurationSec
           );
-          drawWaveform(waveCanvas, track.buffer, visStartFrac, visEndFrac, region.revealPreview ? "#6ec7ff" : "#5b9bd5");
+          drawWaveform(
+            waveCanvas,
+            track.buffer,
+            visStartFrac,
+            visEndFrac,
+            region.revealPreview ? "#6ec7ff" : "#5b9bd5",
+            true,
+            targetStartPx,
+            targetEndPx
+          );
         }
       };
       requestAnimationFrame(() => {
@@ -1293,7 +1951,13 @@ export function createLoopTrackPanel({
         e.preventDefault();
         e.stopPropagation();
         selectRegion(trackId, regionIdx);
-        showRegionContextMenu(e.clientX, e.clientY, track, region, regionIdx, bars);
+        showRegionContextMenu(e.clientX, e.clientY, track, region, regionIdx, bars, barFromLaneClientX(lane, e.clientX, bars));
+      });
+      el.addEventListener("dblclick", (e) => {
+        if (!track.missing) return;
+        e.preventDefault();
+        e.stopPropagation();
+        void relinkTrack(track.id);
       });
 
       // ── Interactive edit mode (Move / Scale / Reveal) ──────────────────────
@@ -1575,22 +2239,21 @@ export function createLoopTrackPanel({
           soloTracks.add(track.id);
         }
         const active = soloTracks.has(track.id);
-        soloBtn.classList.toggle("is-active", active);
-        // When any loop track is soloed, silence all engine (drum) tracks by
-        // injecting a sentinel solo list that matches no real track.
-        // When no loop solo is active, restore normal drum audibility.
-        const engine = getEngine();
-        if (engine) {
-          if (soloTracks.size > 0) {
-            // "__loop_solo_mute__" matches no drum track → all drums silent
-            engine.config.soloTracks = ["__loop_solo_mute__"];
-          } else {
-            engine.config.soloTracks = [];
-          }
-        }
+        syncLoopSoloState();
+        setStatus(active ? `Solo loop: ${track.name}` : "Loop solo cleared");
       });
 
-      label.append(span, soloBtn);
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "loop-track-item-remove sample-lane-remove";
+      removeBtn.textContent = "×";
+      removeBtn.title = `Remove "${track.name}"`;
+      removeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        removeTrack(track.id);
+      });
+
+      label.append(span, soloBtn, removeBtn);
 
       // The timeline lane (spans all step columns)
       const lane = document.createElement("div");
@@ -1700,6 +2363,7 @@ export function createLoopTrackPanel({
         const sep = () => { const d = document.createElement("div"); d.className = "context-menu-sep"; menu.appendChild(d); };
 
         const bars = totalBars();
+        const clickBar = barFromLaneClientX(lane, e.clientX, bars);
 
         addItem("⬛  Select entire loop", () => {
           makePersistentMarquee(lane, track, 0, 1);
@@ -1708,14 +2372,31 @@ export function createLoopTrackPanel({
         sep();
 
         addItem("↺  Loop entire file here", () => {
-          track.regions.push({ bar: 0, len: totalSongBars(), gain: 1, chops: 4, sliceSensitivity: 0.12, mode: "cut" });
+          pushHistory();
+          track.regions.push({
+            bar: clickBar,
+            len: Math.max(MIN_REGION_BARS, totalSongBars() - clickBar),
+            gain: 1,
+            chops: 4,
+            sliceSensitivity: 0.12,
+            mode: "cut"
+          });
           selectRegion(track.id, track.regions.length - 1);
           renderLane(track.id);
         });
 
+        addItem("⇣  Paste copied wave edit here", () => {
+          pasteWaveEdit(track, clickBar);
+        }, !waveEditClipboard || waveEditClipboard.trackId !== track.id);
+
+        addItem(`▣  Paste copied wave edit to selected drum track${getSelectedPatternTrack?.() ? ` (${trackName(getSelectedPatternTrack())})` : ""}`, () => {
+          void pasteClipboardToDrumTrack();
+        }, !waveEditClipboard);
+
         if (track.regions.length > 0) {
           sep();
           addItem("🗑  Delete all regions", () => {
+            pushHistory();
             track.regions.length = 0;
             selectedLoopRegion = null;
             syncRegionPanel();
@@ -1758,6 +2439,10 @@ export function createLoopTrackPanel({
     undo,
     redo,
     soloTracks,
+    hasActiveSolo: () => soloTracks.size > 0,
+    serializeTracks,
+    restoreTracks,
+    relinkMissingFromSampleFolder,
     _tracks: loopTracks
   };
 }

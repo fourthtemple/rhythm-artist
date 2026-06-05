@@ -1,3 +1,5 @@
+import { syncRotaryControls } from "./rotary-control.js";
+
 /**
  * Config-sync controller.
  *
@@ -43,9 +45,35 @@ export function createConfigSync(deps) {
           ? Number(value) >= 0.5 ? "on" : "off"
           : `${Number(value).toFixed(input.step.includes(".") ? 2 : 0)}${suffix}`;
     });
+    syncRotaryControls(document);
     const bpm = state.config.patterns.jazz.bpm;
     const transportBpmNumber = $("#transport-bpm-number");
     if (transportBpmNumber) transportBpmNumber.value = String(bpm);
+    const metronomeEnabled = $("#metronome-enabled");
+    if (metronomeEnabled) metronomeEnabled.checked = state.config.metronomeEnabled >= 0.5;
+    const metronomeVolume = $("#metronome-volume");
+    if (metronomeVolume) metronomeVolume.value = String(state.config.metronomeVolume);
+    const verseBars = $("#verse-bars");
+    if (verseBars) verseBars.value = String(state.config.barsPerVerse);
+    const sectionBars = $("#section-bars");
+    if (sectionBars) sectionBars.value = String(state.config.barsPerSection);
+    state.timeSig = state.config.timeSignature || state.timeSig || "4/4";
+    const timeSigSelect = $("#time-sig-select");
+    if (timeSigSelect) {
+      timeSigSelect.value = [...timeSigSelect.options].some((option) => option.value === state.timeSig) ? state.timeSig : "";
+    }
+    const [timeSigNumerator, timeSigDenominator] = String(state.timeSig).split("/");
+    const timeSigNumeratorInput = $("#time-sig-numerator");
+    if (timeSigNumeratorInput) timeSigNumeratorInput.value = timeSigNumerator || "4";
+    const timeSigDenominatorInput = $("#time-sig-denominator");
+    if (timeSigDenominatorInput) timeSigDenominatorInput.value = timeSigDenominator || "4";
+    document.querySelectorAll("[data-time-sig]").forEach((option) => {
+      const active = option.dataset.timeSig === state.timeSig;
+      option.classList.toggle("is-active", active);
+      option.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    const segments = $("#segments-count");
+    if (segments) segments.max = String(state.config.barsPerVerse);
     const intensity = $("#intensity");
     const intensityValue = $("#intensity-value");
     if (intensity) intensity.value = String(state.intensity);
@@ -62,7 +90,7 @@ export function createConfigSync(deps) {
     syncSliders();
     syncJson();
     if (state.selected) {
-      syncSelectedPitchDisplay(state.activeBar);
+      syncSelectedPitchDisplay();
       syncSelectedBusSendDisplay();
     }
   }

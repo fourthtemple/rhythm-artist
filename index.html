@@ -16,39 +16,67 @@
 
       <section class="transport" aria-label="Transport">
         <div class="transport-row transport-main-row">
-          <span class="transport-wordmark">rhythmartist</span>
-          <button id="open-global-mix" type="button" class="topbar-view-btn">Mixer</button>
-          <button id="open-project-manager" type="button" class="topbar-view-btn">Projects</button>
-          <a href="./rhythm-api-demo.html" class="transport-nav-link">API Demo</a>
-          <span class="transport-divider"></span>
-          <button id="play-toggle" type="button">Play</button>
-          <button id="restart" type="button">Restart</button>
-          <button id="play-song" type="button">Full Song</button>
-          <button id="loop-bar" type="button" title="Loop the selected bar(s). Shift-click bars to select a range.">Loop Selected</button>
-          <label title="Horizontal zoom: higher values show more bars and compress the grid">
-            <span>Zoom</span>
-            <input id="segments-count" type="number" min="1" max="32" step="1" value="2" aria-label="Horizontal zoom" />
-          </label>
-          <label class="camera-mode-label" title="Keep playback centered while bars move through the view">
-            <input id="camera-mode" type="checkbox" />
-            <span>Camera</span>
-          </label>
-          <label title="Time signature">
-            <span>Time</span>
-            <select id="time-sig-select">
-              <option value="4/4" selected>4/4</option>
-              <option value="3/4">3/4</option>
-              <option value="6/8">6/8</option>
-              <option value="5/4">5/4</option>
-              <option value="7/8">7/8</option>
-            </select>
-          </label>
+          <div class="transport-cluster transport-brand-cluster">
+            <span class="transport-wordmark">rhythmartist</span>
+            <button id="open-global-mix" type="button" class="topbar-view-btn">Mixer</button>
+            <button id="open-project-manager" type="button" class="topbar-view-btn">Projects</button>
+            <button id="save-project" type="button" class="topbar-view-btn">Save</button>
+            <a href="./rhythm-api-demo.html" class="transport-nav-link">API Demo</a>
+          </div>
+          <div class="transport-cluster transport-play-cluster">
+            <button id="play-toggle" type="button">Play</button>
+            <button id="restart" type="button">Restart</button>
+            <button id="play-song" type="button">Full Song</button>
+            <button id="loop-bar" type="button" title="Loop the selected bar(s). Shift-click bars to select a range.">Loop Selected</button>
+            <span id="transport-position" class="transport-position" aria-live="polite">1.01 · 01</span>
+          </div>
         </div>
-        <div class="transport-row transport-groove-row">
-          <label class="transport-bpm-label">
-            <span>BPM</span>
-            <input id="transport-bpm-number" class="transport-number" type="number" min="40" max="220" step="1" value="118" />
-          </label>
+        <div class="transport-row transport-settings-row">
+          <div class="transport-cluster transport-meter-cluster">
+            <label class="transport-bpm-label">
+              <span>BPM</span>
+              <input id="transport-bpm-number" class="transport-number" type="number" min="40" max="220" step="1" value="118" />
+            </label>
+            <label class="time-sig-label" title="Time signature">
+              <span>Time</span>
+              <span class="time-sig-control">
+                <input id="time-sig-numerator" class="time-sig-number" type="number" min="1" max="16" step="1" value="4" aria-label="Time signature numerator" />
+                <span class="time-sig-slash">/</span>
+                <input id="time-sig-denominator" class="time-sig-number" type="number" min="2" max="16" step="1" value="4" aria-label="Time signature denominator" />
+                <button id="time-sig-menu-button" class="time-sig-menu-button" type="button" aria-label="Common time signatures" aria-haspopup="listbox" aria-expanded="false" title="Common time signatures"></button>
+                <select id="time-sig-select" class="time-sig-native-select" aria-hidden="true" tabindex="-1">
+                  <option value="4/4" selected>4/4</option>
+                  <option value="3/4">3/4</option>
+                  <option value="6/8">6/8</option>
+                  <option value="5/4">5/4</option>
+                  <option value="7/8">7/8</option>
+                </select>
+                <div id="time-sig-menu" class="time-sig-menu" role="listbox" hidden>
+                  <button type="button" class="time-sig-menu-option" data-time-sig="4/4" role="option"><span>4</span><span>/</span><span>4</span></button>
+                  <button type="button" class="time-sig-menu-option" data-time-sig="3/4" role="option"><span>3</span><span>/</span><span>4</span></button>
+                  <button type="button" class="time-sig-menu-option" data-time-sig="6/8" role="option"><span>6</span><span>/</span><span>8</span></button>
+                  <button type="button" class="time-sig-menu-option" data-time-sig="5/4" role="option"><span>5</span><span>/</span><span>4</span></button>
+                  <button type="button" class="time-sig-menu-option" data-time-sig="7/8" role="option"><span>7</span><span>/</span><span>8</span></button>
+                </div>
+              </span>
+            </label>
+          </div>
+          <div class="transport-cluster transport-metronome-cluster">
+            <label class="metronome-toggle-label" title="Play a metronome click based on the selected time signature">
+              <input id="metronome-enabled" type="checkbox" />
+              <span>Metro</span>
+            </label>
+            <label title="Metronome volume">
+              <span>Click</span>
+              <input id="metronome-volume" class="transport-number" type="number" min="0" max="1" step="0.05" value="0.45" />
+            </label>
+          </div>
+          <div class="transport-cluster transport-view-cluster">
+            <label title="Horizontal zoom: higher values show more bars and compress the grid">
+              <span>Zoom</span>
+              <input id="segments-count" type="number" min="1" max="32" step="1" value="2" aria-label="Horizontal zoom" />
+            </label>
+          </div>
           <p id="status">Ready</p>
         </div>
       </section>
@@ -60,6 +88,14 @@
             <label>
               <span>Verses</span>
               <input id="loop-count" type="number" min="1" max="8" step="1" value="1" />
+            </label>
+            <label>
+              <span>Bars/Verse</span>
+              <input id="verse-bars" type="number" min="1" max="64" step="1" value="32" />
+            </label>
+            <label>
+              <span>Bars/Section</span>
+              <input id="section-bars" type="number" min="1" max="32" step="1" value="8" />
             </label>
           </div>
           <div class="bar-tabs" role="tablist" aria-label="Pattern bars"></div>
@@ -207,14 +243,40 @@
             </template>
           </section>
 
+          <!-- ── Configuration ──────────────────────────── -->
+          <section id="sample-config-section" class="sample-config-section">
+            <div class="sample-config-header">
+              <span class="panel-label">Configuration</span>
+            </div>
+            <div class="sample-config-row">
+              <label id="sample-open-folder-btn" class="sample-open-btn sample-picker-control" title="Select sample directory">
+                select sample directory
+                <input id="sample-open-folder-input" class="sample-folder-input" type="file" webkitdirectory directory mozdirectory multiple aria-label="Select sample directory">
+              </label>
+            </div>
+            <div id="sample-folder-state" class="sample-folder-state" role="status" aria-live="polite">No sample directory set</div>
+          </section>
+
+          <!-- ── Sample Browser ──────────────────────────── -->
+          <section id="sample-browser-section" class="sample-browser-section">
+            <div class="sample-browser-header">
+              <span class="panel-label">Sample Browser</span>
+              <div class="sample-browser-mode" role="group" aria-label="Sample add mode">
+                <button id="sample-add-mode-hit" type="button" class="sample-mode-btn is-active" data-sample-add-mode="hit" aria-pressed="true">Drum Hit</button>
+                <button id="sample-add-mode-loop" type="button" class="sample-mode-btn" data-sample-add-mode="loop" aria-pressed="false">Wave Edit</button>
+              </div>
+            </div>
+            <div class="sample-browser-breadcrumb" id="sample-breadcrumb"></div>
+            <div id="sample-browser-list" class="sample-browser-list" aria-label="Samples"></div>
+            <p class="sample-browser-hint">Drum Hit uses the selected drum track · Wave Edit creates an editable waveform lane</p>
+          </section>
+
           <!-- ── Track Explorer + Sample Tracks ─────────── -->
           <section id="track-explorer-section" class="track-explorer-section">
             <div class="track-explorer-header">
               <span class="panel-label">Tracks</span>
               <div class="track-explorer-actions">
-                <button id="add-track-btn-panel" type="button" class="add-track-btn">+ Track</button>
-                <button id="manage-groups-btn" type="button" class="add-track-btn">Groups</button>
-                <button id="add-loop-track-btn" type="button" class="add-track-btn">+ Sample</button>
+                <button id="manage-groups-btn" type="button" class="add-track-btn">+ Sample Group</button>
               </div>
             </div>
             <div id="track-explorer-list" class="track-explorer-list" aria-label="Track list"></div>
@@ -279,20 +341,6 @@
             <div class="loop-region-actions">
               <button id="loop-region-delete" type="button" class="btn-danger">Delete Region</button>
             </div>
-          </section>
-
-          <!-- ── Sample Browser ──────────────────────────── -->
-          <section id="sample-browser-section" class="sample-browser-section">
-            <div class="sample-browser-header">
-              <span class="panel-label">Sample Browser</span>
-              <label class="sample-open-btn" title="Open a folder from your computer">
-                📂 Open folder
-                <input id="sample-open-folder" type="file" webkitdirectory multiple style="display:none">
-              </label>
-            </div>
-            <div class="sample-browser-breadcrumb" id="sample-breadcrumb"></div>
-            <div id="sample-browser-list" class="sample-browser-list" aria-label="Samples"></div>
-            <p class="sample-browser-hint">Click ▶ to audition · click ＋ to load into the selected track</p>
           </section>
 
           <section>
@@ -413,7 +461,7 @@
     <script>
       // ── Workspace right-panel drag-to-resize ──
       (function () {
-        const MIN_W = 220, MAX_W = 560, STORAGE_KEY = "rightPanelWidth";
+        const MIN_W = 208, MAX_W = 560, STORAGE_KEY = "rightPanelWidthCompact";
         const handle = document.getElementById("workspace-resize-handle");
         const workspace = handle && handle.closest(".workspace");
         if (!handle || !workspace) return;

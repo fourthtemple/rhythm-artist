@@ -437,13 +437,12 @@ right-side panels, and added user-sample support end-to-end.
 - `renderTrackInspector()` keeps the header/sample label in sync.
 
 ### Sample Browser (`#sample-browser-section`)
-- Root `<select>` populated from `GET /api/sample-roots`.
-- Folder navigation via `GET /api/sample-browse` with a clickable breadcrumb
-  and a `..` row.
+- Bundled samples come from a static manifest and normal asset URLs.
+- User folders are browsed from browser-selected directory/file handles with a
+  clickable breadcrumb and a `..` row.
 - Each file: **▶** auditions via a throwaway `<Audio>` element; **＋** loads it
   into the currently-selected track.
-- Verified live against the `drummy` root (Kick/808/909 → `808_01.wav` serves
-  `audio/wav`, 90 KB).
+- Verified with the bundled sample pack and local upload flow.
 
 ### Custom-sample engine support (`rhythm-engine.js`)
 - `customSampleBuffers` / `customSampleUrls` maps on the engine.

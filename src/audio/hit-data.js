@@ -16,7 +16,8 @@ export function createHitData(deps) {
     readStoredHit,
     commitHitEntry,
     generatedSynthEventsForStep,
-    applyConfig
+    applyConfig,
+    pushEditHistory = null
   } = deps;
 
   function patternBar(index = state.activeBar) {
@@ -65,6 +66,7 @@ export function createHitData(deps) {
 
   function setHitData(hit, step, patch, barIndex = state.activeBar) {
     const bar = state.config.patterns.jazz.bars[barIndex];
+    if (!bar) return;
     const current = getHitData(hit, step, barIndex);
     const merged = {
       ...current,
@@ -73,6 +75,22 @@ export function createHitData(deps) {
     };
     merged.step = step;
     merged.velocity = clamp(merged.velocity, 0, 1, 0);
+    const historyField = patch.options
+      ? Object.keys(patch.options).sort().join(",") || "options"
+      : "velocity";
+    const currentComparable = {
+      velocity: current.velocity <= 0.005 ? 0 : Number(current.velocity.toFixed(4)),
+      options: normalizeStepOptions(current.options)
+    };
+    const mergedComparable = {
+      velocity: merged.velocity <= 0.005 ? 0 : Number(merged.velocity.toFixed(4)),
+      options: normalizeStepOptions(merged.options)
+    };
+    if (JSON.stringify(currentComparable) === JSON.stringify(mergedComparable)) return;
+    pushEditHistory?.({
+      label: `${hit} ${historyField}`,
+      groupKey: `hit:${barIndex}:${hit}:${step}:${historyField}`
+    });
     commitHitEntry(bar, hit, step, merged.velocity <= 0.005 ? null : merged);
     applyConfig();
   }

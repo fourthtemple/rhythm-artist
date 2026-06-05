@@ -51,8 +51,9 @@ export function createRowSelection(deps) {
   // ── Step / row selection ──────────────────────────────────────────────────
 
   function selectStep(hit, step, mode = "step", barIndex = state.activeBar, pressure = state.intensity, generated = !PATTERN_ROW_IDS.has(hit)) {
-    state.selected = { hit, step, mode, generated };
-    const hitData = getHitData(hit, step, barIndex);
+    const selectedBar = Math.max(0, Math.round(Number(barIndex) || 0));
+    state.selected = { hit, step, mode, generated, bar: selectedBar };
+    const hitData = getHitData(hit, step, selectedBar);
     const { velocity, options } = hitData;
     selectedLabel.textContent = mode === "row"
       ? `${hit} row · ${formatStepLabel(step)}${hitData.generated ? ` · ${hitData.label || "generated"}` : ""}`
@@ -61,7 +62,7 @@ export function createRowSelection(deps) {
       control.disabled = hitData.generated && state.config.generatedRowsEditable < 0.5;
     });
     setPairedControl(selectedVelocity, selectedVelocityNumber, selectedVelocityValue, velocity, (next) => next.toFixed(2));
-    syncSelectedPitchDisplay(barIndex);
+    syncSelectedPitchDisplay(selectedBar);
     setPairedControl(selectedOffset, selectedOffsetNumber, selectedOffsetValue, options.offsetMs, (next) => `${Math.round(next)}ms`);
     setPairedControl(selectedAttack, selectedAttackNumber, selectedAttackValue, options.attackMs, (next) => `${Math.round(next)}ms`);
     setPairedControl(selectedDelay, selectedDelayNumber, selectedDelayValue, options.delayMs, (next) => `${Math.round(next)}ms`);
@@ -184,7 +185,7 @@ export function createRowSelection(deps) {
 
   function clearSelection() {
     if (!state.selected) return;
-    setHitVelocity(state.selected.hit, state.selected.step, 0);
+    setHitVelocity(state.selected.hit, state.selected.step, 0, state.selected.bar ?? state.activeBar);
     resetSelectedPanel();
     renderStepGrid();
   }

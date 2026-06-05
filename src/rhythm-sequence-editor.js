@@ -3,7 +3,10 @@ import {
   generatedSynthEventsForStep,
   MAX_SEQUENCE_BARS,
   normalizeSequencedRhythmConfig,
+  normalizeSectionBars,
   normalizeStepOptions,
+  normalizeTimeSignature,
+  normalizeVerseBars,
   PHRASE_BARS,
   STEP_OPTION_DEFAULTS,
   SYNTH_ROOT_HZ,
@@ -14,6 +17,7 @@ import {
 import {
   TRACK_REGISTRY,
   TRACK_GROUPS,
+  GROUP_BY_ID,
   TRACK_BY_ID,
   getTrackDef,
   DEFAULT_GRID_TRACK_IDS,
@@ -45,6 +49,7 @@ import { createConfigFile } from "./ui/config-file.js";
 import { createStepGridBuilder } from "./ui/step-grid-builder.js";
 import { createRowSelection } from "./ui/row-selection.js";
 import { createEventWiring } from "./ui/event-wiring.js";
+import { installRotaryControls } from "./ui/rotary-control.js";
 import { createHitData } from "./audio/hit-data.js";
 import { createConfigSync } from "./ui/config-sync.js";
 import {
@@ -53,7 +58,9 @@ import {
 } from "./lib/object-path.js";
 import {
   downloadJsonFile,
-  saveGameAsset,
+  saveDefaultProject,
+  loadDefaultProject,
+  getLocalServerMode,
   fetchSavedConfig
 } from "./lib/config-io.js";
 import {
@@ -95,10 +102,13 @@ import {
 // These helpers turn that id list into the row descriptors the renderer wants.
 const trackRowDescriptor = (id) => {
   const def = getTrackDef(id);
+  const group = def?.group ? GROUP_BY_ID[def.group] : null;
   return {
     id,
     label: isInstanceId(id) ? instanceLabel(id) : (def?.label || id),
-    type: def?.kind === "pattern" ? "pattern" : "generated"
+    type: def?.kind === "pattern" ? "pattern" : "generated",
+    group: def?.group || null,
+    accent: group?.accent || "#7dd3fc"
   };
 };
 const gridRows = () => state.gridTrackIds.map(trackRowDescriptor);
@@ -106,8 +116,7 @@ const PATTERN_ROW_IDS = new Set(PATTERN_TRACK_IDS);
 const ROW_LABELS = TRACK_LABELS;
 const DEFAULT_VELOCITY = TRACK_DEFAULT_VELOCITY;
 
-const LOOP_BAR_COUNT = PHRASE_BARS;
-const MAX_LOOP_COUNT = Math.floor(MAX_SEQUENCE_BARS / LOOP_BAR_COUNT);
+const DEFAULT_LOOP_BAR_COUNT = PHRASE_BARS;
 const PITCH_SLIDER_MIN = -24;
 const PITCH_SLIDER_MAX = 48;
 const SAVED_RHYTHM_URL = "./assets/projects/default-project.rhythm-project.json";
@@ -139,6 +148,7 @@ const state = {
   loopBar: false,
   loopBarIndex: 0,
   loopBarLength: 0,
+  loopBeatRange: null,
   twoBarClipboard: null,
   trackClipboard: null,
   // Rich clipboards for the new shift-select copy/paste flows.
@@ -147,13 +157,14 @@ const state = {
   playheadStep: 0,
   uiTimer: null,
   segmentsCount: 2,
-  cameraMode: false,
-  timeSig: "4/4",
+  cameraMode: true,
+  timeSig: DEFAULT_RHYTHM_CONFIG.timeSignature,
   // Registry-driven list of track ids shown in the grid (order = render order).
   gridTrackIds: [...DEFAULT_GRID_TRACK_IDS],
   // Quantize grid for loop-lane editing (enabled + value in bars)
   quantize: { enabled: false, value: 0.25 }
 };
+let loopPanel = null;
 
 const stepGrid = $("#step-grid");
 const barTabs = $(".bar-tabs");
@@ -196,9 +207,9 @@ const trackInspectorName = $("#track-inspector-name");
 const trackInspectorPanels = $("#track-inspector-panels");
 const trackInspectorTemplate = $("#track-inspector-template");
 const trackInspectorMultiHint = $("#track-inspector-multi-hint");
-const sampleRootSelect = null; // replaced by File System Access API
-const sampleOpenBtn = $("#sample-open-folder");
-const sampleFileInput = /** @type {HTMLInputElement} */ ($("#sample-open-folder"));
+const sampleRootSelect = null; // replaced by server-backed sample paths
+const sampleOpenBtn = $("#sample-open-folder-btn");
+const sampleFileInput = /** @type {HTMLInputElement} */ ($("#sample-open-folder-input"));
 const sampleBreadcrumb = $("#sample-breadcrumb");
 const sampleBrowserList = $("#sample-browser-list");
 const runningFromFile = window.location.protocol === "file:";
@@ -285,20 +296,38 @@ function normalizeEditorConfig(config = {}) {
   return normalizeSequencedRhythmConfig(config, { pressure: 0.45 });
 }
 
+function serializableConfig() {
+  const next = clone(state.config);
+  next.loopTracks = loopPanel?.serializeTracks?.() || [];
+  return normalizeEditorConfig(next);
+}
+
 function bars() {
   return state.config.patterns.jazz.bars;
 }
 
+function loopBarCount(config = state.config) {
+  return normalizeVerseBars(config?.barsPerVerse ?? DEFAULT_LOOP_BAR_COUNT);
+}
+
+function sectionBarCount(config = state.config) {
+  return normalizeSectionBars(config?.barsPerSection);
+}
+
+function maxLoopCount(config = state.config) {
+  return Math.max(1, Math.floor(MAX_SEQUENCE_BARS / loopBarCount(config)));
+}
+
 function loopCount() {
-  return loopCountFor(bars().length, LOOP_BAR_COUNT);
+  return loopCountFor(bars().length, loopBarCount());
 }
 
 function localBarIndex(barIndex = state.activeBar) {
-  return localBarIndexMath(barIndex, LOOP_BAR_COUNT);
+  return localBarIndexMath(barIndex, loopBarCount());
 }
 
 function loopIndexForBar(barIndex = state.activeBar) {
-  return loopIndexForBarMath(barIndex, LOOP_BAR_COUNT, MAX_LOOP_COUNT);
+  return loopIndexForBarMath(barIndex, loopBarCount(), maxLoopCount());
 }
 
 function syncActiveLoopToBar() {
@@ -312,7 +341,7 @@ function clampActiveBar() {
 }
 
 function loopStartBar(loopIndex = state.activeLoopIndex) {
-  return loopStartBarMath(loopIndex, bars().length, LOOP_BAR_COUNT);
+  return loopStartBarMath(loopIndex, bars().length, loopBarCount());
 }
 
 function activeLoopLength() {
@@ -325,7 +354,7 @@ function clampLoopStart(start = state.activeBar, length = activeLoopLength() || 
 }
 
 function barLabel(barIndex) {
-  return barLabelMath(barIndex, LOOP_BAR_COUNT, MAX_LOOP_COUNT);
+  return barLabelMath(barIndex, loopBarCount(), maxLoopCount());
 }
 
 function loopRangeLabel(start = state.loopBarIndex, length = activeLoopLength() || 1) {
@@ -334,9 +363,23 @@ function loopRangeLabel(start = state.loopBarIndex, length = activeLoopLength() 
   return `${barLabel(safeStart)}-${barLabel(safeStart + length - 1)}`;
 }
 
+function beatRangeStepLabel(stepAbs = 0) {
+  const step = Math.max(0, Math.round(Number(stepAbs) || 0));
+  const bar = Math.floor(step / 16);
+  const localStep = step % 16;
+  return `${bar + 1}.${String(localStep + 1).padStart(2, "0")}`;
+}
+
+function beatRangeLabel(range = state.loopBeatRange) {
+  if (!range?.lengthSteps) return "";
+  const start = Math.max(0, Math.round(Number(range.startStepAbs) || 0));
+  const endInclusive = Math.max(start, Math.round(Number(range.endStepAbs ?? start + range.lengthSteps) || start + range.lengthSteps) - 1);
+  return `${beatRangeStepLabel(start)}-${beatRangeStepLabel(endInclusive)}`;
+}
+
 function loopBarSlice(loopIndex = state.activeLoopIndex) {
   const start = loopStartBar(loopIndex);
-  return Array.from({ length: LOOP_BAR_COUNT }, (_, index) => clone(bars()[start + index] || bars()[index % Math.max(1, bars().length)] || {}));
+  return Array.from({ length: loopBarCount() }, (_, index) => clone(bars()[start + index] || bars()[index % Math.max(1, bars().length)] || {}));
 }
 
 function trackName(hit) {
@@ -353,8 +396,8 @@ const arrangement = createArrangementClipboard({
   state,
   clone,
   setStatus: (msg) => { status.textContent = msg; },
-  LOOP_BAR_COUNT,
-  MAX_LOOP_COUNT,
+  loopBarCount,
+  maxLoopCount,
   bars,
   clampLoopStart,
   activeLoopLength,
@@ -392,6 +435,98 @@ function setLoopCount(nextCount, opts) { return arrangement.setLoopCount(nextCou
 function duplicateCurrentLoop() { return arrangement.duplicateCurrentLoop(); }
 function deleteCurrentLoop() { return arrangement.deleteCurrentLoop(); }
 
+// ══ Sequencer edit history ══════════════════════════════════════════════════
+// Pattern-note edits are config mutations, not DOM-only operations. Snapshot
+// the editor config before each meaningful change so Cmd/Ctrl-Z can restore
+// added notes and per-note inspector edits such as volume and pitch.
+const EDIT_HISTORY_LIMIT = 100;
+const EDIT_HISTORY_COALESCE_MS = 900;
+const editUndoStack = [];
+const editRedoStack = [];
+let editHistoryGroup = "";
+let editHistoryAt = 0;
+let restoringEditHistory = false;
+
+function editSnapshot() {
+  return {
+    config: clone(state.config),
+    activeBar: state.activeBar,
+    activeLoopIndex: state.activeLoopIndex,
+    selected: state.selected ? clone(state.selected) : null,
+    selectedTracks: state.selectedTracks.slice(),
+    trackAnchor: state.trackAnchor
+  };
+}
+
+function clearEditHistory() {
+  editUndoStack.length = 0;
+  editRedoStack.length = 0;
+  editHistoryGroup = "";
+  editHistoryAt = 0;
+}
+
+function pushEditHistory({ groupKey = "", label = "edit" } = {}) {
+  if (restoringEditHistory) return;
+  const now = Date.now();
+  if (groupKey && groupKey === editHistoryGroup && now - editHistoryAt < EDIT_HISTORY_COALESCE_MS) {
+    editHistoryAt = now;
+    return;
+  }
+  editUndoStack.push({ ...editSnapshot(), label });
+  if (editUndoStack.length > EDIT_HISTORY_LIMIT) editUndoStack.shift();
+  editRedoStack.length = 0;
+  editHistoryGroup = groupKey;
+  editHistoryAt = now;
+}
+
+function restoreEditSnapshot(snapshot, label) {
+  if (!snapshot) return false;
+  restoringEditHistory = true;
+  try {
+    state.config = normalizeEditorConfig(clone(snapshot.config));
+    state.activeBar = Math.max(0, Math.round(Number(snapshot.activeBar) || 0));
+    clampActiveBar();
+    state.activeLoopIndex = Math.max(0, Math.round(Number(snapshot.activeLoopIndex) || 0));
+    syncActiveLoopToBar();
+    state.selected = snapshot.selected ? clone(snapshot.selected) : null;
+    state.selectedTracks = Array.isArray(snapshot.selectedTracks) ? snapshot.selectedTracks.slice() : [];
+    state.trackAnchor = snapshot.trackAnchor ?? null;
+    applyConfig();
+    buildLoopTabs();
+    buildBarTabs();
+    buildStepGrid();
+    refreshLoopBarButton();
+    if (state.selected) {
+      selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step", state.selected.bar ?? state.activeBar);
+    } else {
+      resetSelectedPanel();
+    }
+    renderStepGrid();
+    renderTrackExplorer();
+    renderTrackInspector();
+    updateTwoBarClipboardButtons();
+    updateTrackClipboardButtons();
+    status.textContent = label;
+    return true;
+  } finally {
+    restoringEditHistory = false;
+    editHistoryGroup = "";
+    editHistoryAt = 0;
+  }
+}
+
+function undoEdit() {
+  if (!editUndoStack.length) return false;
+  editRedoStack.push(editSnapshot());
+  return restoreEditSnapshot(editUndoStack.pop(), "Undo");
+}
+
+function redoEdit() {
+  if (!editRedoStack.length) return false;
+  editUndoStack.push(editSnapshot());
+  return restoreEditSnapshot(editRedoStack.pop(), "Redo");
+}
+
 // ══ Hit-data access layer ═══════════════════════════════════════════════════
 // All pattern bar read/write (getHitData, setHitData, setHitVelocity,
 // getHitVelocity, getGeneratedHitData) live in their own module.
@@ -404,7 +539,8 @@ const hitData = createHitData({
   readStoredHit,
   commitHitEntry,
   generatedSynthEventsForStep,
-  applyConfig
+  applyConfig,
+  pushEditHistory
 });
 
 function patternBar(index) { return hitData.patternBar(index); }
@@ -504,6 +640,20 @@ function syncSelectedBusSendDisplay() {
 function previewConfig() {
   const config = clone(state.config);
   config.soloTracks = Array.from(state.soloTracks);
+  if (loopPanel?.hasActiveSolo?.()) {
+    config.soloTracks = ["__loop_solo_mute__"];
+  }
+  const beatRange = state.loopBeatRange;
+  if (beatRange?.lengthSteps > 0) {
+    config.loopPhraseBar = null;
+    config.loopPhraseBarStart = null;
+    config.loopPhraseBarLength = 0;
+    config.loopPhraseStepStart = Math.max(0, Math.round(Number(beatRange.startStepAbs) || 0));
+    config.loopPhraseStepLength = Math.max(1, Math.round(Number(beatRange.lengthSteps) || 1));
+    return config;
+  }
+  config.loopPhraseStepStart = null;
+  config.loopPhraseStepLength = 0;
   const loopLength = activeLoopLength();
   if (loopLength > 0) {
     const loopStart = clampLoopStart(state.loopBarIndex, loopLength);
@@ -513,7 +663,7 @@ function previewConfig() {
         || state.config.patterns.jazz.bars[state.activeBar]
         || {}
     ));
-    config.patterns.jazz.bars = Array.from({ length: LOOP_BAR_COUNT }, (_, index) => clone(sourceBars[index % loopLength]));
+    config.patterns.jazz.bars = Array.from({ length: loopBarCount() }, (_, index) => clone(sourceBars[index % loopLength]));
     config.loopPhraseBar = loopLength === 1 ? loopStart : null;
     config.loopPhraseBarStart = loopStart;
     config.loopPhraseBarLength = loopLength;
@@ -527,10 +677,13 @@ function previewConfig() {
 
 function refreshLoopBarButton() {
   const loopLength = activeLoopLength();
+  const beatRange = state.loopBeatRange;
   const loopButton = $("#loop-bar");
   if (loopButton) {
-    loopButton.classList.toggle("is-active", loopLength > 0);
-    if (loopLength > 0) {
+    loopButton.classList.toggle("is-active", loopLength > 0 || Boolean(beatRange?.lengthSteps));
+    if (beatRange?.lengthSteps > 0) {
+      loopButton.textContent = `Loop Beats ${beatRangeLabel(beatRange)}`;
+    } else if (loopLength > 0) {
       const start = state.loopBarIndex + 1;
       const end = state.loopBarIndex + loopLength;
       loopButton.textContent = loopLength === 1
@@ -540,7 +693,7 @@ function refreshLoopBarButton() {
       loopButton.textContent = "Loop Selected";
     }
   }
-  $("#play-song")?.classList.toggle("is-active", loopLength === 0);
+  $("#play-song")?.classList.toggle("is-active", loopLength === 0 && !beatRange?.lengthSteps);
 }
 
 // Per-track mix setters keyed by track id (used by the multi-panel inspector).
@@ -578,8 +731,9 @@ const gridBuilder = createStepGridBuilder({
   loopTabs,
   loopCountInput,
   status,
-  LOOP_BAR_COUNT,
-  MAX_LOOP_COUNT,
+  loopBarCount,
+  maxLoopCount,
+  sectionBarCount,
   DEFAULT_VELOCITY,
   gridRows,
   trackStepCount: (hit) => trackPanels?.trackStepCount?.(hit) ?? 16,
@@ -608,6 +762,9 @@ const gridBuilder = createStepGridBuilder({
   openLoopContextMenu,
   openBarContextMenu,
   openTrackContextMenu,
+  showContextMenu,
+  loopBeatSelection,
+  playBeatSelection,
   resetSelectedPanel,
   onAfterBuild: () => loopPanel.rebuildStepGridRows(),
   onAfterRender: () => loopPanel.renderAllLanes()
@@ -682,28 +839,101 @@ function setPathValue(path, value) { return configSync.setPathValue(path, value)
 function syncSliders() { return configSync.syncSliders(); }
 
 function applySegments(count) {
-  const n = Math.max(1, Math.min(LOOP_BAR_COUNT, Math.round(count) || 2));
+  const n = Math.max(1, Math.min(loopBarCount(), Math.round(count) || 2));
   state.segmentsCount = n;
   const input = /** @type {HTMLInputElement|null} */ ($("#segments-count"));
   if (input) {
-    input.max = String(LOOP_BAR_COUNT);
+    input.max = String(loopBarCount());
     input.value = String(n);
   }
   buildStepGrid();
 }
 
+function selectedBarIsVisible() {
+  if (!state.selected) return false;
+  const bar = Math.max(0, Math.round(Number(state.selected.bar ?? state.activeBar) || 0));
+  const start = Math.max(0, Math.round(Number(state.activeBar) || 0));
+  const segments = Math.max(1, Math.round(Number(state.segmentsCount) || 1));
+  return bar >= start && bar < start + segments;
+}
+
+function refreshArrangementScaleUi(message = "") {
+  clampActiveBar();
+  if (state.segmentsCount > loopBarCount()) state.segmentsCount = loopBarCount();
+  applyConfig();
+  applySegments(state.segmentsCount);
+  buildLoopTabs();
+  buildBarTabs();
+  renderStepGrid();
+  refreshLoopBarButton();
+  if (state.selected?.mode === "row") {
+    selectStep(state.selected.hit, state.selected.step, "row", state.activeBar);
+  } else if (selectedBarIsVisible()) {
+    selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step", state.selected.bar ?? state.activeBar);
+  } else if (state.selected) {
+    resetSelectedPanel();
+  }
+  if (message) status.textContent = message;
+}
+
+function applyVerseBarCount(value) {
+  const next = normalizeVerseBars(value);
+  if (state.config.barsPerVerse === next) {
+    syncSliders();
+    return;
+  }
+  state.config.barsPerVerse = next;
+  state.activeLoopIndex = loopIndexForBar(state.activeBar);
+  refreshArrangementScaleUi(`Bars per verse: ${next}`);
+}
+
+function applySectionBarCount(value) {
+  const next = normalizeSectionBars(value);
+  if (state.config.barsPerSection === next) {
+    syncSliders();
+    return;
+  }
+  state.config.barsPerSection = next;
+  applyConfig();
+  buildBarTabs();
+  renderStepGrid();
+  status.textContent = `Bars per section: ${next}`;
+}
+
+function applyMetronomeEnabled(enabled) {
+  state.config.metronomeEnabled = enabled ? 1 : 0;
+  applyConfig();
+  status.textContent = enabled ? "Metronome on" : "Metronome off";
+}
+
+function applyMetronomeVolume(value) {
+  state.config.metronomeVolume = Math.max(0, Math.min(1, Number(value) || 0));
+  applyConfig();
+}
+
 function applyTimeSig(value) {
-  state.timeSig = value || "4/4";
-  const [num] = (value || "4/4").split("/").map(Number);
-  stepGrid.dataset.timeSig = value;
-  // Mark beat accents based on numerator
-  stepGrid.querySelectorAll(".step-button").forEach((btn) => {
-    const visualStep = Number(btn.dataset.visualStep ?? btn.dataset.step ?? 0);
-    const stepsPerBar = Number(btn.dataset.stepsPerBar ?? 16);
-    btn.dataset.beat = Math.abs((visualStep * num) % stepsPerBar) < 0.0001 ? "1" : "0";
-  });
+  const next = normalizeTimeSignature(value);
+  state.timeSig = next;
+  state.config.timeSignature = next;
+  stepGrid.dataset.timeSig = next;
+  applyConfig();
+  buildStepGrid();
+  renderStepGrid();
   const sel = /** @type {HTMLSelectElement|null} */ ($("#time-sig-select"));
-  if (sel) sel.value = state.timeSig;
+  if (sel) {
+    sel.value = [...sel.options].some((option) => option.value === next) ? next : "";
+  }
+  const [numerator, denominator] = next.split("/");
+  const numeratorInput = /** @type {HTMLInputElement|null} */ ($("#time-sig-numerator"));
+  const denominatorInput = /** @type {HTMLInputElement|null} */ ($("#time-sig-denominator"));
+  if (numeratorInput) numeratorInput.value = numerator;
+  if (denominatorInput) denominatorInput.value = denominator;
+  document.querySelectorAll("[data-time-sig]").forEach((option) => {
+    const active = option.dataset.timeSig === next;
+    option.classList.toggle("is-active", active);
+    option.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  status.textContent = `Time signature: ${next}`;
 }
 function syncJson() { return configSync.syncJson(); }
 function applyConfig() { return configSync.applyConfig(); }
@@ -742,6 +972,8 @@ const transport = createTransport({
 function startPlayback() { return transport.startPlayback(); }
 function stopPlayback() { return transport.stopPlayback(); }
 function setLoopPlayback(length) { return transport.setLoopPlayback(length); }
+function loopBeatSelection(range) { return transport.loopBeatSelection(range); }
+function playBeatSelection(range) { return transport.playBeatSelection(range); }
 function toggleBarLoop() { return transport.toggleBarLoop(); }
 function toggleTwoBarLoop() { return transport.toggleTwoBarLoop(); }
 function playFullSong() { return transport.playFullSong(); }
@@ -762,10 +994,13 @@ const configFile = createConfigFile({
   runningFromFile,
   SAVED_RHYTHM_URL,
   normalizeEditorConfig,
+  getSerializableConfig: serializableConfig,
   syncJson,
   applyConfig,
   downloadJsonFile,
-  saveGameAsset,
+  saveDefaultProject,
+  loadDefaultProject,
+  getLocalServerMode,
   fetchSavedConfig,
   reconcileGridTracks,
   resetSelectedPanel,
@@ -775,12 +1010,16 @@ const configFile = createConfigFile({
   renderTrackExplorer,
   renderTrackInspector,
   reapplyTrackSamples,
+  restoreLoopTracks: (tracks) => loopPanel.restoreTracks(tracks),
   updateTwoBarClipboardButtons,
   updateTrackClipboardButtons
 });
 
 function downloadConfig() { return configFile.downloadConfig(); }
-function applyLoadedConfig(nextConfig) { return configFile.applyLoadedConfig(nextConfig); }
+function applyLoadedConfig(nextConfig) {
+  clearEditHistory();
+  return configFile.applyLoadedConfig(nextConfig);
+}
 function loadConfigFile(file) { return configFile.loadConfigFile(file); }
 function loadSavedRhythmConfig() { return configFile.loadSavedRhythmConfig(); }
 
@@ -799,7 +1038,7 @@ function wireEvents() {
     copyTwoBars, pasteTwoBars, fillRestWithTwoBars,
     copyTrackTwoBars, pasteTrackTwoBars, fillRestWithTrackTwoBars,
     setLoopCount,
-    applySegments, applyTimeSig,
+    applySegments, applyVerseBarCount, applySectionBarCount, applyMetronomeEnabled, applyMetronomeVolume, applyTimeSig,
     previewDuckSound, previewHitSound, previewGameSound,
     toggleSolo, clearSolo,
     setSelectedVelocityFromControl, setSelectedOptionFromControl,
@@ -811,11 +1050,13 @@ function wireEvents() {
     updateTwoBarClipboardButtons, updateTrackClipboardButtons,
     resetSelectedPanel,
     normalizeEditorConfig, clone, DEFAULT_RHYTHM_CONFIG,
-    renderAddTrackDialog,
+    renderAddTrackDialog, openAddTrackDialog, addSampleGroupFromPrompt,
     openGlobalMixView, closeGlobalMixView, resetMasterEq,
     projectManager,
     sampleBrowser,
     closeContextMenu,
+    undoEdit,
+    redoEdit,
     loopPanel,
     selectedVelocity, selectedVelocityNumber,
     selectedPitch, selectedPitchNumber,
@@ -840,16 +1081,21 @@ window.rhythmEditorSetTrackPan = setTrackPan;
 // ══ Loop Track Lane Panel ══════════════════════════════════════
 // The loop-track lane feature (audio loops dropped onto horizontal lanes in
 // the step grid, chopped into resizable regions) lives in its own controller.
-const loopPanel = createLoopTrackPanel({
+loopPanel = createLoopTrackPanel({
   stepGrid,
   $,
-  getBarsLength: () => LOOP_BAR_COUNT,
+  getBarsLength: () => bars().length,
   getSegmentsCount: () => state.renderedSegmentsCount || state.segmentsCount,
-  getActiveBar: () => state.activeBar,
+  getActiveBar: () => state.cameraMode ? 0 : state.activeBar,
   setStatus: (msg) => { status.textContent = msg; },
   getEngine: () => state.engine,
   getQuantize: () => state.quantize,
   getCameraMode: () => state.cameraMode,
+  getSampleGroups: () => state.config.sampleGroups || [],
+  getSelectedPatternTrack: () => state.selected?.hit || state.selectedTracks[0] || null,
+  assignSampleToTrack,
+  trackName,
+  onSoloChange: () => state.engine.setConfig(previewConfig()),
   onNavigate: (bar) => {
     // Scroll the step-grid view to show the given bar, then repaint lanes
     const seg = state.segmentsCount || 2;
@@ -933,6 +1179,8 @@ function addTrackInstance(baseId, opts) { return trackPanels.addTrackInstance(ba
 function removeGridTrack(trackId) { return trackPanels.removeGridTrack(trackId); }
 function instanceLabel(id) { return trackPanels.instanceLabel(id); }
 function renderAddTrackDialog() { return trackPanels.renderAddTrackDialog(); }
+function openAddTrackDialog(groupId) { return trackPanels.openAddTrackDialog(groupId); }
+function addSampleGroupFromPrompt() { return trackPanels.addSampleGroupFromPrompt(); }
 function renderTrackExplorer() { return trackPanels.renderTrackExplorer(); }
 function renderTrackInspector() { return trackPanels.renderTrackInspector(); }
 function trackSupportsShape(hit) { return trackPanels.trackSupportsShape(hit); }
@@ -980,7 +1228,7 @@ const resetMasterEq = () => globalMixPanel.reset();
 
 // ── Project Manager (save/load slots + WAV export) ─────────────────────────
 const projectManager = createProjectManager({
-  getConfig: () => clone(state.config),
+  getConfig: serializableConfig,
   applyLoadedConfig,
   getEngine: () => state.engine,
   startPlayback,
@@ -999,13 +1247,23 @@ const sampleBrowser = createSampleBrowser({
   list: sampleBrowserList,
   setStatus: (text) => { status.textContent = text; },
   getSelectedHit: () => state.selected?.hit ?? null,
-  assignSample: (hit, sample) => assignSampleToTrack(hit, sample)
+  assignSample: (hit, sample) => assignSampleToTrack(hit, sample),
+  addSampleTrack: ({ name, file, source }) => {
+    const cleanName = String(name || "Sample").replace(/\.[^.]+$/, "");
+    return loopPanel.addTrack(cleanName, file, 4, false, {
+      ...source,
+      fileName: source?.fileName ?? name,
+      sampleGroupId: trackPanels.activeSampleGroupId?.() ?? null
+    });
+  },
+  onSampleFolderConfigured: (options) => loopPanel.relinkMissingFromSampleFolder(options)
 });
 
 buildLoopTabs();
 buildBarTabs();
 buildStepGrid();
 wireEvents();
+installRotaryControls(document);
 applySegments(2);
 refreshLoopBarButton();
 

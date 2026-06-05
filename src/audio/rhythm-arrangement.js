@@ -1,4 +1,4 @@
-import { SECTION_BARS, phraseBeatModeForBar, shiftedAccentStepsForBar } from "./rhythm-config.js";
+import { SECTION_BARS, normalizeSectionBars, phraseBeatModeForBar, shiftedAccentStepsForBar } from "./rhythm-config.js";
 
 export function arrangementHitScale(hit, step, phraseBar) {
   if (phraseBar >= 8) return 1;
@@ -24,8 +24,9 @@ export function arrangementHitScale(hit, step, phraseBar) {
   return 1;
 }
 
-export function rhythmicShiftScale(hit, step, phraseBar) {
-  const mode = phraseBeatModeForBar(phraseBar);
+export function rhythmicShiftScale(hit, step, phraseBar, sectionBars = SECTION_BARS) {
+  const safeSectionBars = normalizeSectionBars(sectionBars);
+  const mode = phraseBeatModeForBar(phraseBar, safeSectionBars);
   let scale = 1;
   if (mode === "twoFour") {
     if (hit === "kick" && (step === 0 || step === 8)) scale *= 0.9;
@@ -47,14 +48,14 @@ export function rhythmicShiftScale(hit, step, phraseBar) {
     if (hit === "snare" && step === 12) scale *= 0.94;
     if (hit === "rim" && (step === 3 || step === 11)) scale *= 1.03;
   }
-  const localBuild = phraseBar % SECTION_BARS;
-  if (localBuild >= 6 && hit === "hat" && step % 2 === 1) scale *= 1.02;
-  if (localBuild === 7 && step >= 12 && hit !== "kick") scale *= 1.03;
+  const localBuild = phraseBar % safeSectionBars;
+  if (localBuild >= Math.max(0, safeSectionBars - 2) && hit === "hat" && step % 2 === 1) scale *= 1.02;
+  if (localBuild === safeSectionBars - 1 && step >= 12 && hit !== "kick") scale *= 1.03;
   return scale;
 }
 
-export function shiftedAccentSteps(phraseBar) {
-  return shiftedAccentStepsForBar(phraseBar);
+export function shiftedAccentSteps(phraseBar, sectionBars = SECTION_BARS) {
+  return shiftedAccentStepsForBar(phraseBar, sectionBars);
 }
 
 export function phraseVelocityScale(hit, step, phraseBar) {

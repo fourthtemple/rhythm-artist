@@ -17,8 +17,8 @@
  * @param {object} deps.state Shared editor state (mutated in place).
  * @param {<T>(value: T) => T} deps.clone Deep clone helper.
  * @param {(msg: string) => void} deps.setStatus Status-line setter.
- * @param {number} deps.LOOP_BAR_COUNT Bars per loop.
- * @param {number} deps.MAX_LOOP_COUNT Maximum loop count.
+ * @param {() => number} deps.loopBarCount Bars per loop.
+ * @param {() => number} deps.maxLoopCount Maximum loop count.
  * @param {() => any[]} deps.bars Returns the live bars array.
  * @param {(start?: number, length?: number) => number} deps.clampLoopStart
  * @param {() => number} deps.activeLoopLength
@@ -33,7 +33,7 @@
  * @param {() => void} deps.buildBarTabs
  * @param {() => void} deps.renderStepGrid
  * @param {() => void} deps.refreshLoopBarButton
- * @param {(hit: string, step: number, mode?: string) => void} deps.selectStep
+ * @param {(hit: string, step: number, mode?: string, barIndex?: number) => void} deps.selectStep
  * @param {(event: any, items: any[]) => void} deps.showContextMenu
  * @param {() => void} deps.resetSelectedPanel
  * @param {(hit: string) => string} deps.trackName
@@ -44,8 +44,8 @@ export function createArrangementClipboard(deps) {
     state,
     clone,
     setStatus,
-    LOOP_BAR_COUNT,
-    MAX_LOOP_COUNT,
+    loopBarCount = () => 32,
+    maxLoopCount = () => 8,
     bars,
     clampLoopStart,
     activeLoopLength,
@@ -103,6 +103,14 @@ export function createArrangementClipboard(deps) {
     if (fillButton) fillButton.disabled = !canPaste;
   }
 
+  function selectedBarIsVisible() {
+    if (!state.selected) return false;
+    const bar = Math.max(0, Math.round(Number(state.selected.bar ?? state.activeBar) || 0));
+    const start = Math.max(0, Math.round(Number(state.activeBar) || 0));
+    const segments = Math.max(1, Math.round(Number(state.segmentsCount) || 1));
+    return bar >= start && bar < start + segments;
+  }
+
   function syncAfterArrangementEdit() {
     clampActiveBar();
     applyConfig();
@@ -110,8 +118,12 @@ export function createArrangementClipboard(deps) {
     buildBarTabs();
     renderStepGrid();
     refreshLoopBarButton();
-    if (state.selected) {
-      selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step");
+    if (state.selected?.mode === "row") {
+      selectStep(state.selected.hit, state.selected.step, "row", state.activeBar);
+    } else if (selectedBarIsVisible()) {
+      selectStep(state.selected.hit, state.selected.step, state.selected.mode || "step", state.selected.bar ?? state.activeBar);
+    } else if (state.selected) {
+      resetSelectedPanel();
     }
     updateTwoBarClipboardButtons();
     updateTrackClipboardButtons();
@@ -231,6 +243,8 @@ export function createArrangementClipboard(deps) {
   /** Range-aware multi-select toggle for loops (shift = range, cmd/ctrl = toggle). */
   function toggleLoopMultiSelect(index, event = {}) {
     const shift = Boolean(event.shiftKey);
+    state.selectedBars = [];
+    state.barAnchor = null;
     if (shift && state.loopAnchor != null) {
       const [lo, hi] = state.loopAnchor <= index ? [state.loopAnchor, index] : [index, state.loopAnchor];
       const range = [];
@@ -252,6 +266,8 @@ export function createArrangementClipboard(deps) {
   /** Range-aware multi-select toggle for bars (shift = range, cmd/ctrl = toggle). */
   function toggleBarMultiSelect(index, event = {}) {
     const shift = Boolean(event.shiftKey);
+    state.selectedLoops = [];
+    state.loopAnchor = null;
     if (shift && state.barAnchor != null) {
       const [lo, hi] = state.barAnchor <= index ? [state.barAnchor, index] : [index, state.barAnchor];
       const range = [];
@@ -272,9 +288,10 @@ export function createArrangementClipboard(deps) {
 
   /** Grab a deep copy of every bar belonging to a loop index. */
   function loopBarsForIndex(loopIndex) {
-    const start = loopIndex * LOOP_BAR_COUNT;
+    const barsPerLoop = loopBarCount();
+    const start = loopIndex * barsPerLoop;
     const source = bars();
-    return Array.from({ length: LOOP_BAR_COUNT }, (_, i) => clone(source[start + i] || {}));
+    return Array.from({ length: barsPerLoop }, (_, i) => clone(source[start + i] || {}));
   }
 
   /** Copy the currently shift-selected loops to the loop clipboard. */
@@ -296,23 +313,24 @@ export function createArrangementClipboard(deps) {
       return;
     }
     const needLoops = targetIndex + state.loopClipboard.length;
-    if (needLoops > MAX_LOOP_COUNT) {
-      setStatus(`Can only hold ${MAX_LOOP_COUNT} loops`);
+    if (needLoops > maxLoopCount()) {
+      setStatus(`Can only hold ${maxLoopCount()} loops`);
       return;
     }
     // Grow the bars array so the target loops exist.
-    const neededBars = needLoops * LOOP_BAR_COUNT;
+    const barsPerLoop = loopBarCount();
+    const neededBars = needLoops * barsPerLoop;
     const target = bars();
     while (target.length < neededBars) target.push({});
     state.loopClipboard.forEach((entry, i) => {
-      const start = (targetIndex + i) * LOOP_BAR_COUNT;
+      const start = (targetIndex + i) * barsPerLoop;
       entry.bars.forEach((bar, b) => {
         target[start + b] = clone(bar);
       });
     });
     state.selectedLoops = [];
     state.activeLoopIndex = targetIndex;
-    state.activeBar = targetIndex * LOOP_BAR_COUNT;
+    state.activeBar = targetIndex * barsPerLoop;
     clampActiveBar();
     applyConfig();
     buildLoopTabs();
@@ -417,7 +435,8 @@ export function createArrangementClipboard(deps) {
   // ── Loop-count editing: set / duplicate / delete ─────────────
 
   function setLoopCount(nextCount, { duplicateFrom = state.activeLoopIndex } = {}) {
-    const targetCount = Math.max(1, Math.min(MAX_LOOP_COUNT, Math.round(Number(nextCount) || 1)));
+    const barsPerLoop = loopBarCount();
+    const targetCount = Math.max(1, Math.min(maxLoopCount(), Math.round(Number(nextCount) || 1)));
     const currentCount = loopCount();
     if (targetCount === currentCount) return;
     const nextBars = bars();
@@ -427,7 +446,7 @@ export function createArrangementClipboard(deps) {
         nextBars.push(...source.map(clone));
       }
     } else {
-      nextBars.length = targetCount * LOOP_BAR_COUNT;
+      nextBars.length = targetCount * barsPerLoop;
       if (state.activeLoopIndex >= targetCount) {
         state.activeLoopIndex = targetCount - 1;
         state.activeBar = loopStartBar(state.activeLoopIndex) + localBarIndex(state.activeBar);
@@ -438,13 +457,13 @@ export function createArrangementClipboard(deps) {
     buildLoopTabs();
     buildBarTabs();
     renderStepGrid();
-    setStatus(`Song has ${targetCount} ${targetCount === 1 ? "32-bar loop" : "32-bar loops"}`);
+    setStatus(`Song has ${targetCount} ${targetCount === 1 ? `${barsPerLoop}-bar verse` : `${barsPerLoop}-bar verses`}`);
   }
 
   function duplicateCurrentLoop() {
     const currentCount = loopCount();
-    if (currentCount >= MAX_LOOP_COUNT) {
-      setStatus(`Maximum is ${MAX_LOOP_COUNT} loops`);
+    if (currentCount >= maxLoopCount()) {
+      setStatus(`Maximum is ${maxLoopCount()} verses`);
       return;
     }
     bars().push(...loopBarSlice(state.activeLoopIndex).map(clone));
@@ -464,7 +483,7 @@ export function createArrangementClipboard(deps) {
       return;
     }
     const start = loopStartBar(state.activeLoopIndex);
-    bars().splice(start, LOOP_BAR_COUNT);
+    bars().splice(start, loopBarCount());
     state.activeLoopIndex = Math.max(0, Math.min(state.activeLoopIndex, currentCount - 2));
     state.activeBar = loopStartBar(state.activeLoopIndex) + localBarIndex(state.activeBar);
     clampActiveBar();

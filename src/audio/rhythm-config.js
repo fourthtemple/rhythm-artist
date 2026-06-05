@@ -2,6 +2,13 @@ export const STYLE_ORDER = ["jazz"];
 export const PHRASE_BARS = 32;
 export const MAX_SEQUENCE_BARS = PHRASE_BARS * 8;
 export const SECTION_BARS = 8;
+export const MIN_VERSE_BARS = 1;
+export const MAX_VERSE_BARS = 64;
+export const MIN_SECTION_BARS = 1;
+export const MAX_SECTION_BARS = 32;
+export const DEFAULT_TRACK_STEPS_PER_BAR = 16;
+export const DEFAULT_TIME_SIGNATURE = "4/4";
+export const TIME_SIGNATURE_OPTIONS = ["4/4", "3/4", "6/8", "5/4", "7/8"];
 export const SYNTH_ROOT_HZ = 55;
 export const SYNTH_SCALE = [0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24];
 export const SEQUENCED_BASS_PHRASE = [0, 3, 5, 2, 7, 5, 3, 10];
@@ -58,7 +65,56 @@ export const finiteNumber = (value, fallback = 0) => {
 };
 export const clamp01 = (value) => Math.max(0, Math.min(1, finiteNumber(value, 0)));
 export const clamp = (value, min, max, fallback = 0) => Math.max(min, Math.min(max, finiteNumber(value, fallback)));
-export const DEFAULT_TRACK_STEPS_PER_BAR = 16;
+export const normalizeVerseBars = (value) => Math.max(MIN_VERSE_BARS, Math.min(MAX_VERSE_BARS, Math.round(finiteNumber(value, PHRASE_BARS))));
+export const normalizeSectionBars = (value) => Math.max(MIN_SECTION_BARS, Math.min(MAX_SECTION_BARS, Math.round(finiteNumber(value, SECTION_BARS))));
+export const sectionBarsForConfig = (config = DEFAULT_RHYTHM_CONFIG) => normalizeSectionBars(config?.barsPerSection);
+export const normalizeTimeSignature = (value) => {
+  const match = String(value || DEFAULT_TIME_SIGNATURE).trim().match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (!match) return DEFAULT_TIME_SIGNATURE;
+  const numerator = Math.round(finiteNumber(match[1], 4));
+  const denominator = Math.round(finiteNumber(match[2], 4));
+  if (numerator < 1 || numerator > 16) return DEFAULT_TIME_SIGNATURE;
+  if (![2, 4, 8, 16].includes(denominator)) return DEFAULT_TIME_SIGNATURE;
+  return `${numerator}/${denominator}`;
+};
+export const meterForTimeSignature = (timeSignature = DEFAULT_TIME_SIGNATURE) => {
+  const normalized = normalizeTimeSignature(timeSignature);
+  const [numerator, denominator] = normalized.split("/").map(Number);
+  return {
+    timeSignature: normalized,
+    numerator,
+    denominator,
+    beatsPerBar: numerator
+  };
+};
+export const metronomeBeatEventsForStep = (step, stepsPerBar = DEFAULT_TRACK_STEPS_PER_BAR, timeSignature = DEFAULT_TIME_SIGNATURE) => {
+  const stepIndex = Math.floor(finiteNumber(step, 0));
+  const totalSteps = Math.max(1, Math.round(finiteNumber(stepsPerBar, DEFAULT_TRACK_STEPS_PER_BAR)));
+  const { beatsPerBar } = meterForTimeSignature(timeSignature);
+  const events = [];
+  const epsilon = 0.000001;
+  for (let beatIndex = 0; beatIndex < beatsPerBar; beatIndex += 1) {
+    const beatStep = (beatIndex * totalSteps) / beatsPerBar;
+    if (beatStep >= stepIndex - epsilon && beatStep < stepIndex + 1 - epsilon) {
+      events.push({
+        beatIndex,
+        accent: beatIndex === 0,
+        offsetSteps: Math.max(0, beatStep - stepIndex)
+      });
+    }
+  }
+  return events;
+};
+export const visualBeatKindForStep = (visualStep, stepsPerBar = DEFAULT_TRACK_STEPS_PER_BAR, timeSignature = DEFAULT_TIME_SIGNATURE) => {
+  const stepIndex = Math.round(finiteNumber(visualStep, 0));
+  const totalSteps = Math.max(1, Math.round(finiteNumber(stepsPerBar, DEFAULT_TRACK_STEPS_PER_BAR)));
+  const { beatsPerBar } = meterForTimeSignature(timeSignature);
+  for (let beatIndex = 0; beatIndex < beatsPerBar; beatIndex += 1) {
+    const nearestStep = Math.round((beatIndex * totalSteps) / beatsPerBar);
+    if (nearestStep === stepIndex && nearestStep < totalSteps) return beatIndex === 0 ? "bar" : "beat";
+  }
+  return "0";
+};
 export const normalizeTrackStepCount = (value) => {
   const requested = Math.round(finiteNumber(value, DEFAULT_TRACK_STEPS_PER_BAR));
   return Math.max(1, Math.min(128, requested));
@@ -193,6 +249,11 @@ export const DEFAULT_RHYTHM_CONFIG = {
   // Master-bus mastering EQ ("global curve"): per-band gain in dB applied to
   // the whole mix before output. Flat (all 0) by default. See rhythm-mastering.js.
   masterEq: defaultMasterEq(),
+  barsPerVerse: PHRASE_BARS,
+  barsPerSection: SECTION_BARS,
+  timeSignature: DEFAULT_TIME_SIGNATURE,
+  metronomeEnabled: 0,
+  metronomeVolume: 0.45,
   trackBusSends: DEFAULT_TRACK_BUS_SENDS,
   trackReverbSends: DEFAULT_TRACK_REVERB_SENDS,
   trackLevels: DEFAULT_TRACK_LEVELS,
@@ -203,6 +264,7 @@ export const DEFAULT_RHYTHM_CONFIG = {
   // what makes two "808 Clap" instances sound different.
   trackShapes: {},
   trackSamples: {},
+  sampleGroups: [],
   trackStepCounts: {},
   generatedRowsEditable: 0,
   soloTracks: [],
@@ -270,6 +332,86 @@ const normalizePatternBars = (bars) => {
   return Array.from({ length: count }, (_, index) => normalizePatternBar(
     source[index] || source[index % source.length] || DEFAULT_RHYTHM_CONFIG.patterns.jazz.bars[index % 2]
   ));
+};
+
+const normalizeLoopRegion = (region = {}) => {
+  const out = {
+    bar: Math.max(0, finiteNumber(region.bar, 0)),
+    len: Math.max(1 / 64, finiteNumber(region.len, 1)),
+    gain: Math.max(0, Math.min(2, finiteNumber(region.gain, 1))),
+    chops: Math.max(1, Math.min(32, Math.round(finiteNumber(region.chops, 4)))),
+    sliceSensitivity: Math.max(0.01, Math.min(0.5, finiteNumber(region.sliceSensitivity, 0.12))),
+    mode: region.mode === "stretch" ? "stretch" : "cut"
+  };
+  if (Number.isFinite(Number(region.srcStartFrac))) {
+    out.srcStartFrac = Math.max(0, Math.min(1, Number(region.srcStartFrac)));
+  }
+  if (Number.isFinite(Number(region.srcEndFrac))) {
+    out.srcEndFrac = Math.max(0, Math.min(1, Number(region.srcEndFrac)));
+  }
+  if (out.srcEndFrac != null && out.srcStartFrac != null && out.srcEndFrac <= out.srcStartFrac) {
+    delete out.srcStartFrac;
+    delete out.srcEndFrac;
+  }
+  return out;
+};
+
+const normalizeLoopTracks = (tracks) => {
+  if (!Array.isArray(tracks)) return [];
+  return tracks
+    .filter((track) => {
+      if (!track || typeof track !== "object") return false;
+      const hasBundledUrl = typeof track.url === "string" && track.url && !track.url.startsWith("blob:");
+      const hasHandle = typeof track.handleId === "string" && track.handleId;
+      const relinkRequired = track.relinkRequired || track.source === "local-file";
+      return hasBundledUrl || hasHandle || relinkRequired;
+    })
+    .map((track, index) => {
+      const hasBundledUrl = typeof track.url === "string" && track.url && !track.url.startsWith("blob:");
+      const hasHandle = typeof track.handleId === "string" && track.handleId;
+      return {
+        id: typeof track.id === "string" && track.id ? track.id : `loop_${index + 1}`,
+        name: typeof track.name === "string" && track.name ? track.name : hasBundledUrl ? track.url.split("/").pop() || "Loop" : "Loop",
+        barsInFile: Math.max(1, Math.round(finiteNumber(track.barsInFile, 1))),
+        source: typeof track.source === "string" ? track.source : hasHandle ? "browser-file-handle" : hasBundledUrl ? "bundled-sample" : "local-file",
+        ...(hasBundledUrl ? { url: track.url } : {}),
+        root: typeof track.root === "string" ? track.root : null,
+        path: typeof track.path === "string" ? track.path : null,
+        fileName: typeof track.fileName === "string" ? track.fileName : null,
+        sampleGroupId: typeof track.sampleGroupId === "string" ? track.sampleGroupId : null,
+        handleId: hasHandle ? track.handleId : null,
+        relinkRequired: Boolean(track.relinkRequired || track.source === "local-file"),
+        regions: Array.isArray(track.regions) && track.regions.length
+          ? track.regions.map(normalizeLoopRegion)
+          : [normalizeLoopRegion({})]
+      };
+    });
+};
+
+const normalizeSampleGroups = (groups) => {
+  if (!Array.isArray(groups)) return [];
+  const seen = new Set();
+  return groups
+    .map((group, index) => {
+      if (!group || typeof group !== "object") return null;
+      const label = typeof group.label === "string" && group.label.trim()
+        ? group.label.trim()
+        : `Sample Group ${index + 1}`;
+      const fallbackId = label
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        || `sample-group-${index + 1}`;
+      const id = typeof group.id === "string" && group.id.trim() ? group.id.trim() : fallbackId;
+      if (seen.has(id)) return null;
+      seen.add(id);
+      return {
+        id,
+        label,
+        collapsed: Boolean(group.collapsed)
+      };
+    })
+    .filter(Boolean);
 };
 
 /**
@@ -351,6 +493,11 @@ export const normalizeRhythmConfig = (config = {}) => {
   merged.downbeatEchoAmount = Math.max(0, Math.min(1, finiteNumber(merged.downbeatEchoAmount, DEFAULT_RHYTHM_CONFIG.downbeatEchoAmount)));
   merged.accentEchoAmount = Math.max(0, Math.min(1, finiteNumber(merged.accentEchoAmount, DEFAULT_RHYTHM_CONFIG.accentEchoAmount)));
   merged.dubThrowAmount = Math.max(0, Math.min(1.2, finiteNumber(merged.dubThrowAmount, DEFAULT_RHYTHM_CONFIG.dubThrowAmount)));
+  merged.barsPerVerse = normalizeVerseBars(merged.barsPerVerse);
+  merged.barsPerSection = normalizeSectionBars(merged.barsPerSection);
+  merged.timeSignature = normalizeTimeSignature(merged.timeSignature ?? merged.timeSig);
+  merged.metronomeEnabled = finiteNumber(merged.metronomeEnabled, DEFAULT_RHYTHM_CONFIG.metronomeEnabled) >= 0.5 ? 1 : 0;
+  merged.metronomeVolume = Math.max(0, Math.min(1, finiteNumber(merged.metronomeVolume, DEFAULT_RHYTHM_CONFIG.metronomeVolume)));
   merged.masterEq = normalizeMasterEq(merged.masterEq);
   const sourceSends = merged.trackBusSends && typeof merged.trackBusSends === "object" ? merged.trackBusSends : {};
   // Include registry tracks plus any extra (instance) ids carried in the source
@@ -376,18 +523,36 @@ export const normalizeRhythmConfig = (config = {}) => {
     track,
     Math.max(-1, Math.min(1, finiteNumber(sourcePans[track], DEFAULT_TRACK_PANS[baseTrackId(track)] ?? 0)))
   ]));
-  // Per-track custom sample assignments: { trackId: { url, label } }. Only keep
-  // entries that point at a string url so save/load stays clean.
+  // Per-track custom sample assignments. Bundled sample URLs are reloadable;
+  // browser/file-handle entries reload in Chromium via IndexedDB handles; plain
+  // local files are kept as relink-required metadata for Safari-style web mode.
   const sourceSamples = merged.trackSamples && typeof merged.trackSamples === "object" ? merged.trackSamples : {};
   merged.trackSamples = Object.fromEntries(
     Object.entries(sourceSamples)
-      .filter(([, entry]) => entry && typeof entry === "object" && typeof entry.url === "string" && entry.url)
-      .map(([track, entry]) => [track, {
-        url: String(entry.url),
-        label: typeof entry.label === "string" ? entry.label : entry.url.split("/").pop() || "sample",
-        root: typeof entry.root === "string" ? entry.root : null,
-        path: typeof entry.path === "string" ? entry.path : null
-      }])
+      .filter(([, entry]) => {
+        if (!entry || typeof entry !== "object") return false;
+        const hasBundledUrl = typeof entry.url === "string" && entry.url && !entry.url.startsWith("blob:");
+        const hasHandle = typeof entry.handleId === "string" && entry.handleId;
+        const relinkRequired = entry.relinkRequired || entry.source === "local-file";
+        return hasBundledUrl || hasHandle || relinkRequired;
+      })
+      .map(([track, entry]) => {
+        const hasBundledUrl = typeof entry.url === "string" && entry.url && !entry.url.startsWith("blob:");
+        const label = typeof entry.label === "string"
+          ? entry.label
+          : hasBundledUrl
+            ? entry.url.split("/").pop() || "sample"
+            : "sample";
+        return [track, {
+          source: typeof entry.source === "string" ? entry.source : hasBundledUrl ? "bundled-sample" : entry.handleId ? "browser-file-handle" : "local-file",
+          ...(hasBundledUrl ? { url: String(entry.url) } : {}),
+          label,
+          root: typeof entry.root === "string" ? entry.root : null,
+          path: typeof entry.path === "string" ? entry.path : null,
+          handleId: typeof entry.handleId === "string" ? entry.handleId : null,
+          relinkRequired: Boolean(entry.relinkRequired || entry.source === "local-file")
+        }];
+      })
   );
   const sourceStepCounts = merged.trackStepCounts && typeof merged.trackStepCounts === "object" ? merged.trackStepCounts : {};
   merged.trackStepCounts = Object.fromEntries(
@@ -422,6 +587,8 @@ export const normalizeRhythmConfig = (config = {}) => {
   merged.loopPhraseBarStart = merged.loopPhraseBarLength > 0 && Number.isFinite(Number(loopPhraseBarStart))
     ? Math.max(0, Math.min(Math.max(0, phraseClampMax - merged.loopPhraseBarLength + 1), Math.round(Number(loopPhraseBarStart))))
     : null;
+  merged.loopTracks = normalizeLoopTracks(merged.loopTracks);
+  merged.sampleGroups = normalizeSampleGroups(merged.sampleGroups);
   return merged;
 };
 
@@ -436,16 +603,16 @@ export function sequencedBassPitchForStep({ phraseBar = 0, step = 0 } = {}) {
   return SEQUENCED_BASS_PHRASE[((index % SEQUENCED_BASS_PHRASE.length) + SEQUENCED_BASS_PHRASE.length) % SEQUENCED_BASS_PHRASE.length];
 }
 
-export function phraseBeatModeForBar(phraseBar = 0) {
-  const section = Math.floor(finiteNumber(phraseBar, 0) / SECTION_BARS);
+export function phraseBeatModeForBar(phraseBar = 0, sectionBars = SECTION_BARS) {
+  const section = Math.floor(finiteNumber(phraseBar, 0) / normalizeSectionBars(sectionBars));
   if (section === 0) return "twoFour";
   if (section === 1) return "oneThree";
   if (section === 2) return "threeOnly";
   return "oneTwo";
 }
 
-export function shiftedAccentStepsForBar(phraseBar = 0) {
-  const mode = phraseBeatModeForBar(phraseBar);
+export function shiftedAccentStepsForBar(phraseBar = 0, sectionBars = SECTION_BARS) {
+  const mode = phraseBeatModeForBar(phraseBar, sectionBars);
   if (mode === "twoFour") return [4, 12];
   if (mode === "oneThree") return [0, 8];
   if (mode === "threeOnly") return [8];
@@ -461,20 +628,21 @@ export function automaticEchoAmountForStep({
   const safePhraseBar = finiteNumber(phraseBar, 0);
   const safeStep = Math.round(finiteNumber(step, 0));
   const safePressure = clamp01(pressure);
+  const sectionBars = sectionBarsForConfig(config);
   if (finiteNumber(config.autoEchoEnabled, DEFAULT_RHYTHM_CONFIG.autoEchoEnabled) < 0.5) return 0;
   const autoAmount = clamp01(config.autoEchoAmount ?? DEFAULT_RHYTHM_CONFIG.autoEchoAmount);
   const downbeatAmount = clamp01(config.downbeatEchoAmount ?? DEFAULT_RHYTHM_CONFIG.downbeatEchoAmount);
   const accentAmount = clamp01(config.accentEchoAmount ?? DEFAULT_RHYTHM_CONFIG.accentEchoAmount);
   let amount = 0;
   if (safeStep === 0) {
-    const sectionStart = safePhraseBar % SECTION_BARS === 0;
+    const sectionStart = safePhraseBar % sectionBars === 0;
     const phraseStart = safePhraseBar === 0;
     const turnaround = safePhraseBar === 8 || safePhraseBar === 16 || safePhraseBar === 24 || safePhraseBar === 31;
     amount = Math.max(amount, (phraseStart ? 0.5 : sectionStart || turnaround ? 0.38 : 0.2 + safePressure * 0.12) * autoAmount * downbeatAmount);
   }
-  const accentSteps = shiftedAccentStepsForBar(safePhraseBar);
+  const accentSteps = shiftedAccentStepsForBar(safePhraseBar, sectionBars);
   if (accentSteps.includes(safeStep)) {
-    const localBuild = safePhraseBar % SECTION_BARS;
+    const localBuild = safePhraseBar % sectionBars;
     const primary = safeStep === accentSteps[0];
     amount = Math.max(amount, ((primary ? 0.015 : 0.012) + safePressure * 0.025 + localBuild * 0.002) * autoAmount * accentAmount);
   }
@@ -491,7 +659,8 @@ export function generatedSynthEventsForStep({
   const safePhraseBar = rawPhraseBar % PHRASE_BARS;
   const safeStep = Math.max(0, Math.min(15, Math.round(finiteNumber(step, 0))));
   const safePressure = clamp01(pressure);
-  const section = Math.floor(safePhraseBar / SECTION_BARS);
+  const sectionBars = sectionBarsForConfig(config);
+  const section = Math.floor(safePhraseBar / sectionBars);
   const events = [];
 
   const pluckSteps = safePhraseBar < 4
@@ -535,7 +704,7 @@ export function generatedSynthEventsForStep({
     }
   }
 
-  if (safeStep === 0 && safePhraseBar % SECTION_BARS === 0) {
+  if (safeStep === 0 && safePhraseBar % sectionBars === 0) {
     const chordRoot = [0, 3, 5, 2][section % 4];
     events.push({
       track: "pad",

@@ -5,8 +5,10 @@
   "type": "module",
   "description": "Standalone beat-making tool — drum machine, loop chopper, piano roll, step sequencer.",
   "scripts": {
-    "dev": "node scripts/dev-server.mjs",
-    "start": "node scripts/dev-server.mjs",
+    "dev": "node scripts/dev-server.mjs --mode=user",
+    "dev:user": "node scripts/dev-server.mjs --mode=user",
+    "dev:edit-default": "node scripts/dev-server.mjs --mode=edit-default",
+    "start": "node scripts/dev-server.mjs --mode=user",
     "sample-pack:generate": "node scripts/generate-default-sample-pack.mjs",
     "test": "node --test"
   },

@@ -4,6 +4,7 @@ import {
   DEFAULT_TRACK_REVERB_SENDS,
   DEFAULT_TRACK_LEVELS,
   DEFAULT_TRACK_PANS,
+  DEFAULT_TRACK_STEPS_PER_BAR,
   DUCK_SOUND_REARM_SECONDS,
   EDITABLE_GENERATED_ROWS,
   PHRASE_BARS,
@@ -13,7 +14,9 @@ import {
   SYNTH_SCALE,
   clamp01,
   finiteNumber,
+  metronomeBeatEventsForStep,
   normalizeRhythmConfig,
+  normalizeSectionBars,
   normalizeStepOptions,
   phraseBeatModeForBar,
   sequencedBassPitchForStep,
@@ -144,6 +147,7 @@ export class RhythmEngine {
     this.playing = true;
     this.nextStep = this.resolveStepIndex(step);
     this.barIndex = this.resolveBarIndexForPhrase(phraseBar);
+    ({ bar: this.barIndex, step: this.nextStep } = this.wrapStepIntoLoopRange(this.barIndex, this.nextStep));
     this.segmentStartBar = 0;
     this.forceSegmentChange = false;
     this.activePatternStyle = this.resolvePatternStyle(this.style, this.intensity);
@@ -517,7 +521,7 @@ export class RhythmEngine {
    * decoded once and cached; subsequent `playHit(track, …)` calls use it
    * instead of the built-in voice. Pass `null`/empty url to clear.
    * @param {string} track registry track id
-   * @param {string|null} url fetchable audio url (e.g. /api/sample-file?…)
+   * @param {string|null} url fetchable audio url (for example, a bundled asset URL)
    */
   async setTrackSample(track, url) {
     if (!track) return false;
@@ -637,6 +641,7 @@ export class RhythmEngine {
       this.events.emit("bar", beatPayload);
       if (phraseBar === 0) this.events.emit("phrase", beatPayload);
     }
+    this.scheduleMetronomeStep(step, time, stepDuration);
     // ──────────────────────────────────────────────────────────
 
     const editableGeneratedRows = this.generatedRowsAreEditable();
@@ -677,7 +682,7 @@ export class RhythmEngine {
         const lift = this.config.drumLift;
         const rate = this.playbackRateFor(hit, patternStyle);
         const phraseLift = editableGeneratedRows ? 1 : phraseVelocityScale(hit, step, phraseBar);
-        const shiftLift = editableGeneratedRows ? 1 : rhythmicShiftScale(hit, step, phraseBar);
+        const shiftLift = editableGeneratedRows ? 1 : rhythmicShiftScale(hit, step, phraseBar, this.sectionBars());
         const arrangementLift = editableGeneratedRows ? 1 : arrangementHitScale(hit, step, phraseBar);
         if (phraseLift <= 0 || shiftLift <= 0 || arrangementLift <= 0) return;
         const layeredGain = velocity * lift * phraseLift * shiftLift * arrangementLift;
@@ -713,6 +718,7 @@ export class RhythmEngine {
       this.nextStep = 0;
       this.barIndex += 1;
     }
+    ({ bar: this.barIndex, step: this.nextStep } = this.wrapStepIntoLoopRange(this.barIndex, this.nextStep));
     this.nextStepTime += this.activeStepDurationSeconds || this.stepDurationSeconds(style, this.activeBarIntensity);
   }
 
@@ -760,9 +766,8 @@ export class RhythmEngine {
   seekToPhraseBar(phraseBar = 0, step = 0) {
     const nextBar = this.resolveBarIndexForPhrase(phraseBar);
     const nextStep = this.resolveStepIndex(step);
-    this.barIndex = nextBar;
+    ({ bar: this.barIndex, step: this.nextStep } = this.wrapStepIntoLoopRange(nextBar, nextStep));
     this.segmentStartBar = 0;
-    this.nextStep = nextStep;
     this.spaceBreak = null;
     this.lastSpaceBreakBar = -999;
     this.lastWhaleBar = -999;
@@ -777,6 +782,11 @@ export class RhythmEngine {
 
   resolveBarIndexForPhrase(phraseBar = 0) {
     const requested = Math.round(finiteNumber(phraseBar, 0));
+    if (this.loopStepRange()) {
+      const pattern = this.patterns[this.activePatternStyle] || this.patterns.jazz;
+      const barCount = Math.max(1, pattern?.bars?.length || PHRASE_BARS);
+      return ((requested % barCount) + barCount) % barCount;
+    }
     if (Number.isFinite(this.config.loopPhraseBarStart) && finiteNumber(this.config.loopPhraseBarLength, 0) > 0) {
       const loopLength = Math.max(1, Math.round(finiteNumber(this.config.loopPhraseBarLength, 1)));
       const loopStart = Math.max(0, Math.round(finiteNumber(this.config.loopPhraseBarStart, 0)));
@@ -790,6 +800,30 @@ export class RhythmEngine {
   resolveStepIndex(step = 0) {
     const requested = Math.round(finiteNumber(step, 0));
     return ((requested % 16) + 16) % 16;
+  }
+
+  loopStepRange() {
+    const startRaw = Number(this.config.loopPhraseStepStart);
+    const lengthRaw = finiteNumber(this.config.loopPhraseStepLength, 0);
+    if (!Number.isFinite(startRaw) || lengthRaw <= 0) return null;
+    const pattern = this.patterns[this.activePatternStyle] || this.patterns.jazz;
+    const totalSteps = Math.max(1, (pattern?.bars?.length || PHRASE_BARS) * 16);
+    const start = Math.max(0, Math.min(totalSteps - 1, Math.round(startRaw)));
+    const length = Math.max(1, Math.min(totalSteps - start, Math.round(lengthRaw)));
+    return { start, end: start + length, length };
+  }
+
+  wrapStepIntoLoopRange(bar, step) {
+    const range = this.loopStepRange();
+    const safeBar = Math.max(0, Math.round(finiteNumber(bar, 0)));
+    const safeStep = this.resolveStepIndex(step);
+    if (!range) return { bar: safeBar, step: safeStep };
+    const requested = safeBar * 16 + safeStep;
+    const wrapped = requested < range.start || requested >= range.end ? range.start : requested;
+    return {
+      bar: Math.floor(wrapped / 16),
+      step: wrapped % 16
+    };
   }
 
   triggerDubThrow() {
@@ -819,6 +853,11 @@ export class RhythmEngine {
   }
 
   phraseBarIndex() {
+    if (this.loopStepRange()) {
+      const pattern = this.patterns[this.activePatternStyle] || this.patterns.jazz;
+      const barCount = Math.max(1, pattern?.bars?.length || PHRASE_BARS);
+      return ((this.barIndex % barCount) + barCount) % barCount;
+    }
     if (Number.isFinite(this.config.loopPhraseBarStart) && finiteNumber(this.config.loopPhraseBarLength, 0) > 0) {
       const loopLength = Math.max(1, Math.round(finiteNumber(this.config.loopPhraseBarLength, 1)));
       const loopStart = Math.max(0, Math.round(finiteNumber(this.config.loopPhraseBarStart, 0)));
@@ -834,7 +873,7 @@ export class RhythmEngine {
   }
 
   isSectionStart() {
-    return this.phraseBarIndex() % SECTION_BARS === 0;
+    return this.phraseBarIndex() % this.sectionBars() === 0;
   }
 
   playTransitionScratch(time, previousStyle, nextStyle) {
@@ -855,6 +894,40 @@ export class RhythmEngine {
 
   swingIntensity() {
     return 1;
+  }
+
+  sectionBars() {
+    return normalizeSectionBars(this.config.barsPerSection ?? SECTION_BARS);
+  }
+
+  scheduleMetronomeStep(step, time, stepDuration = this.activeStepDurationSeconds) {
+    if (this.config.metronomeEnabled < 0.5) return;
+    const duration = finiteNumber(stepDuration, this.stepDurationSeconds(this.activePatternStyle, this.activeBarIntensity));
+    metronomeBeatEventsForStep(step, DEFAULT_TRACK_STEPS_PER_BAR, this.config.timeSignature)
+      .forEach(({ offsetSteps, accent }) => {
+        this.playMetronomeClick(time + offsetSteps * duration, accent);
+      });
+  }
+
+  playMetronomeClick(time, accent = false) {
+    if (!this.context || !this.masterGain) return;
+    const volume = Math.max(0, Math.min(1, finiteNumber(this.config.metronomeVolume, DEFAULT_RHYTHM_CONFIG.metronomeVolume)));
+    if (volume <= 0.001) return;
+    const osc = this.context.createOscillator();
+    const gain = this.context.createGain();
+    const start = Math.max(this.context.currentTime, time);
+    const peak = volume * (accent ? 0.32 : 0.19);
+    osc.type = "square";
+    osc.frequency.setValueAtTime(accent ? 1760 : 1320, start);
+    osc.frequency.exponentialRampToValueAtTime(accent ? 1180 : 980, start + 0.045);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), start + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + (accent ? 0.075 : 0.048));
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(start);
+    osc.stop(start + 0.09);
+    osc.onended = () => this.disconnectNodes([osc, gain]);
   }
 
   hitTimingForSchedulerStep(hitStep, schedulerStep, stepDuration) {
@@ -1049,9 +1122,10 @@ export class RhythmEngine {
     const autoScale = this.autoEchoScale("accent");
     if (autoScale <= 0.001) return;
     const pressure = clamp01(this.activeBarIntensity);
-    const accentSteps = shiftedAccentStepsForBar(phraseBar);
+    const sectionBars = this.sectionBars();
+    const accentSteps = shiftedAccentStepsForBar(phraseBar, sectionBars);
     if (!accentSteps.includes(step)) return;
-    const localBuild = phraseBar % SECTION_BARS;
+    const localBuild = phraseBar % sectionBars;
     const primary = step === accentSteps[0];
     const echoGain = ((primary ? 0.015 : 0.012) + pressure * 0.025 + localBuild * 0.002) * autoScale;
     this.playEchoPingSynth(time + 0.01, {
@@ -1069,9 +1143,10 @@ export class RhythmEngine {
     if (!this.trackIsAudible("hat") && !this.trackIsAudible("rim") && !this.trackIsAudible("kick")) return;
     if (phraseBar < 4) return;
     const pressure = clamp01(this.activeBarIntensity);
-    const localBuild = phraseBar % SECTION_BARS;
+    const sectionBars = this.sectionBars();
+    const localBuild = phraseBar % sectionBars;
     const stepDuration = this.activeStepDurationSeconds || 0.12;
-    const mode = phraseBeatModeForBar(phraseBar);
+    const mode = phraseBeatModeForBar(phraseBar, sectionBars);
     if (this.isDrumMutedForSpace(step)) return;
     if (this.trackIsAudible("hat") && localBuild === 6 && step === 14) {
       this.playHit("hat", time + stepDuration * 0.5, 0.04 + pressure * 0.02, 1.08);
@@ -1221,7 +1296,7 @@ export class RhythmEngine {
   scheduleSynthStep(step, time, style, phraseBar) {
     if (this.generatedRowsAreEditable()) return;
     const pressure = clamp01(this.activeBarIntensity);
-    const section = Math.floor(phraseBar / SECTION_BARS);
+    const section = Math.floor(phraseBar / this.sectionBars());
     const bassSteps = this.currentBarHasSequencedBass()
       ? []
       : phraseBar < 2 ? [0] : phraseBar < 4 ? [0, 10] : pressure > 0.62 ? [0, 5, 10, 13] : pressure > 0.34 ? [0, 7, 10] : [0, 10];
@@ -1294,7 +1369,7 @@ export class RhythmEngine {
 
   scheduleFunkLineStep(step, time, phraseBar, pressure) {
     if (phraseBar < 6) return;
-    const section = Math.floor(phraseBar / SECTION_BARS);
+    const section = Math.floor(phraseBar / this.sectionBars());
     const lowPattern = [4, 11];
     const midPattern = phraseBar % 2 === 0 ? [1, 4, 9, 11] : [3, 6, 10, 14];
     const highPattern = phraseBar % 4 === 3 ? [1, 4, 6, 9, 11, 14] : [1, 5, 8, 11, 14];
@@ -1316,7 +1391,7 @@ export class RhythmEngine {
 
   scheduleSectionPad(time, style, phraseBar) {
     if (!this.trackIsAudible("pad")) return;
-    const section = Math.floor(phraseBar / SECTION_BARS);
+    const section = Math.floor(phraseBar / this.sectionBars());
     if (!this.isSectionStart() || this.lastPadSection === section) return;
     this.lastPadSection = section;
     const pressure = clamp01(this.activeBarIntensity);
@@ -1446,7 +1521,8 @@ export class RhythmEngine {
     if (this.lastDownbeatEchoBar === this.barIndex) return;
     this.lastDownbeatEchoBar = this.barIndex;
     const pressure = clamp01(this.activeBarIntensity);
-    const sectionStart = phraseBar % SECTION_BARS === 0;
+    const sectionBars = this.sectionBars();
+    const sectionStart = phraseBar % sectionBars === 0;
     const phraseStart = phraseBar === 0;
     const turnaround = phraseBar === 8 || phraseBar === 16 || phraseBar === 24 || phraseBar === 31;
     const amount = (phraseStart ? 0.5 : sectionStart || turnaround ? 0.38 : 0.2 + pressure * 0.12) * autoScale;
@@ -1460,7 +1536,7 @@ export class RhythmEngine {
       this.playEchoPingSynth(time + 0.012, {
         gain: ((sectionStart ? 0.045 : 0.028) + pressure * 0.035) * autoScale,
         duration: (this.activeStepDurationSeconds || 0.12) * (sectionStart ? 6 : 4),
-        frequency: this.synthFrequency([12, 15, 10, 17][Math.floor(phraseBar / SECTION_BARS) % 4], 1),
+        frequency: this.synthFrequency([12, 15, 10, 17][Math.floor(phraseBar / sectionBars) % 4], 1),
         pan: sectionStart ? -0.22 : 0.28
       });
     }
