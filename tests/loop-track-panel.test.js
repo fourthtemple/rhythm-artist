@@ -1,7 +1,7 @@
 // Unit tests for loop-track editing math. `node --test`.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cutRegionsToSelection, makeUnscaledRevealRegion, regionSourceSlice } from "../src/ui/wave-edit/loop-track-panel.js";
+import { cutRegionsToSelection, makeUnscaledRevealRegion, regionSourceSlice, removeRegionsFromSelection } from "../src/ui/wave-edit/loop-track-panel.js";
 
 const closeTo = (actual, expected, epsilon = 1e-9) => {
   assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} should be close to ${expected}`);
@@ -72,6 +72,25 @@ test("cutRegionsToSelection preserves the natural-time source under the marquee"
   closeTo(kept.len, 0.5);
   closeTo(kept.srcStartFrac, (2.25 * barDuration) / duration);
   closeTo(kept.srcEndFrac, (2.75 * barDuration) / duration);
+});
+
+test("removeRegionsFromSelection cuts only the selected span", () => {
+  const track = {
+    barsInFile: 4,
+    regions: [{ bar: 0, len: 4, gain: 1, chops: 4, sliceSensitivity: 0.12, mode: "cut" }]
+  };
+
+  const [left, right] = removeRegionsFromSelection(track, 1, 1);
+
+  closeTo(left.bar, 0);
+  closeTo(left.len, 1);
+  closeTo(left.srcStartFrac, 0);
+  closeTo(left.srcEndFrac, 0.25);
+
+  closeTo(right.bar, 2);
+  closeTo(right.len, 2);
+  closeTo(right.srcStartFrac, 0.5);
+  closeTo(right.srcEndFrac, 1);
 });
 
 test("makeUnscaledRevealRegion creates only the newly exposed natural-speed audio", () => {

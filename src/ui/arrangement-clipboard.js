@@ -42,6 +42,10 @@
  * @param {(hit: string) => string} deps.trackName
  * @param {(kind: string, id: string, label?: string) => void} [deps.moveTrackLane]
  * @param {(hit: string) => void} [deps.removeGridTrack]
+ * @param {(hit: string) => void} [deps.startTrackMidiLearn]
+ * @param {(hit: string) => void} [deps.resetTrackMidiTrigger]
+ * @param {(hit: string) => string} [deps.midiTriggerLabel]
+ * @param {(hit: string) => boolean} [deps.hasCustomMidiTrigger]
  */
 export function createArrangementClipboard(deps) {
   const {
@@ -73,7 +77,11 @@ export function createArrangementClipboard(deps) {
     resetSelectedPanel,
     trackName,
     moveTrackLane = null,
-    removeGridTrack = () => {}
+    removeGridTrack = () => {},
+    startTrackMidiLearn = null,
+    resetTrackMidiTrigger = null,
+    midiTriggerLabel = null,
+    hasCustomMidiTrigger = null
   } = deps;
 
   // ── Two-bar source helpers ──────────────────────────────────
@@ -464,9 +472,22 @@ export function createArrangementClipboard(deps) {
     const barCount = state.selectedBars.length || 1;
     const label = trackName(hit);
     const [laneKind = "grid", laneId = hit] = String(laneKey || `grid:${hit}`).split(":");
+    const midiLabel = typeof midiTriggerLabel === "function" ? midiTriggerLabel(hit) : "";
+    const hasCustomMidi = typeof hasCustomMidiTrigger === "function" ? hasCustomMidiTrigger(hit) : false;
     showContextMenu(event, [
       { label: `Copy ${trackCount} track(s) × ${barCount} bar(s)`, action: () => copySelectedBars({ tracksOnly: true }) },
       { label: "Paste track(s) at this bar", disabled: !state.barClipboard?.tracks?.length, action: () => pasteBarsAt(state.activeBar) },
+      { separator: true },
+      {
+        label: midiLabel ? `Map MIDI trigger (${midiLabel})` : "Map MIDI trigger",
+        disabled: !startTrackMidiLearn,
+        action: () => startTrackMidiLearn?.(hit)
+      },
+      {
+        label: "Reset MIDI trigger",
+        disabled: !resetTrackMidiTrigger || !hasCustomMidi,
+        action: () => resetTrackMidiTrigger?.(hit)
+      },
       { separator: true },
       { label: `Move ${label}`, disabled: !moveTrackLane, action: () => moveTrackLane?.(laneKind, laneId, label) },
       { separator: true },

@@ -149,6 +149,59 @@ export function cutRegionsToSelection(track, startBar, len, bufferDuration = 0, 
   return next.sort((a, b) => a.bar - b.bar);
 }
 
+/**
+ * Return the region list produced by cutting the selected timeline span out of
+ * existing regions. Audio to the left and right of the selection stays in its
+ * original timeline position.
+ */
+export function removeRegionsFromSelection(track, startBar, len, bufferDuration = 0, barDurationSec = 0) {
+  const selectionStart = Math.max(0, finiteNumber(startBar, 0));
+  const selectionLen = Math.max(MIN_REGION_BARS, finiteNumber(len, 0));
+  const selectionEnd = selectionStart + selectionLen;
+  const regions = Array.isArray(track?.regions) ? track.regions : [];
+  const next = [];
+
+  const keepSlice = (region, sliceStart, sliceEnd) => {
+    if (sliceEnd <= sliceStart + BAR_EPSILON) return;
+    const { startFrac: srcStartFracRaw, endFrac: srcEndFracRaw } = regionSourceSlice(
+      region,
+      track,
+      sliceStart,
+      sliceEnd,
+      bufferDuration,
+      barDurationSec
+    );
+    const srcStartFrac = Math.max(0, Math.min(1, srcStartFracRaw));
+    const srcEndFrac = Math.max(srcStartFrac + 1e-9, Math.min(1, srcEndFracRaw));
+    next.push({
+      ...region,
+      bar: sliceStart,
+      len: Math.max(MIN_REGION_BARS, sliceEnd - sliceStart),
+      srcStartFrac,
+      srcEndFrac,
+      sampleOffset: undefined
+    });
+  };
+
+  regions.forEach((region) => {
+    const rStart = finiteNumber(region.bar, 0);
+    const rLen = Math.max(MIN_REGION_BARS, finiteNumber(region.len, 1));
+    const rEnd = rStart + rLen;
+    const oL = Math.max(rStart, selectionStart);
+    const oR = Math.min(rEnd, selectionEnd);
+
+    if (oR <= oL + BAR_EPSILON) {
+      next.push({ ...region });
+      return;
+    }
+
+    keepSlice(region, rStart, oL);
+    keepSlice(region, oR, rEnd);
+  });
+
+  return next.sort((a, b) => a.bar - b.bar);
+}
+
 export function makeUnscaledRevealRegion(region, side, revealLen, bufferDuration = 0, barDurationSec = 0) {
   const safeLen = Math.max(0, finiteNumber(revealLen, 0));
   const srcPerBar = bufferDuration > 0 && barDurationSec > 0
@@ -1654,16 +1707,40 @@ export function createLoopTrackPanel({
 
     sep();
 
-    // ── Cut-inverse: keep only the parts of existing regions INSIDE the selection.
-    //    Everything outside the marquee is removed.  We map the visual marquee
-    //    (timeline-fraction space) into each region's source-buffer window so
-    //    the kept audio matches *exactly* what was highlighted on screen.
-    addItem("✂  Cut (keep inside selection)", (startBar, len) => {
+    // ── Cut: copy the selected span, then remove only that span from the lane.
+    addItem("✂  Cut selection", (startBar, len) => {
       const selEnd = startBar + len;
       const dur = track.buffer ? track.buffer.duration : 0;
+      const clipboardRegions = copiedRegionsForSelection(track, startBar, len);
+      pushHistory();
+      const next = removeRegionsFromSelection(track, startBar, len, dur, currentBarDurationSec());
+      waveEditClipboard = {
+        trackId: track.id,
+        trackName: track.name,
+        len: Math.max(MIN_REGION_BARS, len),
+        regions: clipboardRegions.map((region) => ({ ...region }))
+      };
+      setStatus(`Cut selection from bar ${formatBars(startBar)}-${formatBars(selEnd)}`);
+      track.regions.length = 0;
+      track.regions.push(...next);
+      selectedLoopRegion = next.length ? { trackId: track.id, regionIdx: 0 } : null;
+      syncRegionPanel();
+      renderLane(track.id);
+    });
+
+    addItem("⛶  Isolate selection", (startBar, len) => {
+      const selEnd = startBar + len;
+      const dur = track.buffer ? track.buffer.duration : 0;
+      const clipboardRegions = copiedRegionsForSelection(track, startBar, len);
       pushHistory();
       const next = cutRegionsToSelection(track, startBar, len, dur, currentBarDurationSec());
-      setStatus(`Cut: kept ${next.length} region(s) from bar ${formatBars(startBar)}-${formatBars(selEnd)}`);
+      waveEditClipboard = {
+        trackId: track.id,
+        trackName: track.name,
+        len: Math.max(MIN_REGION_BARS, len),
+        regions: clipboardRegions.map((region) => ({ ...region }))
+      };
+      setStatus(`Isolated selection from bar ${formatBars(startBar)}-${formatBars(selEnd)}`);
       track.regions.length = 0;
       track.regions.push(...next);
       selectedLoopRegion = next.length ? { trackId: track.id, regionIdx: 0 } : null;
@@ -1768,6 +1845,7 @@ export function createLoopTrackPanel({
     leftHandle.className = "lane-marquee-handle lane-marquee-handle--left";
     leftHandle.addEventListener("mousedown", (e) => {
       e.stopPropagation();
+      e.preventDefault();
       const startX = e.clientX;
       const startLeft = left;
       const onMove = (me) => {
@@ -1776,7 +1854,12 @@ export function createLoopTrackPanel({
         left = snapFrac(raw, totalBars());
         updatePos();
       };
-      const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+      const onUp = (upEvent) => {
+        upEvent.preventDefault();
+        upEvent.stopPropagation();
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
     });
@@ -1786,6 +1869,7 @@ export function createLoopTrackPanel({
     rightHandle.className = "lane-marquee-handle lane-marquee-handle--right";
     rightHandle.addEventListener("mousedown", (e) => {
       e.stopPropagation();
+      e.preventDefault();
       const startX = e.clientX;
       const startRight = right;
       const onMove = (me) => {
@@ -1794,18 +1878,18 @@ export function createLoopTrackPanel({
         right = snapFrac(raw, totalBars());
         updatePos();
       };
-      const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+      const onUp = (upEvent) => {
+        upEvent.preventDefault();
+        upEvent.stopPropagation();
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
     });
 
-    // Click the marquee body to open the action popup
-    marquee.addEventListener("click", (e) => {
-      e.stopPropagation();
-      showMarqueeActionPopup(e.clientX, e.clientY + 4, track, getSelection, marquee);
-    });
-
-    // Right-click anywhere on the marquee body also works
+    // Strict right-click only: resizing/releasing the marquee should never open
+    // the action popup from a synthesized left-click.
     marquee.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       e.stopPropagation();

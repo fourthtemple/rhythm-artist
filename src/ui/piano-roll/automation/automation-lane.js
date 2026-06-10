@@ -114,11 +114,6 @@ export function createAutomationLane({
   const wrap = document.createElement("div");
   wrap.className = "piano-roll-automation";
 
-  const toolbar = document.createElement("div");
-  toolbar.className = "piano-roll-automation-toolbar";
-  const label = document.createElement("span");
-  label.className = "piano-roll-automation-label";
-  label.textContent = "Automation";
   const select = document.createElement("select");
   select.className = "piano-roll-automation-select";
   select.setAttribute("aria-label", "Automation parameter");
@@ -135,8 +130,6 @@ export function createAutomationLane({
     setStatus?.(`Automation: ${automationParameterById(select.value).label}`);
     renderStepGrid();
   });
-  toolbar.append(label, select);
-  wrap.appendChild(toolbar);
 
   const lane = document.createElement("div");
   lane.className = "piano-roll-automation-lane";
@@ -272,6 +265,7 @@ export function createAutomationLane({
     renderStepGrid();
   });
 
+  lane.appendChild(select);
   wrap.appendChild(lane);
   return wrap;
 }

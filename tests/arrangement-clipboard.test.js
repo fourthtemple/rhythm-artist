@@ -3,10 +3,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createArrangementClipboard } from "../src/ui/arrangement-clipboard.js";
 
-function makeArrangement({ selectedBars = [] } = {}) {
+function makeArrangement({ selectedBars = [], midi = {} } = {}) {
   const menu = { items: [] };
   const loopCalls = [];
   const removedTracks = [];
+  const midiCalls = [];
   let renderCalls = 0;
   const state = {
     selectedBars: [...selectedBars],
@@ -50,9 +51,13 @@ function makeArrangement({ selectedBars = [] } = {}) {
     trackName: (hit) => hit,
     removeGridTrack: (hit) => {
       removedTracks.push(hit);
-    }
+    },
+    startTrackMidiLearn: midi.learn === false ? null : (hit) => midiCalls.push({ type: "learn", hit }),
+    resetTrackMidiTrigger: midi.reset === false ? null : (hit) => midiCalls.push({ type: "reset", hit }),
+    midiTriggerLabel: midi.label ? () => midi.label : () => "36 C1",
+    hasCustomMidiTrigger: midi.custom ? () => true : () => false
   });
-  return { arrangement, loopCalls, menu, removedTracks, state, getRenderCalls: () => renderCalls };
+  return { arrangement, loopCalls, menu, midiCalls, removedTracks, state, getRenderCalls: () => renderCalls };
 }
 
 test("bar context Loop here loops the selected bar span", () => {
@@ -133,4 +138,24 @@ test("track context can delete former core tracks from the left label menu", () 
   deleteItem.action();
 
   assert.deepEqual(removedTracks, ["kick"]);
+});
+
+test("track context can start and reset MIDI trigger mapping", () => {
+  const { arrangement, menu, midiCalls } = makeArrangement({ midi: { custom: true, label: "48 C3" } });
+  arrangement.openTrackContextMenu({}, "kick");
+
+  const mapItem = menu.items.find((item) => item.label === "Map MIDI trigger (48 C3)");
+  const resetItem = menu.items.find((item) => item.label === "Reset MIDI trigger");
+  assert.ok(mapItem);
+  assert.ok(resetItem);
+  assert.equal(mapItem.disabled, false);
+  assert.equal(resetItem.disabled, false);
+
+  mapItem.action();
+  resetItem.action();
+
+  assert.deepEqual(midiCalls, [
+    { type: "learn", hit: "kick" },
+    { type: "reset", hit: "kick" }
+  ]);
 });

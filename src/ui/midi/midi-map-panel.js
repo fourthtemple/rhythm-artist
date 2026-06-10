@@ -82,6 +82,16 @@ export function createMidiMapPanel({
     return gridTrackToMidiNote(trackId, gridTrackIds(), { trackNoteMap: configuredMap() });
   }
 
+  function assignedNoteLabelFor(trackId) {
+    const note = assignedNoteFor(trackId);
+    if (note == null) return "";
+    return `${note} ${noteNameForMidi(note)}`;
+  }
+
+  function hasCustomTrackNote(trackId) {
+    return configuredMap()[trackId] != null;
+  }
+
   function setTrackNote(trackId, noteNumber, { announce = true } = {}) {
     const defaultNote = defaultNoteFor(trackId);
     const nextMap = assignMidiTrackNote(configuredMap(), trackId, noteNumber, {
@@ -348,9 +358,13 @@ export function createMidiMapPanel({
   return {
     applyControlChange,
     applyNote,
+    assignedNoteLabelFor,
+    hasCustomTrackNote,
     learnControlFromControlChange,
     learnFromNote,
     render,
+    resetTrackNote,
+    startLearning,
     sync: render
   };
 }

@@ -958,6 +958,10 @@ const arrangement = createArrangementClipboard({
   resetSelectedPanel,
   trackName,
   moveTrackLane,
+  startTrackMidiLearn: (hit) => midiMapPanel?.startLearning?.(hit),
+  resetTrackMidiTrigger: (hit) => midiMapPanel?.resetTrackNote?.(hit),
+  midiTriggerLabel: (hit) => midiMapPanel?.assignedNoteLabelFor?.(hit) || "",
+  hasCustomMidiTrigger: (hit) => Boolean(midiMapPanel?.hasCustomTrackNote?.(hit)),
   playFromBar,
   loopFromBar,
   removeGridTrack: (hit) => removeGridTrack(hit)
