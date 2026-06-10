@@ -31,12 +31,17 @@
  * @param {() => void} deps.applyConfig
  * @param {() => void} deps.buildLoopTabs
  * @param {() => void} deps.buildBarTabs
+ * @param {() => void} deps.buildStepGrid
  * @param {() => void} deps.renderStepGrid
  * @param {() => void} deps.refreshLoopBarButton
  * @param {(hit: string, step: number, mode?: string, barIndex?: number) => void} deps.selectStep
+ * @param {(barIndex: number) => void|Promise<void>} deps.playFromBar
+ * @param {(barIndex: number, length?: number) => void|Promise<void>} deps.loopFromBar
  * @param {(event: any, items: any[]) => void} deps.showContextMenu
  * @param {() => void} deps.resetSelectedPanel
  * @param {(hit: string) => string} deps.trackName
+ * @param {(kind: string, id: string, label?: string) => void} [deps.moveTrackLane]
+ * @param {(hit: string) => void} [deps.removeGridTrack]
  */
 export function createArrangementClipboard(deps) {
   const {
@@ -58,12 +63,17 @@ export function createArrangementClipboard(deps) {
     applyConfig,
     buildLoopTabs,
     buildBarTabs,
+    buildStepGrid,
     renderStepGrid,
     refreshLoopBarButton,
     selectStep,
+    playFromBar,
+    loopFromBar,
     showContextMenu,
     resetSelectedPanel,
-    trackName
+    trackName,
+    moveTrackLane = null,
+    removeGridTrack = () => {}
   } = deps;
 
   // ── Two-bar source helpers ──────────────────────────────────
@@ -89,7 +99,7 @@ export function createArrangementClipboard(deps) {
   }
 
   function selectedTrack() {
-    return state.selected?.hit || null;
+    return state.selectedTracks?.[0] || state.selected?.hit || null;
   }
 
   function updateTrackClipboardButtons() {
@@ -272,7 +282,13 @@ export function createArrangementClipboard(deps) {
       const [lo, hi] = state.barAnchor <= index ? [state.barAnchor, index] : [index, state.barAnchor];
       const range = [];
       for (let i = lo; i <= hi; i += 1) range.push(i);
-      state.selectedBars = range;
+      const set = new Set(state.selectedBars);
+      const removeRange = range.every((bar) => set.has(bar));
+      range.forEach((bar) => {
+        if (removeRange) set.delete(bar);
+        else set.add(bar);
+      });
+      state.selectedBars = [...set].sort((a, b) => a - b);
     } else {
       const set = new Set(state.selectedBars);
       if (set.has(index)) set.delete(index);
@@ -281,6 +297,7 @@ export function createArrangementClipboard(deps) {
       state.barAnchor = index;
     }
     buildBarTabs();
+    renderStepGrid();
     setStatus(state.selectedBars.length
       ? `Selected ${state.selectedBars.length} bar(s)`
       : "Bar selection cleared");
@@ -335,7 +352,7 @@ export function createArrangementClipboard(deps) {
     applyConfig();
     buildLoopTabs();
     buildBarTabs();
-    renderStepGrid();
+    buildStepGrid();
     setStatus(`Pasted ${state.loopClipboard.length} loop(s) at loop ${targetIndex + 1}`);
   }
 
@@ -404,10 +421,31 @@ export function createArrangementClipboard(deps) {
     ]);
   }
 
+  function selectedBarSpanForContext(index) {
+    const selected = state.selectedBars.includes(index) ? state.selectedBars : [index];
+    const safeBars = [...new Set(selected)]
+      .map((bar) => Math.round(Number(bar)))
+      .filter((bar) => Number.isFinite(bar) && bar >= 0 && bar < bars().length)
+      .sort((a, b) => a - b);
+    const start = safeBars[0] ?? index;
+    const end = safeBars[safeBars.length - 1] ?? start;
+    return { start, length: Math.max(1, end - start + 1) };
+  }
+
   function openBarContextMenu(event, index) {
     const barCount = state.selectedBars.length || 1;
     const trackCount = state.selectedTracks.length;
+    const useSelectedBars = state.selectedBars.includes(index) && state.selectedBars.length > 1;
     const items = [
+      { label: "Play here", action: () => { void playFromBar?.(index); } },
+      {
+        label: useSelectedBars ? "Loop selected" : "Loop here",
+        action: () => {
+          const span = selectedBarSpanForContext(index);
+          void loopFromBar?.(span.start, span.length);
+        }
+      },
+      { separator: true },
       { label: `Copy ${barCount} bar(s)`, action: () => copySelectedBars() }
     ];
     if (trackCount) {
@@ -416,19 +454,25 @@ export function createArrangementClipboard(deps) {
     items.push(
       { label: "Paste here", disabled: !state.barClipboard?.bars?.length, action: () => pasteBarsAt(index) },
       { separator: true },
-      { label: "Clear bar selection", disabled: !state.selectedBars.length, action: () => { state.selectedBars = []; buildBarTabs(); } }
+      { label: "Clear bar selection", disabled: !state.selectedBars.length, action: () => { state.selectedBars = []; buildBarTabs(); renderStepGrid(); } }
     );
     showContextMenu(event, items);
   }
 
-  function openTrackContextMenu(event, hit) {
+  function openTrackContextMenu(event, hit, laneKey = `grid:${hit}`) {
     const trackCount = state.selectedTracks.length || 1;
     const barCount = state.selectedBars.length || 1;
+    const label = trackName(hit);
+    const [laneKind = "grid", laneId = hit] = String(laneKey || `grid:${hit}`).split(":");
     showContextMenu(event, [
       { label: `Copy ${trackCount} track(s) × ${barCount} bar(s)`, action: () => copySelectedBars({ tracksOnly: true }) },
       { label: "Paste track(s) at this bar", disabled: !state.barClipboard?.tracks?.length, action: () => pasteBarsAt(state.activeBar) },
       { separator: true },
-      { label: "Clear track selection", action: () => { resetSelectedPanel(); renderStepGrid(); } }
+      { label: `Move ${label}`, disabled: !moveTrackLane, action: () => moveTrackLane?.(laneKind, laneId, label) },
+      { separator: true },
+      { label: "Clear track selection", action: () => { resetSelectedPanel(); renderStepGrid(); } },
+      { separator: true },
+      { label: `Delete ${label}`, action: () => removeGridTrack(hit) }
     ]);
   }
 
@@ -456,7 +500,7 @@ export function createArrangementClipboard(deps) {
     applyConfig();
     buildLoopTabs();
     buildBarTabs();
-    renderStepGrid();
+    buildStepGrid();
     setStatus(`Song has ${targetCount} ${targetCount === 1 ? `${barsPerLoop}-bar verse` : `${barsPerLoop}-bar verses`}`);
   }
 
@@ -472,7 +516,7 @@ export function createArrangementClipboard(deps) {
     applyConfig();
     buildLoopTabs();
     buildBarTabs();
-    renderStepGrid();
+    buildStepGrid();
     setStatus(`Duplicated to loop ${state.activeLoopIndex + 1}`);
   }
 
@@ -490,7 +534,7 @@ export function createArrangementClipboard(deps) {
     applyConfig();
     buildLoopTabs();
     buildBarTabs();
-    renderStepGrid();
+    buildStepGrid();
     setStatus("Deleted current loop");
   }
 

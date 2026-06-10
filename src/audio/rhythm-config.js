@@ -9,6 +9,9 @@ export const MAX_SECTION_BARS = 32;
 export const DEFAULT_TRACK_STEPS_PER_BAR = 16;
 export const DEFAULT_TIME_SIGNATURE = "4/4";
 export const TIME_SIGNATURE_OPTIONS = ["4/4", "3/4", "6/8", "5/4", "7/8"];
+// Pitch offsets map from A1 (MIDI 33), so MIDI 0..127 is -33..+94.
+export const PITCH_OFFSET_MIN = -33;
+export const PITCH_OFFSET_MAX = 94;
 export const SYNTH_ROOT_HZ = 55;
 export const SYNTH_SCALE = [0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24];
 export const SEQUENCED_BASS_PHRASE = [0, 3, 5, 2, 7, 5, 3, 10];
@@ -19,10 +22,12 @@ import {
   EIGHT_OH_EIGHT_DEFAULT_IDS,
   GENERATED_TRACK_IDS,
   PATTERN_TRACK_IDS,
+  DEFAULT_GRID_TRACK_IDS,
   TRACK_BUS_SENDS,
   TRACK_LEVELS,
   TRACK_PANS,
   TRACK_REGISTRY,
+  TRACK_DEFAULT_VELOCITY,
   TRACK_REVERB_SENDS,
   baseTrackId
 } from "./rhythm-track-registry.js";
@@ -58,6 +63,7 @@ export const DEFAULT_TRACK_LEVELS = TRACK_LEVELS;
 export const DEFAULT_TRACK_PANS = TRACK_PANS;
 export const DEFAULT_SYNTH_LEVEL = 1.45;
 export const DUCK_SOUND_REARM_SECONDS = 0.18;
+export const DEFAULT_NOTE_INSTRUMENT = "eightOhEightKick";
 
 export const finiteNumber = (value, fallback = 0) => {
   const number = Number(value);
@@ -127,31 +133,106 @@ export const normalizePatternStep = (value) => {
 };
 export const STEP_OPTION_DEFAULTS = {
   pitch: 0,
+  chordIntervals: [0],
   offsetMs: 0,
   attackMs: 18,
   delayMs: 0,
   delaySend: 0,
   reverbSend: 0,
   dubEcho: 0,
-  wobble: 0
+  wobble: 0,
+  pressure: 0,
+  durationSteps: 1,
+  pianoRoll: 0
 };
+
+export const TRACK_OPTION_DEFAULT_KEYS = [
+  "offsetMs",
+  "attackMs",
+  "wobble",
+  "dubEcho",
+  "delaySend",
+  "reverbSend"
+];
+
+export const normalizeChordIntervals = (value = STEP_OPTION_DEFAULTS.chordIntervals) => {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[,\s]+/)
+      : [0];
+  const out = [];
+  raw.forEach((entry) => {
+    const interval = Math.round(clamp(entry, -24, 24, 0));
+    if (!out.includes(interval)) out.push(interval);
+  });
+  if (!out.includes(0)) out.unshift(0);
+  return out.slice(0, 6);
+};
+
+const arraysEqual = (left = [], right = []) =>
+  left.length === right.length && left.every((value, index) => value === right[index]);
 
 export const normalizeStepOptions = (options = {}) => {
   const source = options && typeof options === "object" ? options : {};
   return {
-    pitch: Math.round(clamp(source.pitch, -24, 24, STEP_OPTION_DEFAULTS.pitch)),
+    pitch: Math.round(clamp(source.pitch, PITCH_OFFSET_MIN, PITCH_OFFSET_MAX, STEP_OPTION_DEFAULTS.pitch)),
+    chordIntervals: normalizeChordIntervals(source.chordIntervals ?? source.chord ?? source.chordNotes),
     offsetMs: Math.round(clamp(source.offsetMs ?? source.offset, -180, 180, STEP_OPTION_DEFAULTS.offsetMs)),
     attackMs: Math.round(clamp(source.attackMs ?? source.attack, 0, 260, STEP_OPTION_DEFAULTS.attackMs)),
     delayMs: Math.round(clamp(source.delayMs ?? source.delay, 0, 640, STEP_OPTION_DEFAULTS.delayMs)),
     delaySend: clamp01(source.delaySend ?? source.echo),
     reverbSend: clamp01(source.reverbSend),
     dubEcho: clamp01(source.dubEcho ?? source.dubEchoAmount ?? source.dub),
-    wobble: clamp(source.wobble ?? source.lfo, 0, 4, STEP_OPTION_DEFAULTS.wobble)
+    wobble: clamp(source.wobble ?? source.lfo, 0, 4, STEP_OPTION_DEFAULTS.wobble),
+    pressure: clamp01(source.pressure ?? source.aftertouch),
+    durationSteps: clamp(source.durationSteps ?? source.duration, 0.25, 64, STEP_OPTION_DEFAULTS.durationSteps),
+    pianoRoll: finiteNumber(source.pianoRoll, 0) >= 0.5 || source.pianoRoll === true ? 1 : 0
   };
 };
 
+export const normalizeDefaultNote = (note = {}) => {
+  const source = note && typeof note === "object" ? note : {};
+  const requestedInstrument = typeof source.instrument === "string" ? source.instrument : DEFAULT_NOTE_INSTRUMENT;
+  const instrument = ALL_TRACK_IDS.includes(baseTrackId(requestedInstrument))
+    ? requestedInstrument
+    : DEFAULT_NOTE_INSTRUMENT;
+  const base = baseTrackId(instrument);
+  const fallbackVelocity = TRACK_DEFAULT_VELOCITY[instrument] ?? TRACK_DEFAULT_VELOCITY[base] ?? 0.32;
+  return {
+    instrument,
+    velocity: Math.max(0, Math.min(0.9, finiteNumber(source.velocity, fallbackVelocity))),
+    options: normalizeStepOptions(source.options || {})
+  };
+};
+
+export const normalizeTrackOptionDefaults = (defaults = {}) => {
+  const normalized = normalizeStepOptions(defaults);
+  const out = {};
+  TRACK_OPTION_DEFAULT_KEYS.forEach((key) => {
+    const fallback = STEP_OPTION_DEFAULTS[key];
+    const value = normalized[key];
+    if (Math.abs(finiteNumber(value, fallback) - fallback) > 0.0001) {
+      out[key] = value;
+    }
+  });
+  return out;
+};
+
+export const trackOptionDefaultsFor = (config = {}, track) =>
+  normalizeStepOptions(config?.trackOptionDefaults?.[track] || {});
+
+export const effectiveStepOptionsForTrack = (config = {}, track, options = {}) =>
+  normalizeStepOptions({
+    ...(config?.trackOptionDefaults?.[track] || {}),
+    ...(options || {})
+  });
+
 export const hasStepOptions = (options = {}) => Object.entries(STEP_OPTION_DEFAULTS)
-  .some(([key, value]) => Math.abs(finiteNumber(options[key], value) - value) > 0.0001);
+  .some(([key, value]) => {
+    if (Array.isArray(value)) return !arraysEqual(normalizeChordIntervals(options[key]), value);
+    return Math.abs(finiteNumber(options[key], value) - value) > 0.0001;
+  });
 
 // ── Per-track 808 voice shape ────────────────────────────────
 // Ranges mirror the global eightOhEight* config knobs. A per-track shape is a
@@ -258,16 +339,27 @@ export const DEFAULT_RHYTHM_CONFIG = {
   trackReverbSends: DEFAULT_TRACK_REVERB_SENDS,
   trackLevels: DEFAULT_TRACK_LEVELS,
   trackPans: DEFAULT_TRACK_PANS,
+  defaultNote: normalizeDefaultNote(),
+  trackOptionDefaults: {},
+  trackDefaultVelocities: {},
   // Per-track 808 voice shape overrides, keyed by track id (base or instance).
   // Each entry is a partial of { drive, punch, decay, tone, sub, choke }; any
   // missing field falls back to the global eightOhEight* default above. This is
   // what makes two "808 Clap" instances sound different.
   trackShapes: {},
   trackSamples: {},
-  sampleGroups: [],
+  trackViewTrackIds: [],
+  hiddenGridTrackIds: [],
   trackStepCounts: {},
+  midiNoteMap: {},
+  midiControlMap: {},
+  pianoRollTracks: [],
+  editorLaneOrder: [],
+  pianoRollLaneHeights: {},
+  pianoRollAutomationHeights: {},
   generatedRowsEditable: 0,
   soloTracks: [],
+  mutedTracks: [],
   patterns: {
     jazz: {
       bpm: 118,
@@ -378,7 +470,6 @@ const normalizeLoopTracks = (tracks) => {
         root: typeof track.root === "string" ? track.root : null,
         path: typeof track.path === "string" ? track.path : null,
         fileName: typeof track.fileName === "string" ? track.fileName : null,
-        sampleGroupId: typeof track.sampleGroupId === "string" ? track.sampleGroupId : null,
         handleId: hasHandle ? track.handleId : null,
         relinkRequired: Boolean(track.relinkRequired || track.source === "local-file"),
         regions: Array.isArray(track.regions) && track.regions.length
@@ -388,30 +479,37 @@ const normalizeLoopTracks = (tracks) => {
     });
 };
 
-const normalizeSampleGroups = (groups) => {
-  if (!Array.isArray(groups)) return [];
-  const seen = new Set();
-  return groups
-    .map((group, index) => {
-      if (!group || typeof group !== "object") return null;
-      const label = typeof group.label === "string" && group.label.trim()
-        ? group.label.trim()
-        : `Sample Group ${index + 1}`;
-      const fallbackId = label
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "")
-        || `sample-group-${index + 1}`;
-      const id = typeof group.id === "string" && group.id.trim() ? group.id.trim() : fallbackId;
-      if (seen.has(id)) return null;
-      seen.add(id);
-      return {
-        id,
-        label,
-        collapsed: Boolean(group.collapsed)
-      };
-    })
-    .filter(Boolean);
+const normalizeMidiNoteMap = (map = {}) => {
+  if (!map || typeof map !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(map)
+      .map(([track, note]) => [track, Math.round(finiteNumber(note, -1))])
+      .filter(([track, note]) =>
+        typeof track === "string"
+        && ALL_TRACK_IDS.includes(baseTrackId(track))
+        && note >= 0
+        && note <= 127)
+  );
+};
+
+const normalizeMidiControlMap = (map = {}) => {
+  if (!map || typeof map !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(map)
+      .filter(([paramId, mapping]) =>
+        typeof paramId === "string"
+        && paramId
+        && mapping
+        && typeof mapping === "object"
+        && (mapping.kind === "cc" || mapping.kind === "note"))
+      .map(([paramId, mapping]) => [paramId, {
+        kind: mapping.kind === "note" ? "note" : "cc",
+        channel: Math.max(1, Math.min(16, Math.round(finiteNumber(mapping.channel, 1)))),
+        controller: Math.max(0, Math.min(127, Math.round(finiteNumber(mapping.controller, 0)))),
+        noteNumber: Math.max(0, Math.min(127, Math.round(finiteNumber(mapping.noteNumber, 0)))),
+        label: typeof mapping.label === "string" && mapping.label ? mapping.label : paramId
+      }])
+  );
 };
 
 /**
@@ -433,8 +531,18 @@ const collectExtraTrackIds = (config = {}) => {
   scan(config.trackReverbSends);
   scan(config.trackLevels);
   scan(config.trackPans);
+  scan(config.trackOptionDefaults);
+  scan(config.trackDefaultVelocities);
   scan(config.trackShapes);
   scan(config.trackSamples);
+  if (typeof config.defaultNote?.instrument === "string" && !known.has(baseTrackId(config.defaultNote.instrument))) {
+    found.add(config.defaultNote.instrument);
+  }
+  if (Array.isArray(config.trackViewTrackIds)) {
+    config.trackViewTrackIds.forEach((id) => {
+      if (typeof id === "string" && !known.has(id)) found.add(id);
+    });
+  }
   scan(config.trackStepCounts);
   const bars = config.patterns?.jazz?.bars;
   if (Array.isArray(bars)) {
@@ -498,6 +606,7 @@ export const normalizeRhythmConfig = (config = {}) => {
   merged.timeSignature = normalizeTimeSignature(merged.timeSignature ?? merged.timeSig);
   merged.metronomeEnabled = finiteNumber(merged.metronomeEnabled, DEFAULT_RHYTHM_CONFIG.metronomeEnabled) >= 0.5 ? 1 : 0;
   merged.metronomeVolume = Math.max(0, Math.min(1, finiteNumber(merged.metronomeVolume, DEFAULT_RHYTHM_CONFIG.metronomeVolume)));
+  merged.defaultNote = normalizeDefaultNote(merged.defaultNote);
   merged.masterEq = normalizeMasterEq(merged.masterEq);
   const sourceSends = merged.trackBusSends && typeof merged.trackBusSends === "object" ? merged.trackBusSends : {};
   // Include registry tracks plus any extra (instance) ids carried in the source
@@ -523,6 +632,29 @@ export const normalizeRhythmConfig = (config = {}) => {
     track,
     Math.max(-1, Math.min(1, finiteNumber(sourcePans[track], DEFAULT_TRACK_PANS[baseTrackId(track)] ?? 0)))
   ]));
+  const sourceOptionDefaults = merged.trackOptionDefaults && typeof merged.trackOptionDefaults === "object"
+    ? merged.trackOptionDefaults
+    : {};
+  merged.trackOptionDefaults = Object.fromEntries(
+    allTrackIds
+      .map((track) => [track, normalizeTrackOptionDefaults(sourceOptionDefaults[track])])
+      .filter(([, defaults]) => Object.keys(defaults).length > 0)
+  );
+  const sourceDefaultVelocities = merged.trackDefaultVelocities && typeof merged.trackDefaultVelocities === "object"
+    ? merged.trackDefaultVelocities
+    : {};
+  merged.trackDefaultVelocities = Object.fromEntries(
+    allTrackIds
+      .filter((track) => ALL_TRACK_IDS.includes(baseTrackId(track)))
+      .map((track) => {
+        const base = baseTrackId(track);
+        const fallback = TRACK_DEFAULT_VELOCITY[track] ?? TRACK_DEFAULT_VELOCITY[base] ?? 0.32;
+        const velocity = Math.max(0, Math.min(0.9, finiteNumber(sourceDefaultVelocities[track], fallback)));
+        return [track, velocity, fallback];
+      })
+      .filter(([, velocity, fallback]) => Math.abs(velocity - fallback) > 0.0001)
+      .map(([track, velocity]) => [track, velocity])
+  );
   // Per-track custom sample assignments. Bundled sample URLs are reloadable;
   // browser/file-handle entries reload in Chromium via IndexedDB handles; plain
   // local files are kept as relink-required metadata for Safari-style web mode.
@@ -560,6 +692,48 @@ export const normalizeRhythmConfig = (config = {}) => {
       .map(([track, value]) => [track, normalizeTrackStepCount(value)])
       .filter(([track, value]) => typeof track === "string" && value !== DEFAULT_TRACK_STEPS_PER_BAR)
   );
+  merged.pianoRollTracks = Array.isArray(merged.pianoRollTracks)
+    ? [...new Set(merged.pianoRollTracks
+      .map((track) => typeof track === "string" ? track : "")
+      .filter((track) => ALL_TRACK_IDS.includes(baseTrackId(track))))]
+    : [];
+  const sourceTrackViewTrackIds = Array.isArray(merged.trackViewTrackIds) ? merged.trackViewTrackIds : [];
+  merged.trackViewTrackIds = [...new Set([
+    ...sourceTrackViewTrackIds,
+    ...Object.keys(merged.trackSamples || {}),
+    ...merged.pianoRollTracks
+  ]
+    .map((track) => typeof track === "string" ? track : "")
+    .filter((track) => ALL_TRACK_IDS.includes(baseTrackId(track))))];
+  merged.hiddenGridTrackIds = Array.isArray(merged.hiddenGridTrackIds)
+    ? [...new Set(merged.hiddenGridTrackIds
+      .map((track) => typeof track === "string" ? track : "")
+      .filter((track) => ALL_TRACK_IDS.includes(baseTrackId(track))))]
+    : [];
+  merged.midiNoteMap = normalizeMidiNoteMap(merged.midiNoteMap);
+  merged.midiControlMap = normalizeMidiControlMap(merged.midiControlMap);
+  const sourcePianoRollLaneHeights = merged.pianoRollLaneHeights && typeof merged.pianoRollLaneHeights === "object"
+    ? merged.pianoRollLaneHeights
+    : {};
+  merged.pianoRollLaneHeights = Object.fromEntries(
+    Object.entries(sourcePianoRollLaneHeights)
+      .map(([track, height]) => [track, Math.round(finiteNumber(height, 132))])
+      .filter(([track, height]) => typeof track === "string"
+        && ALL_TRACK_IDS.includes(baseTrackId(track))
+        && height >= 54
+        && height <= 240)
+  );
+  const sourcePianoRollAutomationHeights = merged.pianoRollAutomationHeights && typeof merged.pianoRollAutomationHeights === "object"
+    ? merged.pianoRollAutomationHeights
+    : {};
+  merged.pianoRollAutomationHeights = Object.fromEntries(
+    Object.entries(sourcePianoRollAutomationHeights)
+      .map(([track, height]) => [track, Math.round(finiteNumber(height, 42))])
+      .filter(([track, height]) => typeof track === "string"
+        && ALL_TRACK_IDS.includes(baseTrackId(track))
+        && height >= 28
+        && height <= 180)
+  );
   // Per-track 808 voice shape overrides: { trackId: { drive, punch, ... } }.
   // Keep only entries that carry at least one in-range field after clamping.
   const sourceShapes = merged.trackShapes && typeof merged.trackShapes === "object" ? merged.trackShapes : {};
@@ -571,6 +745,9 @@ export const normalizeRhythmConfig = (config = {}) => {
   merged.generatedRowsEditable = finiteNumber(merged.generatedRowsEditable, DEFAULT_RHYTHM_CONFIG.generatedRowsEditable) >= 0.5 ? 1 : 0;
   merged.soloTracks = Array.isArray(merged.soloTracks)
     ? [...new Set(merged.soloTracks.filter((track) => typeof track === "string"))]
+    : [];
+  merged.mutedTracks = Array.isArray(merged.mutedTracks)
+    ? [...new Set(merged.mutedTracks.filter((track) => typeof track === "string"))]
     : [];
   const loopPhraseBar = merged.loopPhraseBar;
   const phraseClampMax = Math.max(MAX_SEQUENCE_BARS - 1, merged.patterns.jazz.bars.length - 1);
@@ -588,7 +765,25 @@ export const normalizeRhythmConfig = (config = {}) => {
     ? Math.max(0, Math.min(Math.max(0, phraseClampMax - merged.loopPhraseBarLength + 1), Math.round(Number(loopPhraseBarStart))))
     : null;
   merged.loopTracks = normalizeLoopTracks(merged.loopTracks);
-  merged.sampleGroups = normalizeSampleGroups(merged.sampleGroups);
+  {
+    const validEditorLaneKeys = new Set([
+      ...DEFAULT_GRID_TRACK_IDS.map((track) => `grid:${track}`),
+      ...merged.trackViewTrackIds.map((track) => `grid:${track}`),
+      ...Object.keys(merged.trackSamples || {}).map((track) => `grid:${track}`),
+      ...merged.pianoRollTracks.map((track) => `piano:${track}`),
+      ...merged.loopTracks.map((track) => `wave:${track.id}`)
+    ]);
+    merged.editorLaneOrder = Array.isArray(merged.editorLaneOrder)
+      ? [...new Set(merged.editorLaneOrder
+        .map((key) => typeof key === "string" ? key : "")
+        .filter((key) => {
+          if (validEditorLaneKeys.has(key)) return true;
+          const [kind, id] = key.split(":");
+          return kind === "grid" && ALL_TRACK_IDS.includes(baseTrackId(id));
+        }))]
+      : [];
+  }
+  delete merged.sampleGroups;
   return merged;
 };
 

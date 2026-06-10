@@ -14,10 +14,10 @@ import {
   SYNTH_SCALE,
   clamp01,
   finiteNumber,
+  effectiveStepOptionsForTrack,
   metronomeBeatEventsForStep,
   normalizeRhythmConfig,
   normalizeSectionBars,
-  normalizeStepOptions,
   phraseBeatModeForBar,
   sequencedBassPitchForStep,
   shiftedAccentStepsForBar,
@@ -129,6 +129,17 @@ export class RhythmEngine {
   /** Unsubscribe. */
   off(event, handler) { this.events.off(event, handler); }
 
+  async resumeContext(timeoutMs = 180) {
+    if (!this.context || this.context.state === "running") return;
+    const resume = this.context.resume().catch((error) => {
+      console.warn("Audio context resume failed", error);
+    });
+    await Promise.race([
+      resume,
+      new Promise((resolve) => globalThis.setTimeout(resolve, timeoutMs))
+    ]);
+  }
+
   async start({
     style = this.style,
     volume = this.volume,
@@ -138,8 +149,8 @@ export class RhythmEngine {
     this.setStyle(style);
     this.volume = volume;
     await this.ensureContext();
+    await this.resumeContext();
     await this.loadKit();
-    await this.context.resume();
     if (this.playing) {
       this.setVolume(volume);
       return;
@@ -561,8 +572,8 @@ export class RhythmEngine {
    */
   async auditionTrack(track, { gain = 0.6 } = {}) {
     await this.ensureContext();
+    await this.resumeContext();
     await this.loadKit();
-    await this.context.resume();
     if (this.masterGain) this.setVolume(Math.max(this.volume, 0.5), { immediate: true });
     const time = this.context.currentTime + 0.02;
     if (this.hasCustomSample(track)) {
@@ -572,17 +583,132 @@ export class RhythmEngine {
     this.previewTrackVoice(track, time, gain);
   }
 
+  /**
+   * Audition the selected track as an instrument voice. Synth tracks use their
+   * melodic oscillator path; sample and sampler tracks pitch the loaded buffer.
+   */
+  async auditionPitchedTrack(track, pitch = 0, { gain = 0.6, pressure = 0 } = {}) {
+    if (!track) return;
+    await this.ensureContext();
+    await this.resumeContext();
+    await this.loadKit();
+    if (this.masterGain) this.setVolume(Math.max(this.volume, 0.5), { immediate: true });
+    const time = this.context.currentTime + 0.012;
+    const semitones = Number.isFinite(Number(pitch)) ? Number(pitch) : 0;
+    const force = clamp01(pressure);
+    const voiceGain = Math.max(0.001, Number.isFinite(Number(gain)) ? Number(gain) : 0.6);
+    const base = baseTrackId(track);
+    const stepDuration = this.activeStepDurationSeconds || this.stepDurationSeconds("jazz", 0.4);
+    const frequency = SYNTH_ROOT_HZ * 2 ** (semitones / 12);
+    const options = {
+      pitch: semitones,
+      pressure: force,
+      delaySend: force * 0.08,
+      reverbSend: base === "pad" ? 0.18 : 0.08,
+      wobble: force * 0.18
+    };
+    switch (base) {
+      case "bass":
+        this.playBassSynth(time, frequency, { track, gain: voiceGain * 0.9, duration: 0.48 + force * 0.25, style: "jazz" });
+        break;
+      case "pluck":
+        this.playPluckSynth(time, frequency, { track, gain: voiceGain, duration: 0.42 + force * 0.34, ...options });
+        break;
+      case "funk":
+        this.playFunkSynth(time, frequency, {
+          track,
+          gain: voiceGain,
+          duration: 0.42 + force * 0.28,
+          bite: 0.55 + force * 0.3,
+          ...options
+        });
+        break;
+      case "pad":
+        this.playPadSynth(time, [frequency], { track, gain: voiceGain * 0.72, duration: 0.7 + force * 0.45, style: "jazz", ...options });
+        break;
+      case "whale":
+        this.playWhaleSynth(time, {
+          track,
+          gain: voiceGain,
+          duration: stepDuration * 6,
+          style: "jazz",
+          bend: semitones < 0 ? -0.55 : 0.55,
+          delaySend: options.delaySend,
+          reverbSend: options.reverbSend,
+          dubEcho: 0
+        });
+        break;
+      case "eightOhEightKick":
+        this.play808Kick(time, Math.max(voiceGain * this.config.eightOhEightLevel, this.config.eightOhEightLevel * 0.08), semitones, track, options);
+        break;
+      case "eightOhEightSnare":
+        this.play808Snare(time, voiceGain * this.config.eightOhEightLevel * 0.82, track, options);
+        break;
+      case "eightOhEightHat":
+        this.play808Hat(time, voiceGain * this.config.eightOhEightLevel * 0.52, track, options);
+        break;
+      case "eightOhEightClick":
+        this.play808Click(time, voiceGain * this.config.eightOhEightLevel * 0.42, track, options);
+        break;
+      case "eightOhEightClap":
+        this.play808Clap(time, voiceGain * this.config.eightOhEightLevel * 0.7, track, options);
+        break;
+      case "eightOhEightTomLow":
+        this.play808Tom(time, voiceGain * this.config.eightOhEightLevel * 0.72, semitones - 7, track, options);
+        break;
+      case "eightOhEightTomMid":
+        this.play808Tom(time, voiceGain * this.config.eightOhEightLevel * 0.72, semitones, track, options);
+        break;
+      case "eightOhEightTomHigh":
+        this.play808Tom(time, voiceGain * this.config.eightOhEightLevel * 0.72, semitones + 7, track, options);
+        break;
+      case "eightOhEightCowbell":
+        this.play808Cowbell(time, voiceGain * this.config.eightOhEightLevel * 0.6, track, options);
+        break;
+      case "eightOhEightConga":
+        this.play808Conga(time, voiceGain * this.config.eightOhEightLevel * 0.7, semitones, track, options);
+        break;
+      case "eightOhEightMaraca":
+        this.play808Maraca(time, voiceGain * this.config.eightOhEightLevel * 0.5, track, options);
+        break;
+      case "eightOhEightCymbal":
+        this.play808Cymbal(time, voiceGain * this.config.eightOhEightLevel * 0.55, track, options);
+        break;
+      case "echo":
+        this.playEchoPingSynth(time + 0.01, {
+          gain: voiceGain,
+          duration: stepDuration * 4,
+          frequency,
+          delaySend: options.delaySend,
+          reverbSend: options.reverbSend,
+          dubEcho: force * 0.35
+        });
+        break;
+      case "space":
+        if (semitones < 0) this.playSpaceDrop(time, "jazz", { force: true, drumAccent: false });
+        else if (semitones > 0) this.playSpacePickup(time, "jazz", { force: true, drumAccent: false });
+        else this.playNeutralSpaceSound(time, "jazz", { gain: voiceGain, dubEcho: force * 0.2 });
+        break;
+      default: {
+        const rate = Math.pow(2, semitones / 12);
+        this.playHit(track, time, voiceGain, rate, options);
+        break;
+      }
+    }
+  }
+
   /** Trigger a single hit of a track's built-in voice (no custom sample). */
   previewTrackVoice(track, time, gain = 0.6) {
     const stepDuration = this.activeStepDurationSeconds || this.stepDurationSeconds("jazz", 0.4);
     const freq = this.synthFrequency(0, 1);
-    switch (track) {
-      case "bass": this.playBassSynth(time, freq, { gain, duration: 0.42, style: "jazz" }); break;
+    const base = baseTrackId(track);
+    switch (base) {
+      case "bass": this.playBassSynth(time, freq, { track, gain, duration: 0.42, style: "jazz" }); break;
       case "kick": case "snare": case "hat": case "rim": this.playHit(track, time, gain, 1, {}); break;
-      case "pluck": this.playPluckSynth(time, freq, { gain, duration: stepDuration * 1.85 }); break;
-      case "funk": this.playFunkSynth(time, freq, { gain, duration: stepDuration * 1.35, bite: 0.6 }); break;
-      case "pad": this.playPadSynth(time, [freq, this.synthFrequency(2, 1), this.synthFrequency(4, 1)], { gain, duration: stepDuration * 8, style: "jazz" }); break;
-      case "whale": this.playWhaleSynth(time, { gain, duration: stepDuration * 6, style: "jazz", bend: 0.55 }); break;
+      case "pluck": this.playPluckSynth(time, freq, { track, gain, duration: stepDuration * 1.85 }); break;
+      case "funk": this.playFunkSynth(time, freq, { track, gain, duration: stepDuration * 1.35, bite: 0.6 }); break;
+      case "pad": this.playPadSynth(time, [freq, this.synthFrequency(2, 1), this.synthFrequency(4, 1)], { track, gain, duration: stepDuration * 8, style: "jazz" }); break;
+      case "whale": this.playWhaleSynth(time, { track, gain, duration: stepDuration * 6, style: "jazz", bend: 0.55 }); break;
       case "eightOhEightKick": this.play808Kick(time, gain * this.config.eightOhEightLevel, 0, track, {}); break;
       case "eightOhEightSnare": this.play808Snare(time, gain * this.config.eightOhEightLevel * 0.82, track, {}); break;
       case "eightOhEightHat": this.play808Hat(time, gain * this.config.eightOhEightLevel * 0.52, track, {}); break;
@@ -671,13 +797,13 @@ export class RhythmEngine {
     if (this.isDrumMutedForSpace(step) || (editableGeneratedRows && this.editableSpaceMutesDrums(bar, step))) return;
     this.scheduleSequencedBassStep(bar, step, scheduledTime, phraseBar, patternStyle);
     Object.entries(bar).forEach(([hit, hits]) => {
-      if (hit === "bass") return;
-      if (EDITABLE_GENERATED_ROWS.includes(hit)) return;
+      if (baseTrackId(hit) === "bass") return;
+      if (EDITABLE_GENERATED_ROWS.includes(baseTrackId(hit))) return;
       if (!this.trackIsAudible(hit)) return;
       hits.forEach(([hitStep, velocity, optionsRaw]) => {
         const timing = this.hitTimingForSchedulerStep(hitStep, step, stepDuration);
         if (!timing) return;
-        const options = normalizeStepOptions(optionsRaw);
+        const options = effectiveStepOptionsForTrack(this.config, hit, optionsRaw);
         const human = (Math.random() * 2 - 1) * this.config.humanizeSeconds;
         const lift = this.config.drumLift;
         const rate = this.playbackRateFor(hit, patternStyle);
@@ -957,6 +1083,8 @@ export class RhythmEngine {
 
   trackIsAudible(track) {
     const soloTracks = Array.isArray(this.config.soloTracks) ? this.config.soloTracks : [];
+    const mutedTracks = Array.isArray(this.config.mutedTracks) ? this.config.mutedTracks : [];
+    if (mutedTracks.includes(track)) return false;
     return soloTracks.length === 0 || soloTracks.includes(track);
   }
 
@@ -976,7 +1104,10 @@ export class RhythmEngine {
       Object.keys(bar).forEach((key) => {
         if (known.has(key) || !isInstanceId(key)) return;
         // Only schedule instances whose base voice is a known generated row.
-        if (EDITABLE_GENERATED_ROWS.includes(baseTrackId(key))) {
+        // Bass is a base pattern row, but bass *instances* are editable synth
+        // instrument lanes and should use this generated-row path.
+        const base = baseTrackId(key);
+        if (EDITABLE_GENERATED_ROWS.includes(base) || base === "bass") {
           ids.push(key);
           known.add(key);
         }
@@ -1165,6 +1296,22 @@ export class RhythmEngine {
     return SYNTH_ROOT_HZ * 2 ** ((SYNTH_SCALE[wrapped] + octaveOffset * 12) / 12);
   }
 
+  chordFrequenciesForOptions(options, octave = 1) {
+    const root = this.synthFrequency(options.pitch, octave);
+    const intervals = Array.isArray(options.chordIntervals) && options.chordIntervals.length
+      ? options.chordIntervals
+      : [0];
+    return intervals.map((interval) => root * 2 ** ((Number(interval) || 0) / 12));
+  }
+
+  chromaticFrequenciesForOptions(options) {
+    const root = SYNTH_ROOT_HZ * 2 ** ((Number(options.pitch) || 0) / 12);
+    const intervals = Array.isArray(options.chordIntervals) && options.chordIntervals.length
+      ? options.chordIntervals
+      : [0];
+    return intervals.map((interval) => root * 2 ** ((Number(interval) || 0) / 12));
+  }
+
   generatedRowsAreEditable() {
     return this.config.generatedRowsEditable >= 0.5;
   }
@@ -1190,37 +1337,54 @@ export class RhythmEngine {
       hits.forEach(([hitStep, velocity, optionsRaw]) => {
         const timing = this.hitTimingForSchedulerStep(hitStep, step, stepDuration);
         if (!timing || velocity <= 0.001) return;
-        const options = normalizeStepOptions(optionsRaw);
+        const options = effectiveStepOptionsForTrack(this.config, track, optionsRaw);
         const hitTime = time + timing.offsetSeconds + options.offsetMs / 1000 + Math.max(0, options.delayMs / 1000);
-        const frequency = this.synthFrequency(options.pitch, 1);
+        const chordFrequencies = this.chordFrequenciesForOptions(options, 1);
+        const frequency = chordFrequencies[0] || this.synthFrequency(options.pitch, 1);
         const gain = clamp01(velocity);
-        if (base === "pluck") {
-          this.playPluckSynth(hitTime, frequency, {
+        const chordGain = gain / Math.sqrt(Math.max(1, chordFrequencies.length));
+        if (base === "bass") {
+          this.playBassSynth(hitTime, SYNTH_ROOT_HZ * 2 ** (options.pitch / 12), {
+            track,
             gain,
-            duration: stepDuration * 1.85,
-            pan: Math.sin((phraseBar * 4 + step) * 0.74) * 0.5,
-            wobble: options.wobble,
+            duration: stepDuration * (step % 4 === 0 ? 2.7 : 1.85),
+            style,
+            attackMs: options.attackMs,
+            delayMs: options.delayMs,
             delaySend: options.delaySend,
             reverbSend: options.reverbSend,
             dubEcho: options.dubEcho
+          });
+        } else if (base === "pluck") {
+          chordFrequencies.forEach((voiceFrequency, index) => {
+            this.playPluckSynth(hitTime + index * 0.006, voiceFrequency, {
+              track,
+              gain: chordGain,
+              duration: stepDuration * 1.85,
+              pan: Math.sin((phraseBar * 4 + step + index * 0.6) * 0.74) * 0.5,
+              wobble: options.wobble,
+              delaySend: options.delaySend,
+              reverbSend: options.reverbSend,
+              dubEcho: options.dubEcho
+            });
           });
         } else if (base === "funk") {
-          this.playFunkSynth(hitTime + stepDuration * (step % 2 ? 0.12 : 0), frequency, {
-            gain,
-            duration: stepDuration * 1.35,
-            pan: Math.sin((phraseBar * 8 + step) * 0.46) * 0.38,
-            bite: 0.45 + pressure * 0.5,
-            wobble: options.wobble,
-            delaySend: options.delaySend,
-            reverbSend: options.reverbSend,
-            dubEcho: options.dubEcho
+          chordFrequencies.forEach((voiceFrequency, index) => {
+            this.playFunkSynth(hitTime + stepDuration * (step % 2 ? 0.12 : 0) + index * 0.004, voiceFrequency, {
+              track,
+              gain: chordGain,
+              duration: stepDuration * 1.35,
+              pan: Math.sin((phraseBar * 8 + step + index * 0.7) * 0.46) * 0.38,
+              bite: 0.45 + pressure * 0.5,
+              wobble: options.wobble,
+              delaySend: options.delaySend,
+              reverbSend: options.reverbSend,
+              dubEcho: options.dubEcho
+            });
           });
         } else if (base === "pad") {
-          this.playPadSynth(hitTime, [
-            this.synthFrequency(options.pitch, 1),
-            this.synthFrequency(options.pitch + 2, 1),
-            this.synthFrequency(options.pitch + 4, 1)
-          ], {
+          this.playPadSynth(hitTime, chordFrequencies, {
+            track,
             gain,
             duration: stepDuration * 32,
             style,
@@ -1231,6 +1395,7 @@ export class RhythmEngine {
           });
         } else if (base === "whale") {
           this.playWhaleSynth(hitTime, {
+            track,
             gain,
             duration: stepDuration * 8,
             style,
@@ -1352,9 +1517,12 @@ export class RhythmEngine {
     bassHits.forEach(([hitStep, velocity, optionsRaw], hitIndex) => {
       const timing = this.hitTimingForSchedulerStep(hitStep, step, stepDuration);
       if (!timing) return;
-      const options = normalizeStepOptions(optionsRaw);
-      const noteIndex = sequencedBassPitchForStep({ phraseBar, hitIndex, step });
-      this.playBassSynth(time + timing.offsetSeconds + options.offsetMs / 1000, this.synthFrequency(noteIndex, 0) * 2 ** (options.pitch / 12), {
+      const options = effectiveStepOptionsForTrack(this.config, "bass", optionsRaw);
+      const manualPitch = this.generatedRowsAreEditable();
+      const frequency = manualPitch
+        ? SYNTH_ROOT_HZ * 2 ** (options.pitch / 12)
+        : this.synthFrequency(sequencedBassPitchForStep({ phraseBar, hitIndex, step }), 0) * 2 ** (options.pitch / 12);
+      this.playBassSynth(time + timing.offsetSeconds + options.offsetMs / 1000, frequency, {
         gain: (0.08 + pressure * 0.08) * velocity,
         duration: stepDuration * (step % 4 === 0 ? 2.7 : 1.85),
         style,

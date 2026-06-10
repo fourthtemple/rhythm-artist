@@ -26,7 +26,9 @@ export function createSampleBrowser({
   getSelectedHit = () => null,
   assignSample = () => {},
   addSampleTrack = null,
-  onSampleFolderConfigured = null
+  addPianoRollTrack = null,
+  onSampleFolderConfigured = null,
+  onAddModeChange = () => {}
 }) {
   const AUDIO_EXTS = new Set([".wav", ".mp3", ".ogg", ".flac", ".aif", ".aiff", ".m4a"]);
   const MAX_HANDLE_ENTRIES = 2000;
@@ -44,6 +46,7 @@ export function createSampleBrowser({
   let bundledCrumbs = [];
   let auditionUrl = null;
   let auditionEl = null;
+  const capturedSamples = [];
   const browserSection = list?.closest?.(".sample-browser-section") ?? null;
   const folderStateEl = document.getElementById("sample-folder-state");
   const browserLabel = browserSection?.querySelector(".panel-label") ?? null;
@@ -84,12 +87,24 @@ export function createSampleBrowser({
 
   function setBrowserExpanded(expanded) {
     browserSection?.classList.toggle("is-expanded", Boolean(expanded));
+    const drawer = browserSection?.querySelector?.(".sample-browser-drawer");
+    if (expanded && drawer instanceof HTMLDetailsElement) drawer.open = true;
   }
 
   function setBrowserView(view = "samples") {
     if (!browserSection) return;
     browserSection.dataset.browserView = view;
     if (browserLabel) browserLabel.textContent = "Sample Browser";
+  }
+
+  function keepBrowserPosition(callback) {
+    const scroller = browserSection?.closest?.(".control-panel");
+    const beforeTop = browserSection?.getBoundingClientRect?.().top ?? null;
+    callback();
+    if (!scroller || beforeTop == null) return;
+    const afterTop = browserSection?.getBoundingClientRect?.().top ?? beforeTop;
+    const delta = afterTop - beforeTop;
+    if (Math.abs(delta) > 0.5) scroller.scrollTop += delta;
   }
 
   function updateAddModeUi() {
@@ -100,14 +115,21 @@ export function createSampleBrowser({
       button.setAttribute("aria-pressed", active ? "true" : "false");
     });
     list?.querySelectorAll(".sample-row-add").forEach((button) => {
-      button.disabled = addMode === "loop" && !addSampleTrack;
-      button.title = addMode === "loop" ? "Add to Wave Edit player" : "Add to Drum Hit player";
+      button.disabled = (addMode === "loop" && !addSampleTrack) || (addMode === "pianoRoll" && !addPianoRollTrack);
+      button.title = addMode === "loop"
+        ? "Add to Wave Edit player"
+        : addMode === "pianoRoll"
+          ? "Add as Piano Roll sampler"
+          : "Add to Drum Hit player";
     });
   }
 
   function setAddMode(mode) {
-    addMode = mode === "loop" ? "loop" : "hit";
-    updateAddModeUi();
+    keepBrowserPosition(() => {
+      addMode = mode === "loop" || mode === "pianoRoll" ? mode : "hit";
+      updateAddModeUi();
+      onAddModeChange(addMode);
+    });
   }
 
   async function ensureDirectoryPermission(handle, { requestPermission = false } = {}) {
@@ -243,8 +265,47 @@ export function createSampleBrowser({
 
   // ── Materialise a File from an entry (works for both paths) ─────────────
   async function entryToFile(entry) {
-    if (entry.file instanceof File) return entry.file;
+    const hasFileCtor = typeof File === "function";
+    const hasBlobCtor = typeof Blob === "function";
+    if ((hasFileCtor && entry.file instanceof File) || (hasBlobCtor && entry.file instanceof Blob)) return entry.file;
     return entry.handle.getFile();
+  }
+
+  function appendCapturedSamples() {
+    if (!list || !capturedSamples.length) return;
+    const divider = document.createElement("div");
+    divider.className = "sample-browser-divider";
+    divider.innerHTML = `<span>Wave Edit Captures</span>`;
+    list.appendChild(divider);
+    capturedSamples.forEach((entry) => renderFileRow(entry));
+  }
+
+  function addCapturedSample(sample = {}) {
+    if (!sample.file && !sample.blob && !sample.url) {
+      setStatus("Could not copy wave edit to Sample Browser");
+      return null;
+    }
+    const index = capturedSamples.length + 1;
+    const name = sample.name || sample.label || `Wave Edit Capture ${index}.wav`;
+    const file = sample.file || sample.blob || null;
+    const url = sample.url || (file ? URL.createObjectURL(file) : null);
+    const entry = {
+      name,
+      file,
+      url,
+      path: sample.path || name,
+      source: "wave-edit-capture",
+      captured: true
+    };
+    capturedSamples.push(entry);
+    keepBrowserPosition(() => {
+      setBrowserExpanded(true);
+      if (navStack.length) renderCurrent();
+      else if (bundledRoot) browseBundledRoot(bundledRoot, bundledPath);
+      else renderRootList();
+    });
+    setStatus(`Copied ${name} to Sample Browser`);
+    return entry;
   }
 
   async function resolveFromCurrentFolder({ path = "", fileName = "" } = {}) {
@@ -337,6 +398,8 @@ export function createSampleBrowser({
       });
       list.appendChild(row);
     });
+
+    appendCapturedSamples();
 
     if (!list.children.length) {
       const empty = document.createElement("p");
@@ -456,7 +519,8 @@ export function createSampleBrowser({
         path: file.path
       });
     });
-    if (!(data.dirs || []).length && !(data.files || []).length) {
+    appendCapturedSamples();
+    if (!(data.dirs || []).length && !(data.files || []).length && !capturedSamples.length) {
       const empty = document.createElement("p");
       empty.className = "sample-browser-empty";
       empty.textContent = "No audio files in this sample pack folder.";
@@ -615,6 +679,7 @@ export function createSampleBrowser({
     });
 
     files.forEach((entry) => renderFileRow(entry));
+    appendCapturedSamples();
 
     if (node.truncated) {
       const truncated = document.createElement("p");
@@ -623,7 +688,7 @@ export function createSampleBrowser({
       list.appendChild(truncated);
     }
 
-    if (!dirs.length && !files.length) {
+    if (!dirs.length && !files.length && !capturedSamples.length) {
       const empty = document.createElement("p");
       empty.className = "sample-browser-empty";
       empty.textContent = "No audio files in this folder.";
@@ -668,7 +733,7 @@ export function createSampleBrowser({
   async function loadEntry(entry) {
     const hit = getSelectedHit();
     if (!hit) { setStatus("Select a track first"); return; }
-    if (entry.url) {
+    if (entry.url && !entry.file && !entry.handle) {
       await assignSample(hit, bundledSampleReference({
         url: entry.url,
         label: entry.name,
@@ -698,7 +763,7 @@ export function createSampleBrowser({
 
   async function loadEntryAsSampleTrack(entry) {
     if (!addSampleTrack) return;
-    if (entry.url) {
+    if (entry.url && !entry.file && !entry.handle) {
       await addSampleTrack({
         name: entry.name,
         file: null,
@@ -730,9 +795,49 @@ export function createSampleBrowser({
     setStatus(`Loaded ${entry.name} as sample track for this session`);
   }
 
+  async function loadEntryAsPianoRollTrack(entry) {
+    if (!addPianoRollTrack) return;
+    if (entry.url && !entry.file && !entry.handle) {
+      await addPianoRollTrack({
+        name: entry.name,
+        sample: bundledSampleReference({
+          url: entry.url,
+          label: entry.name,
+          root: entry.root ?? null,
+          path: entry.path ?? entry.name
+        })
+      });
+      return;
+    }
+    const file = await entryToFile(entry);
+    const sessionUrl = URL.createObjectURL(file);
+    if (entry.handle) {
+      try {
+        const reference = await storeFileHandle(entry.handle, { label: entry.name, path: entry.path ?? entry.name });
+        await addPianoRollTrack({ name: entry.name, sample: { ...reference, url: sessionUrl } });
+        setStatus(`Linked ${entry.name} as piano-roll sampler`);
+        return;
+      } catch (error) {
+        console.warn("Could not persist piano-roll sample handle", error);
+      }
+    }
+    await addPianoRollTrack({
+      name: entry.name,
+      sample: {
+        ...localFileReference({ label: entry.name, path: entry.path ?? entry.name }),
+        url: sessionUrl
+      }
+    });
+    setStatus(`Loaded ${entry.name} as piano-roll sampler for this session`);
+  }
+
   async function addEntry(entry) {
     if (addMode === "loop") {
       await loadEntryAsSampleTrack(entry);
+      return;
+    }
+    if (addMode === "pianoRoll") {
+      await loadEntryAsPianoRollTrack(entry);
       return;
     }
     await loadEntry(entry);
@@ -845,5 +950,5 @@ export function createSampleBrowser({
   async function browse() {}
   function render() {}
 
-  return { init, loadRoots, browse, render, openFolder: openFolderPicker };
+  return { init, loadRoots, browse, render, openFolder: openFolderPicker, addCapturedSample };
 }

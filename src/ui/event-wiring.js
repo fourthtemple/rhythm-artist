@@ -33,7 +33,7 @@ export function createEventWiring(deps) {
     copyTrackTwoBars, pasteTrackTwoBars, fillRestWithTrackTwoBars,
     setLoopCount,
     // segments / arrangement / time-sig
-    applySegments, applyVerseBarCount, applySectionBarCount, applyMetronomeEnabled, applyMetronomeVolume, applyTimeSig,
+    applySegments, applyCameraFollow, applyVerseBarCount, applySectionBarCount, applyMetronomeEnabled, applyMetronomeVolume, applyTimeSig,
     // previews
     previewDuckSound, previewHitSound, previewGameSound,
     // mix
@@ -50,7 +50,7 @@ export function createEventWiring(deps) {
     resetSelectedPanel,
     normalizeEditorConfig, clone, DEFAULT_RHYTHM_CONFIG,
     // track panels
-    renderAddTrackDialog, openAddTrackDialog, addSampleGroupFromPrompt,
+    renderAddTrackDialog, openAddTrackDialog,
     openGlobalMixView, closeGlobalMixView, resetMasterEq,
     projectManager,
     sampleBrowser,
@@ -73,13 +73,13 @@ export function createEventWiring(deps) {
 
   // ── Transport ─────────────────────────────────────────────────────────────
   function wireTransportEvents() {
-    $("#play-toggle").addEventListener("click", () => {
-      if (state.playing) stopPlayback();
-      else void startPlayback();
+    $("#play-toggle")?.addEventListener("click", () => {
+      void startPlayback();
     });
-    $("#restart").addEventListener("click", restartPlayback);
-    $("#play-song").addEventListener("click", playFullSong);
-    $("#loop-bar").addEventListener("click", toggleBarLoop);
+    $("#stop")?.addEventListener("click", stopPlayback);
+    $("#restart")?.addEventListener("click", restartPlayback);
+    $("#play-song")?.addEventListener("click", playFullSong);
+    $("#loop-bar")?.addEventListener("click", toggleBarLoop);
     // Transport BPM widget
     const transportBpmNumber = $("#transport-bpm-number");
     function applyTransportBpm(value) {
@@ -101,6 +101,11 @@ export function createEventWiring(deps) {
     const metronomeVolume = /** @type {HTMLInputElement|null} */ ($("#metronome-volume"));
     if (metronomeVolume) {
       wireNumberControl(metronomeVolume, applyMetronomeVolume);
+    }
+    const cameraFollowEnabled = /** @type {HTMLInputElement|null} */ ($("#camera-follow-enabled"));
+    if (cameraFollowEnabled) {
+      cameraFollowEnabled.checked = Boolean(state.cameraFollow);
+      cameraFollowEnabled.addEventListener("change", () => applyCameraFollow(cameraFollowEnabled.checked));
     }
   }
 
@@ -264,7 +269,7 @@ export function createEventWiring(deps) {
     selectedNoteReverbSend.addEventListener("input", () => setSelectedOptionFromControl("reverbSend", selectedNoteReverbSend.value, live));
     selectedNoteReverbSend.addEventListener("change", () => setSelectedOptionFromControl("reverbSend", selectedNoteReverbSend.value, commitValue));
     wireNumberControl(selectedNoteReverbSendNumber, (value) => setSelectedOptionFromControl("reverbSend", value, commitValue));
-    $("#clear-selected").addEventListener("click", clearSelection);
+    $("#clear-selected")?.addEventListener("click", clearSelection);
   }
 
   // ── File / project actions ────────────────────────────────────────────────
@@ -307,9 +312,6 @@ export function createEventWiring(deps) {
     });
     $("#add-track-btn-panel")?.addEventListener("click", () => {
       openAddTrackDialog?.();
-    });
-    $("#manage-groups-btn")?.addEventListener("click", () => {
-      addSampleGroupFromPrompt?.();
     });
     $("#open-global-mix")?.addEventListener("click", openGlobalMixView);
     $("#open-project-manager")?.addEventListener("click", () => projectManager.open());

@@ -6,14 +6,28 @@ import {
   SAMPLE_SOURCE_LOCAL_FILE,
   resolveFileHandleSample
 } from "./sample-assets.js";
+import {
+  STEP_OPTION_DEFAULTS,
+  normalizeTrackOptionDefaults,
+  trackOptionDefaultsFor
+} from "../audio/rhythm-config.js";
+
+const SAMPLER_TRACK_DEFAULT_CONTROLS = [
+  { key: "offsetMs", label: "Offset", min: -180, max: 180, step: 1, format: (v) => `${Math.round(v)}ms` },
+  { key: "attackMs", label: "Attack", min: 0, max: 260, step: 1, format: (v) => `${Math.round(v)}ms` },
+  { key: "wobble", label: "LFO", min: 0, max: 4, step: 0.01, format: (v) => Number(v).toFixed(2) },
+  { key: "dubEcho", label: "Dub Echo", min: 0, max: 1, step: 0.01, format: (v) => Number(v).toFixed(2) },
+  { key: "delaySend", label: "Note Delay", min: 0, max: 1, step: 0.01, format: (v) => Number(v).toFixed(2) },
+  { key: "reverbSend", label: "Reverb", min: 0, max: 1, step: 0.01, format: (v) => Number(v).toFixed(2) }
+];
 
 // Owns the right-side track UI cluster:
 //   • Registry-driven grid-track management (add/remove voices & instances,
 //     ordering, reconciliation after load).
-//   • The "Add Track" dialog (grouped chips with add/remove/duplicate).
+//   • The "Add Track" dialog (grouped chips with add/remove controls).
 //   • The Track Explorer (grouped, selectable track list with solo + sample dot).
 //   • The Track Inspector (one independent panel per selected track: sample row,
-//     Level/Pan/Delay/Verb, optional 808 shape, duplicate/delete/deselect).
+//     Level/Pan/Echo/Reverb, optional 808 shape, delete/deselect).
 //   • Per-track custom sample assignment/clear/reapply.
 //
 // It reaches the rest of the app through injected dependencies plus the shared
@@ -47,6 +61,7 @@ import {
  * @param {Function} deps.reconcileGridTrackIdsBase
  * @param {Function} deps.instanceLabelFor
  * @param {Function} deps.removeTrackFromConfigMaps
+ * @param {Function} deps.replaceTrackIdInConfig
  * track-shape pure helpers:
  * @param {Array<any>} deps.TRACK_SHAPE_FIELDS
  * @param {Function} deps.globalShapeValueBase
@@ -69,8 +84,15 @@ import {
  * @param {(hit: string, event?: any) => void} deps.selectRowWithModifiers
  * @param {(ids: Iterable<string>) => string[]} deps.orderBySelectedGrid
  * @param {(track: string) => void} deps.toggleSolo
+ * @param {(track: string) => void} deps.toggleMute
  * @param {() => any} deps.previewConfig
  * @param {() => any} deps.getEngine
+ * @param {(event: MouseEvent, items: any[]) => void} [deps.showContextMenu]
+ * @param {(kind: string, id: string) => void} [deps.onEditorLaneOpen]
+ * @param {() => void} [deps.onTrackIdReplaced]
+ * @param {() => void} [deps.onTrackEditorModeChange]
+ * @param {() => {instrument:string, velocity:number, options:any}} [deps.defaultNoteState]
+ * @param {(instrument:string) => void} [deps.setDefaultNoteInstrument]
  */
 export function createTrackPanels(deps) {
   const {
@@ -98,6 +120,7 @@ export function createTrackPanels(deps) {
     reconcileGridTrackIdsBase,
     instanceLabelFor,
     removeTrackFromConfigMaps,
+    replaceTrackIdInConfig,
     TRACK_SHAPE_FIELDS,
     globalShapeValueBase,
     resolvedShapeValueBase,
@@ -117,8 +140,15 @@ export function createTrackPanels(deps) {
     selectRowWithModifiers,
     orderBySelectedGrid,
     toggleSolo,
+    toggleMute,
     previewConfig,
-    getEngine
+    getEngine,
+    showContextMenu = null,
+    onEditorLaneOpen = null,
+    onTrackIdReplaced = () => {},
+    onTrackEditorModeChange = () => {},
+    defaultNoteState = null,
+    setDefaultNoteInstrument = null
   } = deps;
 
   const registryIds = () => TRACK_REGISTRY.map((t) => t.id);
@@ -139,6 +169,74 @@ export function createTrackPanels(deps) {
     });
   }
 
+  function validTrackViewIds(ids = []) {
+    return orderGridTrackIds([...new Set(ids
+      .map((id) => typeof id === "string" ? id : "")
+      .filter((id) => id && getTrackDef(id)))]);
+  }
+
+  function trackViewTrackIds() {
+    const explicit = Array.isArray(state.config.trackViewTrackIds)
+      ? state.config.trackViewTrackIds
+      : [];
+    const hidden = new Set(hiddenGridTrackIds());
+    const implicit = [
+      ...Object.keys(state.config.trackSamples || {}),
+      ...(Array.isArray(state.config.pianoRollTracks) ? state.config.pianoRollTracks : [])
+    ];
+    const ids = validTrackViewIds([...explicit, ...implicit])
+      .filter((id) => (state.gridTrackIds.includes(id) || getTrackDef(id)) && !hidden.has(id));
+    state.config.trackViewTrackIds = validTrackViewIds(explicit);
+    return ids;
+  }
+
+  function trackExplorerIdsForMode() {
+    if (state.trackEditorMode === "pianoRoll") {
+      return validTrackViewIds(pianoRollTrackIds())
+        .filter((id) => state.gridTrackIds.includes(id));
+    }
+    if (state.trackEditorMode === "wave") return [];
+    const hidden = new Set(hiddenGridTrackIds());
+    return orderGridTrackIds(state.gridTrackIds.filter((id) => getTrackDef(id) && !hidden.has(id)));
+  }
+
+  function emptyTrackExplorerMessage() {
+    if (state.trackEditorMode === "pianoRoll") return "No piano roll tracks added.";
+    if (state.trackEditorMode === "wave") return "No wave tracks added.";
+    return "No grid tracks added.";
+  }
+
+  function addProjectTrack(trackId, { render = true } = {}) {
+    if (!getTrackDef(trackId)) return null;
+    unhideGridTrack(trackId);
+    state.config.trackViewTrackIds = validTrackViewIds([
+      ...(Array.isArray(state.config.trackViewTrackIds) ? state.config.trackViewTrackIds : []),
+      trackId
+    ]);
+    if (render) {
+      renderTrackExplorer();
+      syncJson();
+    }
+    return trackId;
+  }
+
+  function removeProjectTrack(trackId) {
+    if (!Array.isArray(state.config.trackViewTrackIds)) return;
+    state.config.trackViewTrackIds = state.config.trackViewTrackIds.filter((id) => id !== trackId);
+  }
+
+  function hiddenGridTrackIds() {
+    return Array.isArray(state.config.hiddenGridTrackIds) ? state.config.hiddenGridTrackIds : [];
+  }
+
+  function hideGridTrack(trackId) {
+    state.config.hiddenGridTrackIds = validTrackViewIds([...hiddenGridTrackIds(), trackId]);
+  }
+
+  function unhideGridTrack(trackId) {
+    state.config.hiddenGridTrackIds = hiddenGridTrackIds().filter((id) => id !== trackId);
+  }
+
   function updateTrackExplorerSelectionNow() {
     if (!trackExplorerList) return;
     const selectedSet = new Set(state.selectedTracks.length ? state.selectedTracks : (state.selected?.hit ? [state.selected.hit] : []));
@@ -152,8 +250,9 @@ export function createTrackPanels(deps) {
   function previewTrackSelectionNow(trackId, event = {}) {
     const shift = Boolean(event.shiftKey);
     const meta = Boolean(event.metaKey || event.ctrlKey);
+    const trackOnlySelected = !state.selected && state.selectedTracks.length === 1 && state.selectedTracks[0] === trackId;
     let selected = [trackId];
-    if (!shift && !meta && state.selected?.hit === trackId && state.selected?.mode === "row") {
+    if (!shift && !meta && trackOnlySelected) {
       selected = [];
     } else if (shift && state.trackAnchor && state.gridTrackIds.includes(state.trackAnchor)) {
       const a = state.gridTrackIds.indexOf(state.trackAnchor);
@@ -186,70 +285,13 @@ export function createTrackPanels(deps) {
       ctrlKey: Boolean(event.ctrlKey)
     };
     previewTrackSelectionNow(trackId, selectionEvent);
-    previewRowSelectionControls?.(trackId);
     afterNextPaint(() => {
-      selectRowWithModifiers(trackId, selectionEvent, { deferTrackPanels: true });
+      selectRowWithModifiers(trackId, selectionEvent, { deferTrackPanels: true, bottomTab: "track" });
       updateTrackExplorerSelectionNow();
       renderStepGrid();
     });
   }
   const collapsedVoiceGroups = new Set();
-  let activeSampleGroupId = null;
-
-  const sampleGroups = () => {
-    if (!Array.isArray(state.config.sampleGroups)) state.config.sampleGroups = [];
-    return state.config.sampleGroups;
-  };
-
-  function sampleGroupIdForLabel(label) {
-    const base = String(label || "Sample Group")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      || "sample-group";
-    const used = new Set(sampleGroups().map((group) => group.id));
-    let id = base;
-    let suffix = 2;
-    while (used.has(id)) {
-      id = `${base}-${suffix}`;
-      suffix += 1;
-    }
-    return id;
-  }
-
-  function addSampleGroup(labelInput) {
-    const label = String(labelInput || "").trim();
-    if (!label) return null;
-    const group = { id: sampleGroupIdForLabel(label), label, collapsed: false };
-    state.config.sampleGroups = [...sampleGroups(), group];
-    activeSampleGroupId = group.id;
-    renderTrackExplorer();
-    syncJson();
-    setStatus(`Added sample group "${group.label}"`);
-    return group;
-  }
-
-  function addSampleGroupFromPrompt() {
-    const label = window.prompt("Sample group name", "Drums");
-    return addSampleGroup(label);
-  }
-
-  function toggleSampleGroupCollapsed(groupId) {
-    state.config.sampleGroups = sampleGroups().map((group) => (
-      group.id === groupId ? { ...group, collapsed: !group.collapsed } : group
-    ));
-    renderTrackExplorer();
-    syncJson();
-  }
-
-  function setActiveSampleGroup(groupId) {
-    activeSampleGroupId = groupId;
-    renderTrackExplorer();
-    document.querySelector("#sample-browser-section")?.scrollIntoView({ block: "nearest" });
-    const group = sampleGroups().find((entry) => entry.id === groupId);
-    setStatus(group ? `Sample Browser target: ${group.label}` : "Sample Browser target cleared");
-  }
 
   function openAddTrackDialog(groupId = null) {
     renderAddTrackDialog(groupId);
@@ -272,9 +314,78 @@ export function createTrackPanels(deps) {
     return isInstanceId(hit) ? instanceLabel(hit) : (def?.label || hit);
   }
 
-  const visibleTrackGroups = () => TRACK_GROUPS.filter((group) => (
-    group.id !== "sampler" || state.gridTrackIds.some((id) => getTrackDef(id)?.group === "sampler")
-  ));
+  function syncTrackEditorModeButtons() {
+    const gridMode = state.trackEditorMode !== "pianoRoll" && state.trackEditorMode !== "wave";
+    const pianoMode = state.trackEditorMode === "pianoRoll";
+    const waveMode = state.trackEditorMode === "wave";
+    const gridModeBtn = $("#track-mode-grid");
+    const pianoRollModeBtn = $("#track-mode-piano-roll");
+    const waveModeBtn = $("#track-mode-wave");
+    gridModeBtn?.classList.toggle("is-active", gridMode);
+    pianoRollModeBtn?.classList.toggle("is-active", pianoMode);
+    waveModeBtn?.classList.toggle("is-active", waveMode);
+    gridModeBtn?.setAttribute("aria-pressed", String(gridMode));
+    pianoRollModeBtn?.setAttribute("aria-pressed", String(pianoMode));
+    waveModeBtn?.setAttribute("aria-pressed", String(waveMode));
+  }
+
+  function setTrackEditorMode(mode, { rebuild = true } = {}) {
+    state.trackEditorMode = mode === "pianoRoll" ? "pianoRoll" : mode === "wave" ? "wave" : "grid";
+    if (state.trackEditorMode === "wave") $("#sample-add-mode-loop")?.click?.();
+    syncTrackEditorModeButtons();
+    onTrackEditorModeChange();
+    if (!rebuild) return;
+    buildStepGrid();
+    renderTrackExplorer();
+    renderTrackInspector();
+  }
+
+  function trackLabelForId(trackId, fallback = trackId) {
+    return trackDisplayLabel(trackId) || getTrackDef(trackId)?.label || fallback;
+  }
+
+  function openTrackGridView(trackId, event = {}) {
+    if (!trackId) return;
+    setTrackEditorMode("grid", { rebuild: false });
+    if (!state.gridTrackIds.includes(trackId)) addGridTrack(trackId, { expose: true });
+    selectExplorerTrackNow(trackId, event);
+    buildStepGrid();
+    renderTrackExplorer();
+    setStatus(`${trackLabelForId(trackId)} grid view`);
+  }
+
+  function openTrackPianoRoll(trackId, options = {}) {
+    const def = getTrackDef(trackId);
+    if (!def) return;
+    setPianoRollTrackOpen({ ...def, id: trackId, label: trackLabelForId(trackId, def.label || trackId) }, 1, options);
+  }
+
+  function openTrackWaveEdit(trackId, event = {}) {
+    if (!trackId) return;
+    previewTrackSelectionNow(trackId, {
+      shiftKey: Boolean(event.shiftKey),
+      metaKey: Boolean(event.metaKey),
+      ctrlKey: Boolean(event.ctrlKey)
+    });
+    selectRow(trackId, { deferTrackPanels: true, bottomTab: "track" });
+    updateTrackExplorerSelectionNow();
+    renderStepGrid();
+    $("#sample-add-mode-loop")?.click?.();
+    renderTrackExplorer();
+    setStatus(`${trackLabelForId(trackId)} wave edit mode`);
+  }
+
+  function openExplorerTrackMenu(event, trackId, label) {
+    if (!showContextMenu || !trackId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    showContextMenu(event, [
+      {
+        label: `Delete ${label || trackLabelForId(trackId)}`,
+        action: () => removeGridTrack(trackId)
+      }
+    ]);
+  }
 
   // ── Registry-driven grid track management ───────────────────
 
@@ -294,10 +405,16 @@ export function createTrackPanels(deps) {
     state.gridTrackIds = reconcileGridTrackIdsBase(state.config, {
       registryIds: registryIds(),
       defaultIds: DEFAULT_GRID_TRACK_IDS,
+      hiddenIds: hiddenGridTrackIds(),
       isInstanceId,
       getTrackDef,
       baseTrackId
     });
+    state.gridTrackIds = orderGridTrackIds([
+      ...state.gridTrackIds,
+      ...trackViewTrackIds(),
+      ...pianoRollTrackIds()
+    ]);
   }
 
   /**
@@ -314,16 +431,27 @@ export function createTrackPanels(deps) {
   }
 
   /** Add a registry track to the grid (if not already present). */
-  function addGridTrack(trackId) {
+  function addGridTrack(trackId, { expose = false, hidden = false } = {}) {
     if (!getTrackDef(trackId)) return;
-    if (state.gridTrackIds.includes(trackId)) return;
-    // Insert in registry order so groups stay together visually.
-    state.gridTrackIds = orderGridTrackIds([...state.gridTrackIds, trackId]);
+    if (hidden) hideGridTrack(trackId);
+    else unhideGridTrack(trackId);
+    if (expose) addProjectTrack(trackId, { render: false });
+    if (state.gridTrackIds.includes(trackId)) {
+      if (!hidden) onEditorLaneOpen?.("grid", trackId);
+      if (expose) {
+        renderTrackExplorer();
+        syncJson();
+      }
+      return trackId;
+    }
+    state.gridTrackIds = [...state.gridTrackIds, trackId];
+    if (!hidden) onEditorLaneOpen?.("grid", trackId);
     ensureTrackColumn(trackId);
     buildStepGrid();
     renderTrackExplorer();
     syncJson();
     setStatus(`Added ${TRACK_LABELS[trackId] || trackId} track`);
+    return trackId;
   }
 
   /**
@@ -332,11 +460,19 @@ export function createTrackPanels(deps) {
    * shape override (so it inherits the global 808 shape until the user dials it
    * in). Returns the new instance id, or null if the base isn't instanceable.
    */
-  function addTrackInstance(baseId, { select = true } = {}) {
+  function addTrackInstance(baseId, { select = true, expose = true } = {}) {
     const base = TRACK_BY_ID[baseTrackId(baseId)];
     if (!base || !base.instanceable) return null;
     const instanceId = makeInstanceId(base.id);
-    state.gridTrackIds = orderGridTrackIds([...state.gridTrackIds, instanceId]);
+    state.gridTrackIds = [...state.gridTrackIds, instanceId];
+    if (base.kind === "generated" || base.group === "synth") state.config.generatedRowsEditable = 1;
+    if (expose) {
+      addProjectTrack(instanceId, { render: false });
+      onEditorLaneOpen?.("grid", instanceId);
+    } else {
+      hideGridTrack(instanceId);
+      removeProjectTrack(instanceId);
+    }
     ensureTrackColumn(instanceId);
     // Seed per-track config maps from the base defaults so the engine has sane
     // values immediately (normalizeEditorConfig also backfills, but this keeps
@@ -345,6 +481,12 @@ export function createTrackPanels(deps) {
     state.config.trackReverbSends = { ...(state.config.trackReverbSends || {}), [instanceId]: base.reverbSend ?? 0.2 };
     state.config.trackLevels = { ...(state.config.trackLevels || {}), [instanceId]: base.level ?? 1 };
     state.config.trackPans = { ...(state.config.trackPans || {}), [instanceId]: base.pan ?? 0 };
+    if (state.config.trackOptionDefaults?.[base.id]) {
+      state.config.trackOptionDefaults = {
+        ...(state.config.trackOptionDefaults || {}),
+        [instanceId]: normalizeTrackOptionDefaults(state.config.trackOptionDefaults[base.id])
+      };
+    }
     if (state.config.trackStepCounts?.[base.id]) {
       state.config.trackStepCounts = {
         ...(state.config.trackStepCounts || {}),
@@ -355,7 +497,7 @@ export function createTrackPanels(deps) {
     buildStepGrid();
     renderTrackExplorer();
     if (select) {
-      selectRow(instanceId);
+      selectRow(instanceId, { bottomTab: "track" });
       renderStepGrid();
     } else {
       renderTrackInspector();
@@ -373,28 +515,323 @@ export function createTrackPanels(deps) {
     });
   }
 
-  /** Remove a registry track from the grid (core tracks can't be removed). */
+  function replaceIdInUniqueList(list, oldId, newId) {
+    const out = [];
+    const seen = new Set();
+    (Array.isArray(list) ? list : []).forEach((id) => {
+      const nextId = id === oldId ? newId : id;
+      if (!nextId || seen.has(nextId)) return;
+      seen.add(nextId);
+      out.push(nextId);
+    });
+    return out;
+  }
+
+  function replaceIdInSet(set, oldId, newId) {
+    const next = new Set();
+    set?.forEach?.((id) => {
+      next.add(id === oldId ? newId : id);
+    });
+    return next;
+  }
+
+  function instrumentIdForTrack(hit) {
+    const def = getTrackDef(hit);
+    const base = baseTrackId(hit);
+    if (def?.voice === "sample" || base === "sampler") return "sampler";
+    if (def?.group === "eightOhEight") return "eightOhEight";
+    return base;
+  }
+
+  function instrumentChoicesFor(hit) {
+    const current = instrumentIdForTrack(hit);
+    const choices = [
+      { id: "sampler", label: "Sampler" },
+      ...TRACK_REGISTRY
+        .filter((track) => track.group === "synth")
+        .map((track) => ({ id: track.id, label: track.label || track.id })),
+      { id: "eightOhEight", label: "808" }
+    ];
+    const currentDef = TRACK_BY_ID[current];
+    if (currentDef?.group === "fx") choices.push({ id: currentDef.id, label: currentDef.label || currentDef.id });
+    return choices;
+  }
+
+  function targetBaseForInstrument(hit, targetInstrumentId) {
+    if (targetInstrumentId === "sampler") return "sampler";
+    if (targetInstrumentId === "eightOhEight") return "eightOhEightKick";
+    return targetInstrumentId;
+  }
+
+  function instrumentChangeTargetId(hit, targetInstrumentId) {
+    if (instrumentIdForTrack(hit) === targetInstrumentId) return hit;
+    const targetBaseId = targetBaseForInstrument(hit, targetInstrumentId);
+    const targetDef = TRACK_BY_ID[targetBaseId];
+    if (!targetDef) return null;
+    if (!state.gridTrackIds.includes(targetBaseId)) return targetBaseId;
+    return targetDef.instanceable ? makeInstanceId(targetBaseId) : null;
+  }
+
+  function changeTrackInstrument(hit, targetInstrumentId) {
+    const sourceDef = getTrackDef(hit);
+    const targetBaseId = targetBaseForInstrument(hit, targetInstrumentId);
+    const targetDef = TRACK_BY_ID[targetBaseId];
+    if (!sourceDef || !targetDef) return null;
+    const targetId = instrumentChangeTargetId(hit, targetInstrumentId);
+    if (!targetId) {
+      setStatus(`${targetDef.label || targetBaseId} already has a row`);
+      renderTrackInspector();
+      return null;
+    }
+    if (targetId === hit) return hit;
+
+    const sourceLabel = trackLabelForId(hit, sourceDef.label || hit);
+    const engine = getEngine();
+    const customSampleUrl = engine.trackSampleUrl?.(hit) || null;
+
+    state.gridTrackIds = replaceIdInUniqueList(state.gridTrackIds, hit, targetId);
+    state.config = replaceTrackIdInConfig(state.config, hit, targetId);
+    if (targetDef.kind === "generated" || targetDef.group === "synth") state.config.generatedRowsEditable = 1;
+    ensureTrackColumn(targetId);
+    onTrackIdReplaced();
+
+    state.selectedTracks = replaceIdInUniqueList(state.selectedTracks, hit, targetId);
+    if (state.selected?.hit === hit) state.selected.hit = targetId;
+    if (state.trackAnchor === hit) state.trackAnchor = targetId;
+    if (state.pianoRollTargetTrack === hit) state.pianoRollTargetTrack = targetId;
+    if (state.midiLearnTarget === hit) state.midiLearnTarget = targetId;
+    state.soloTracks = replaceIdInSet(state.soloTracks, hit, targetId);
+    state.mutedTracks = replaceIdInSet(state.mutedTracks, hit, targetId);
+    state.config.soloTracks = Array.from(state.soloTracks);
+    state.config.mutedTracks = Array.from(state.mutedTracks);
+
+    if (customSampleUrl) {
+      engine.clearTrackSample(hit);
+      void engine.setTrackSample(targetId, customSampleUrl);
+    }
+
+    applyConfig();
+    buildStepGrid();
+    renderTrackExplorer();
+    renderTrackInspector();
+    renderStepGrid();
+    syncJson();
+    setStatus(`${sourceLabel} instrument changed to ${trackLabelForId(targetId, targetDef.label || targetId)}`);
+    return targetId;
+  }
+
+  function defaultSampleLabel(hit) {
+    const def = getTrackDef(hit);
+    if (def?.voice === "sample" && def.sample) return `built-in ${def.sample}`;
+    if (baseTrackId(hit) === "sampler") return "choose sample";
+    return "—";
+  }
+
+  function renderSamplerParameter(hit, panel) {
+    const sampleWrap = panel.querySelector(".track-inspector-sample");
+    if (sampleWrap) {
+      sampleWrap.classList.add("track-inspector-parameter", "track-inspector-parameter--sample");
+      sampleWrap.classList.remove("track-inspector-parameter--hit-type");
+    }
+    const sampleEl = panel.querySelector('[data-field="sample"]');
+    if (!sampleEl) return;
+    const assigned = state.config.trackSamples?.[hit];
+    sampleEl.textContent = assigned ? assigned.label : defaultSampleLabel(hit);
+    sampleEl.classList.toggle("is-custom", Boolean(assigned));
+  }
+
+  function setSamplerTrackDefault(hit, key, value) {
+    const current = state.config.trackOptionDefaults?.[hit] || {};
+    const nextDefaults = normalizeTrackOptionDefaults({ ...current, [key]: value });
+    const nextMap = { ...(state.config.trackOptionDefaults || {}) };
+    if (Object.keys(nextDefaults).length) nextMap[hit] = nextDefaults;
+    else delete nextMap[hit];
+    state.config.trackOptionDefaults = nextMap;
+    applyConfig();
+  }
+
+  function renderSamplerDefaultControls(hit, panel) {
+    const defaults = trackOptionDefaultsFor(state.config, hit);
+    const wrap = document.createElement("div");
+    wrap.className = "track-inspector-extra-config track-inspector-sampler-defaults";
+    SAMPLER_TRACK_DEFAULT_CONTROLS.forEach(({ key, label, min, max, step, format }) => {
+      const current = defaults[key] ?? STEP_OPTION_DEFAULTS[key];
+      const lbl = document.createElement("label");
+      const span = document.createElement("span");
+      span.textContent = label;
+      const range = document.createElement("input");
+      range.type = "range";
+      range.min = String(min);
+      range.max = String(max);
+      range.step = String(step);
+      range.value = String(current);
+      range.dataset.midiParam = `track.${hit}.default.${key}`;
+      range.dataset.midiLabel = `${instanceLabel(hit)} ${label} default`;
+      range.dataset.midiAction = "value";
+      const out = document.createElement("output");
+      out.textContent = format(current);
+      const number = document.createElement("input");
+      number.className = "selected-number";
+      number.type = "number";
+      number.min = String(min);
+      number.max = String(max);
+      number.step = String(step);
+      number.value = String(current);
+      const commit = (raw) => {
+        const value = clamp(raw, min, max, current);
+        range.value = number.value = String(value);
+        out.textContent = format(value);
+        setSamplerTrackDefault(hit, key, value);
+      };
+      range.addEventListener("input", () => commit(range.value));
+      range.addEventListener("change", syncJson);
+      wireNumberControl(number, (value) => {
+        commit(value);
+        syncJson();
+      });
+      lbl.append(span, range, out, number);
+      wrap.appendChild(lbl);
+    });
+    const panLabel = panel.querySelector('[data-control="pan"]')?.closest("label");
+    panLabel ? panLabel.after(wrap) : panel.querySelector("[data-track-panel]")?.appendChild(wrap);
+  }
+
+  function renderEightOhEightParameter(hit, panel) {
+    const sampleWrap = panel.querySelector(".track-inspector-sample");
+    const row = panel.querySelector(".track-inspector-sample-row");
+    if (!sampleWrap || !row) return;
+    sampleWrap.classList.add("track-inspector-parameter", "track-inspector-parameter--hit-type");
+    sampleWrap.classList.remove("track-inspector-parameter--sample");
+    const label = sampleWrap.querySelector(".track-inspector-sublabel");
+    if (label) label.textContent = "Hit Type";
+    row.innerHTML = "";
+    const select = document.createElement("select");
+    select.className = "track-param-select";
+    select.setAttribute("aria-label", "808 hit type");
+    TRACK_REGISTRY
+      .filter((track) => track.group === "eightOhEight")
+      .forEach((track) => {
+        const option = document.createElement("option");
+        option.value = track.id;
+        option.textContent = track.label.replace(/^808\s+/i, "") || track.label || track.id;
+        select.appendChild(option);
+      });
+    select.value = baseTrackId(hit);
+    select.addEventListener("change", () => {
+      const next = changeTrackInstrument(hit, select.value);
+      if (!next) select.value = baseTrackId(hit);
+      else setStatus(`808 hit type set to ${TRACK_LABELS[baseTrackId(next)] || baseTrackId(next)}`);
+    });
+    row.appendChild(select);
+  }
+
+  function renderDefaultEightOhEightParameter(panel) {
+    const sampleWrap = panel.querySelector(".track-inspector-sample");
+    const row = panel.querySelector(".track-inspector-sample-row");
+    if (!sampleWrap || !row || typeof defaultNoteState !== "function" || typeof setDefaultNoteInstrument !== "function") return;
+    sampleWrap.classList.add("track-inspector-parameter", "track-inspector-parameter--hit-type");
+    sampleWrap.classList.remove("track-inspector-parameter--sample");
+    const label = sampleWrap.querySelector(".track-inspector-sublabel");
+    if (label) label.textContent = "Hit Type";
+    row.innerHTML = "";
+    const select = document.createElement("select");
+    select.className = "track-param-select";
+    select.setAttribute("aria-label", "Default 808 hit type");
+    TRACK_REGISTRY
+      .filter((track) => track.group === "eightOhEight")
+      .forEach((track) => {
+        const option = document.createElement("option");
+        option.value = track.id;
+        option.textContent = track.label.replace(/^808\s+/i, "") || track.label || track.id;
+        select.appendChild(option);
+      });
+    select.value = baseTrackId(defaultNoteState().instrument || "eightOhEightKick");
+    select.addEventListener("change", () => {
+      setDefaultNoteInstrument(select.value);
+      setStatus(`Default 808 hit type ${TRACK_LABELS[select.value] || select.value}`);
+    });
+    row.appendChild(select);
+  }
+
+  function buildDefaultNoteInspectorPanel() {
+    if (!trackInspectorTemplate || typeof defaultNoteState !== "function" || typeof setDefaultNoteInstrument !== "function") return null;
+    const defaults = defaultNoteState();
+    const instrument = defaults.instrument || "eightOhEightKick";
+    const frag = trackInspectorTemplate.content.cloneNode(true);
+    const panel = frag.querySelector("[data-track-panel]");
+    if (!panel) return null;
+    panel.classList.add("track-inspector-default-note");
+    panel.dataset.trackId = instrument;
+
+    const instrumentSelect = panel.querySelector('[data-control="instrument"]');
+    if (instrumentSelect) {
+      const currentInstrument = instrumentIdForTrack(instrument);
+      instrumentChoicesFor(instrument).forEach((choice) => {
+        const option = document.createElement("option");
+        option.value = choice.id;
+        option.textContent = choice.label || choice.id;
+        instrumentSelect.appendChild(option);
+      });
+      instrumentSelect.value = currentInstrument;
+      instrumentSelect.title = "Default instrument for new notes";
+      instrumentSelect.addEventListener("change", () => {
+        const next = targetBaseForInstrument(instrument, instrumentSelect.value);
+        setDefaultNoteInstrument(next);
+      });
+    }
+
+    const closeButton = panel.querySelector('[data-action="deselect"]');
+    if (closeButton) closeButton.remove();
+    const gridLayout = panel.querySelector(".track-inspector-layout");
+    if (gridLayout) {
+      gridLayout.hidden = true;
+      gridLayout.style.display = "none";
+    }
+    ["level", "pan", "busSend", "reverbSend"].forEach((key) => {
+      const label = panel.querySelector(`[data-control="${key}"]`)?.closest("label");
+      if (label) label.remove();
+    });
+    const shapeWrap = panel.querySelector('[data-field="shape"]');
+    if (shapeWrap) shapeWrap.remove();
+
+    if (instrumentIdForTrack(instrument) === "eightOhEight") {
+      renderDefaultEightOhEightParameter(panel);
+    } else {
+      const sampleWrap = panel.querySelector(".track-inspector-sample");
+      if (sampleWrap) sampleWrap.remove();
+    }
+    return panel;
+  }
+
+  /** Remove a registry track from the grid. */
   function removeGridTrack(trackId) {
     const def = getTrackDef(trackId);
-    if (!def || !def.removable) return;
+    if (!def) return;
+    const label = trackLabelForId(trackId, def.label || trackId);
     state.gridTrackIds = state.gridTrackIds.filter((id) => id !== trackId);
+    hideGridTrack(trackId);
+    removeProjectTrack(trackId);
+    if (Array.isArray(state.config.pianoRollTracks)) {
+      state.config.pianoRollTracks = state.config.pianoRollTracks.filter((id) => id !== trackId);
+    }
+    if (state.pianoRollTargetTrack === trackId) {
+      state.pianoRollTargetTrack = pianoRollTrackIds()[0] || null;
+    }
     if (state.selected?.hit === trackId) resetSelectedPanel();
     state.soloTracks.delete(trackId);
+    state.mutedTracks?.delete?.(trackId);
     // Drop the removed track's per-track config so it doesn't linger in saved
     // JSON or get resurfaced by reconcileGridTracks on the next load.
     state.config = removeTrackFromConfigMaps(state.config, trackId);
-    // For instances, also strip their note columns from every bar.
-    if (isInstanceId(trackId)) {
-      state.config.patterns.jazz.bars.forEach((bar) => {
-        if (bar && trackId in bar) delete bar[trackId];
-      });
-    }
+    state.config.patterns.jazz.bars.forEach((bar) => {
+      if (bar && trackId in bar) delete bar[trackId];
+    });
     getEngine().setConfig(previewConfig());
     buildStepGrid();
     renderTrackExplorer();
     renderTrackInspector();
     syncJson();
-    setStatus(`Removed ${def.label} track`);
+    setStatus(`Removed ${label} track`);
   }
 
   /** Build the grouped checkbox list inside the Add Track dialog. */
@@ -440,15 +877,12 @@ export function createTrackPanels(deps) {
         item.className = `add-track-chip ${onGrid ? "is-on-grid" : ""}`;
         const countLabel = instanceCount > 0 ? ` ·${1 + instanceCount}` : "";
         item.textContent = onGrid ? `✓ ${track.label}${countLabel}` : `+ ${track.label}`;
-        item.disabled = onGrid && !track.removable;
-        item.title = onGrid
-          ? (track.removable ? `Remove ${track.label}` : `${track.label} is always on`)
-          : `Add ${track.label}`;
+        item.title = onGrid ? `Remove ${track.label}` : `Add ${track.label}`;
         item.addEventListener("click", () => {
           if (state.gridTrackIds.includes(track.id)) {
-            if (track.removable) removeGridTrack(track.id);
+            removeGridTrack(track.id);
           } else {
-            addGridTrack(track.id);
+            addGridTrack(track.id, { expose: true });
           }
           renderAddTrackDialog();
         });
@@ -465,7 +899,7 @@ export function createTrackPanels(deps) {
           dupe.addEventListener("click", () => {
             // Adding an instance implies the base voice should be present too, so
             // the group renders; if the base isn't on the grid, add it first.
-            if (!state.gridTrackIds.includes(track.id)) addGridTrack(track.id);
+            if (!state.gridTrackIds.includes(track.id)) addGridTrack(track.id, { expose: true });
             addTrackInstance(track.id, { select: false });
             renderAddTrackDialog();
           });
@@ -478,24 +912,6 @@ export function createTrackPanels(deps) {
       host.appendChild(section);
     });
 
-    if (!focusGroupId) {
-      // Sample tracks are organized through + Sample Group and the Sample Browser,
-      // not through a separate registry voice family.
-      const sampleSection = document.createElement("div");
-      sampleSection.className = "add-track-group";
-      const sampleHeading = document.createElement("div");
-      sampleHeading.className = "add-track-group-heading";
-      sampleHeading.style.setProperty("--group-accent", "#c084fc");
-      sampleHeading.textContent = "Sample Groups";
-      sampleSection.appendChild(sampleHeading);
-
-      const sampleDesc = document.createElement("p");
-      sampleDesc.className = "add-track-hint";
-      sampleDesc.style.cssText = "margin: 0 0 8px; font-size: 11px; color: #9eacb6;";
-      sampleDesc.textContent = "Use + Sample Group in the Tracks panel, then add audio from the Sample Browser.";
-      sampleSection.appendChild(sampleDesc);
-      host.appendChild(sampleSection);
-    }
   }
 
   // ── Track Explorer (right-side track list) ──────────────────
@@ -505,10 +921,12 @@ export function createTrackPanels(deps) {
     if (!trackExplorerList) return;
     trackExplorerList.innerHTML = "";
     const selectedSet = new Set(state.selectedTracks.length ? state.selectedTracks : (state.selected?.hit ? [state.selected.hit] : []));
-    visibleTrackGroups().forEach((group) => {
-      const groupTrackIds = state.gridTrackIds.filter((id) => getTrackDef(id)?.group === group.id);
+    const projectIds = trackExplorerIdsForMode();
+    const projectIdSet = new Set(projectIds);
+    TRACK_GROUPS.filter((group) => projectIds.some((id) => getTrackDef(id)?.group === group.id)).forEach((group) => {
+      const groupTrackIds = projectIds.filter((id) => getTrackDef(id)?.group === group.id);
       const registryGroup = TRACK_REGISTRY.filter((track) => track.group === group.id);
-      if (groupTrackIds.length === 0 && registryGroup.length === 0) return;
+      if (groupTrackIds.length === 0) return;
       const collapsed = collapsedVoiceGroups.has(group.id);
       const groupEl = document.createElement("div");
       groupEl.className = `track-explorer-group ${collapsed ? "is-collapsed" : ""}`;
@@ -570,28 +988,8 @@ export function createTrackPanels(deps) {
               selectExplorerTrackNow(hit, event);
             });
 
-            const soloBtn = document.createElement("button");
-            soloBtn.type = "button";
-            soloBtn.className = `track-explorer-solo ${state.soloTracks.has(hit) ? "is-active" : ""}`;
-            soloBtn.textContent = "S";
-            soloBtn.title = `Solo ${labelText}`;
-            soloBtn.addEventListener("click", (event) => {
-              event.stopPropagation();
-              toggleSolo(hit);
-              renderTrackExplorer();
-            });
-
-            const removeBtn = document.createElement("button");
-            removeBtn.type = "button";
-            removeBtn.className = "track-explorer-remove";
-            removeBtn.textContent = "×";
-            removeBtn.title = `Remove ${labelText}`;
-            removeBtn.addEventListener("click", (event) => {
-              event.stopPropagation();
-              removeGridTrack(hit);
-            });
-
-            row.append(name, soloBtn, removeBtn);
+            row.addEventListener("contextmenu", (event) => openExplorerTrackMenu(event, hit, labelText));
+            row.append(name);
             groupEl.appendChild(row);
           });
           if (groupTrackIds.length === 0) {
@@ -603,13 +1001,16 @@ export function createTrackPanels(deps) {
           trackExplorerList.appendChild(groupEl);
           return;
         }
-        registryGroup.forEach((track) => {
-          const ids = trackIdsForBase(track.id);
+        const addedTracks = registryGroup.filter((track) => projectIds.some((id) => baseTrackId(id) === track.id));
+        addedTracks.forEach((track) => {
+          const ids = trackIdsForBase(track.id).filter((id) => projectIdSet.has(id));
           const count = ids.length;
+          const pianoRollMode = state.trackEditorMode === "pianoRoll";
+          const pianoRollOpen = pianoRollMode && pianoRollTrackIds().includes(track.id);
           const primaryId = ids[0] || track.id;
           const active = ids.some((id) => selectedSet.has(id));
           const row = document.createElement("div");
-          row.className = `track-explorer-row ${active ? "is-selected" : ""} ${count === 0 ? "is-empty" : ""}`;
+          row.className = `track-explorer-row ${active || (pianoRollOpen && state.pianoRollTargetTrack === track.id) ? "is-selected" : ""} ${count === 0 && !pianoRollMode ? "is-empty" : ""}`;
           row.dataset.trackId = primaryId;
           row.dataset.trackAggregate = "base";
 
@@ -618,10 +1019,12 @@ export function createTrackPanels(deps) {
           name.className = "track-explorer-name";
           const trackLabel = track.label || track.id;
           name.textContent = trackLabel;
-          name.title = count > 0
+          name.title = pianoRollMode
+            ? `${trackLabel} — Click to open/select this piano roll`
+            : count > 0
             ? `${trackLabel} — Click to select · Shift-click to add a range · ⌘/Ctrl-click to toggle`
             : `${trackLabel} is not on the grid`;
-          name.disabled = count === 0;
+          name.disabled = !pianoRollMode && count === 0;
           const hasSample = ids.some((id) => Boolean(state.config.trackSamples?.[id]));
           if (hasSample) {
             const dot = document.createElement("span");
@@ -630,12 +1033,18 @@ export function createTrackPanels(deps) {
             name.appendChild(dot);
           }
           const selectExplorerRowNow = (event) => {
-            if (count === 0) return;
+            if (pianoRollMode) {
+              if (!pianoRollTrackIds().includes(track.id)) {
+                setPianoRollTrackOpen(track, 1);
+                return;
+              }
+              state.pianoRollTargetTrack = track.id;
+            } else if (count === 0) return;
             selectExplorerTrackNow(primaryId, event);
           };
           let skipNameClick = false;
           name.addEventListener("pointerdown", (event) => {
-            if (event.button !== 0 || count === 0) return;
+            if (event.button !== 0 || (!pianoRollMode && count === 0)) return;
             skipNameClick = true;
             event.preventDefault();
             selectExplorerRowNow(event);
@@ -648,108 +1057,34 @@ export function createTrackPanels(deps) {
             selectExplorerRowNow(event);
           });
 
-          const countInput = document.createElement("input");
-          countInput.type = "number";
-          countInput.className = "track-explorer-count";
-          countInput.min = track.removable ? "0" : "1";
-          countInput.max = track.instanceable ? "32" : "1";
-          countInput.step = "1";
-          countInput.value = String(count);
-          countInput.title = `${trackLabel} count`;
-          countInput.disabled = !track.removable && !track.instanceable;
-          const commitCount = () => setTrackVoiceCount(track, countInput.value);
-          countInput.addEventListener("click", (event) => event.stopPropagation());
-          countInput.addEventListener("change", commitCount);
-          countInput.addEventListener("keydown", (event) => {
-            if (event.key !== "Enter") return;
-            event.preventDefault();
-            commitCount();
-            countInput.blur();
-          });
-
-          const soloBtn = document.createElement("button");
-          soloBtn.type = "button";
-          soloBtn.className = `track-explorer-solo ${ids.some((id) => state.soloTracks.has(id)) ? "is-active" : ""}`;
-          soloBtn.textContent = "S";
-          soloBtn.disabled = count === 0;
-          soloBtn.title = `Solo ${trackLabel}`;
-          soloBtn.addEventListener("click", (event) => {
-            event.stopPropagation();
-            if (count === 0) return;
-            toggleSolo(primaryId);
-            renderTrackExplorer();
-          });
-
-          row.append(name, countInput, soloBtn);
+          row.addEventListener("contextmenu", (event) => openExplorerTrackMenu(event, primaryId, trackLabel));
+          row.append(name);
           groupEl.appendChild(row);
         });
-        if (registryGroup.length === 0) {
+        if (addedTracks.length === 0) {
           const empty = document.createElement("p");
           empty.className = "track-explorer-empty";
-          empty.textContent = "No tracks in this group.";
+          empty.textContent = "No tracks added.";
           groupEl.appendChild(empty);
         }
       }
       trackExplorerList.appendChild(groupEl);
     });
 
-    const groups = sampleGroups();
-    if (activeSampleGroupId && !groups.some((group) => group.id === activeSampleGroupId)) {
-      activeSampleGroupId = null;
-    }
-    if (groups.length) {
-      const section = document.createElement("div");
-      section.className = "track-explorer-sample-groups";
-      const sectionLabel = document.createElement("div");
-      sectionLabel.className = "track-explorer-subheading";
-      sectionLabel.textContent = "Sample Groups";
-      section.appendChild(sectionLabel);
-      groups.forEach((group) => {
-        const collapsed = Boolean(group.collapsed);
-        const groupEl = document.createElement("div");
-        groupEl.className = `track-explorer-group track-explorer-group--sample ${activeSampleGroupId === group.id ? "is-active-target" : ""}`;
-        const heading = document.createElement("div");
-        heading.className = "track-explorer-group-heading";
-        heading.style.setProperty("--group-accent", "#fcd34d");
-        const toggle = document.createElement("button");
-        toggle.type = "button";
-        toggle.className = "track-explorer-group-toggle";
-        toggle.textContent = collapsed ? "+" : "-";
-        toggle.title = `${collapsed ? "Expand" : "Collapse"} ${group.label}`;
-        toggle.addEventListener("click", () => toggleSampleGroupCollapsed(group.id));
-        const label = document.createElement("button");
-        label.type = "button";
-        label.className = "track-explorer-group-label track-explorer-group-target";
-        label.textContent = group.label;
-        label.title = `Send Sample Browser adds to ${group.label}`;
-        label.addEventListener("click", () => setActiveSampleGroup(group.id));
-        heading.append(toggle, label);
-        groupEl.appendChild(heading);
-        if (!collapsed) {
-          const hint = document.createElement("p");
-          hint.className = "track-explorer-empty";
-          hint.textContent = activeSampleGroupId === group.id
-            ? "Sample Browser adds go here."
-            : "Click the group name, then choose samples in Sample Browser.";
-          groupEl.appendChild(hint);
-        }
-        section.appendChild(groupEl);
-      });
-      trackExplorerList.appendChild(section);
-    }
     if (!trackExplorerList.children.length) {
       const empty = document.createElement("p");
       empty.className = "track-explorer-empty";
-      empty.textContent = "No tracks yet. Use “+ Sample Group” or add a voice group track.";
+      empty.textContent = emptyTrackExplorerMessage();
       trackExplorerList.appendChild(empty);
     }
+    if (typeof window !== "undefined") window.rhythmEditorRenderTrackPalettes?.();
   }
 
   // ── Per-track 808 shape (state-aware wrappers + DOM renderer) ─────────
 
   /** Is this track id an 808-kit voice (base or instance) that supports shaping? */
   function trackSupportsShape(hit) {
-    return getTrackDef(hit)?.group === "eightOhEight";
+    return baseTrackId(hit).startsWith("eightOhEight") && getTrackDef(hit)?.group === "eightOhEight";
   }
 
   /** Global default for a shape field, read from the Mix-panel 808 knobs. */
@@ -800,6 +1135,9 @@ export function createTrackPanels(deps) {
       slider.max = String(field.max);
       slider.step = String(field.step);
       slider.value = String(value);
+      slider.dataset.midiParam = `track.${hit}.shape.${field.key}`;
+      slider.dataset.midiLabel = `${instanceLabel(hit)} ${field.label}`;
+      slider.dataset.midiAction = "value";
 
       const out = document.createElement("output");
       out.className = "track-shape-value";
@@ -841,10 +1179,62 @@ export function createTrackPanels(deps) {
     return state.gridTrackIds.filter((id) => baseTrackId(id) === baseId);
   }
 
+  function pianoRollTrackIds() {
+    if (!Array.isArray(state.config.pianoRollTracks)) state.config.pianoRollTracks = [];
+    return state.config.pianoRollTracks;
+  }
+
+  function sortedPianoRollTrackIds(ids) {
+    const order = new Map(TRACK_REGISTRY.map((track, index) => [track.id, index]));
+    return [...new Set(ids)]
+      .filter((id) => typeof id === "string" && getTrackDef(id))
+      .sort((a, b) => (order.get(baseTrackId(a)) ?? 9999) - (order.get(baseTrackId(b)) ?? 9999));
+  }
+
+  function ensureTrackPatternRows(trackId) {
+    const bars = state.config.patterns?.jazz?.bars || [];
+    bars.forEach((bar) => {
+      if (bar && !Array.isArray(bar[trackId])) bar[trackId] = [];
+    });
+  }
+
+  function setPianoRollTrackOpen(track, value, { exposeGrid = true } = {}) {
+    if (!track) return;
+    const target = Math.round(Number(value)) >= 1 ? 1 : 0;
+    const next = new Set(pianoRollTrackIds());
+    if (target) {
+      next.add(track.id);
+      if (!state.gridTrackIds.includes(track.id)) addGridTrack(track.id, { expose: exposeGrid, hidden: !exposeGrid });
+      else if (exposeGrid) addProjectTrack(track.id, { render: false });
+      else {
+        hideGridTrack(track.id);
+        removeProjectTrack(track.id);
+      }
+      onEditorLaneOpen?.("piano", track.id);
+      ensureTrackPatternRows(track.id);
+      state.config.generatedRowsEditable = 1;
+      state.pianoRollTargetTrack = track.id;
+      selectRow(track.id, { deferTrackPanels: true, bottomTab: "track" });
+      setStatus(`Opened ${track.label || track.id} piano roll`);
+    } else {
+      next.delete(track.id);
+      if (state.pianoRollTargetTrack === track.id) {
+        state.pianoRollTargetTrack = sortedPianoRollTrackIds(next)[0] || null;
+      }
+      setStatus(`Closed ${track.label || track.id} piano roll`);
+    }
+    state.config.pianoRollTracks = sortedPianoRollTrackIds(next);
+    applyConfig();
+    buildStepGrid();
+    renderTrackExplorer();
+    renderTrackInspector();
+    syncJson();
+  }
+
   function setTrackVoiceCount(track, value) {
     if (!track) return;
     const max = track.instanceable ? 32 : 1;
-    const min = track.removable ? 0 : 1;
+    const min = 0;
     let target = Math.round(Number(value));
     if (!Number.isFinite(target)) target = trackIdsForBase(track.id).length;
     target = Math.max(min, Math.min(max, target));
@@ -852,13 +1242,13 @@ export function createTrackPanels(deps) {
     let ids = trackIdsForBase(track.id);
     if (!track.instanceable) {
       if (target === 0 && ids.length) removeGridTrack(track.id);
-      if (target === 1 && !ids.length) addGridTrack(track.id);
+      if (target === 1 && !ids.length) addGridTrack(track.id, { expose: true });
       renderTrackExplorer();
       return;
     }
 
     if (target > 0 && !state.gridTrackIds.includes(track.id)) {
-      addGridTrack(track.id);
+      addGridTrack(track.id, { expose: true });
     }
     ids = trackIdsForBase(track.id);
     while (ids.length < target) {
@@ -866,7 +1256,7 @@ export function createTrackPanels(deps) {
       ids = trackIdsForBase(track.id);
     }
     while (ids.length > target) {
-      const removableId = [...ids].reverse().find((id) => id !== track.id) || (track.removable ? track.id : null);
+      const removableId = [...ids].reverse()[0] || null;
       if (!removableId) break;
       removeGridTrack(removableId);
       ids = trackIdsForBase(track.id);
@@ -876,8 +1266,8 @@ export function createTrackPanels(deps) {
 
   /**
    * Build one inspector panel (cloned from the template) for a single track id,
-   * wiring its sample row, Level/Pan/Delay/Verb controls, optional 808 shape, and
-   * Duplicate/Delete actions. Each panel is fully independent so several can be
+   * wiring its sample row, Level/Pan/Echo/Reverb controls, optional 808 shape, and
+   * Delete actions. Each panel is fully independent so several can be
    * shown at once for a multi-track selection.
    */
   function buildTrackInspectorPanel(hit) {
@@ -889,35 +1279,50 @@ export function createTrackPanels(deps) {
     const nameEl = panel.querySelector('[data-field="name"]');
     if (nameEl) nameEl.textContent = trackDisplayLabel(hit);
 
-    const sampleEl = panel.querySelector('[data-field="sample"]');
-    if (sampleEl) {
-      const assigned = state.config.trackSamples?.[hit];
-      sampleEl.textContent = assigned ? assigned.label : "— built-in —";
-      sampleEl.classList.toggle("is-custom", Boolean(assigned));
-    }
-
-    const densityInput = panel.querySelector('[data-control="stepsPerBar"]');
-    const densityOutput = panel.querySelector('[data-output="stepsPerBar"]');
-    if (densityInput) {
-      const currentSteps = trackStepCount(hit);
-      densityInput.value = String(currentSteps);
-      if (densityOutput) densityOutput.textContent = String(currentSteps);
-      const commitDensity = () => setTrackStepCount(hit, densityInput.value);
-      densityInput.addEventListener("change", commitDensity);
-      densityInput.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter") return;
-        event.preventDefault();
-        commitDensity();
-        densityInput.blur();
+    const instrumentSelect = panel.querySelector('[data-control="instrument"]');
+    if (instrumentSelect) {
+      const currentInstrument = instrumentIdForTrack(hit);
+      instrumentChoicesFor(hit).forEach((instrument) => {
+        const option = document.createElement("option");
+        option.value = instrument.id;
+        option.textContent = instrument.label || instrument.id;
+        instrumentSelect.appendChild(option);
+      });
+      instrumentSelect.value = currentInstrument;
+      instrumentSelect.title = `Instrument: ${trackDisplayLabel(hit)}`;
+      instrumentSelect.addEventListener("change", () => {
+        const next = changeTrackInstrument(hit, instrumentSelect.value);
+        if (!next) instrumentSelect.value = currentInstrument;
       });
     }
 
-    // Paired range + number controls for Level / Pan / Delay / Verb.
-    const wireParam = (key, getValue, setValue, format, min, max, step) => {
+    const sampleWrap = panel.querySelector(".track-inspector-sample");
+    const instrumentKind = instrumentIdForTrack(hit);
+    if (instrumentKind === "eightOhEight") {
+      renderEightOhEightParameter(hit, panel);
+    } else if (instrumentKind === "sampler") {
+      renderSamplerParameter(hit, panel);
+      renderSamplerDefaultControls(hit, panel);
+    } else if (sampleWrap) {
+      sampleWrap.hidden = true;
+      sampleWrap.style.display = "none";
+    }
+
+    const gridLayout = panel.querySelector(".track-inspector-layout");
+    if (gridLayout) {
+      gridLayout.hidden = true;
+      gridLayout.style.display = "none";
+    }
+
+    // Paired range + number controls for Level / Pan / Echo / Reverb.
+    const wireParam = (key, label, getValue, setValue, format, min, max, step) => {
       const range = panel.querySelector(`[data-control="${key}"]`);
       const number = panel.querySelector(`[data-number="${key}"]`);
       const output = panel.querySelector(`[data-output="${key}"]`);
       if (!range || !number || !output) return;
+      range.dataset.midiParam = `track.${hit}.${key}`;
+      range.dataset.midiLabel = `${instanceLabel(hit)} ${label}`;
+      range.dataset.midiAction = "value";
       range.min = number.min = String(min);
       range.max = number.max = String(max);
       range.step = number.step = String(step);
@@ -933,10 +1338,16 @@ export function createTrackPanels(deps) {
       range.addEventListener("input", () => commit(range.value));
       wireNumberControl(number, commit);
     };
-    wireParam("level", mix.getLevel, mix.setLevel, (v) => Number(v).toFixed(2), 0, 2, 0.01);
-    wireParam("pan", mix.getPan, mix.setPan, formatPan, -1, 1, 0.01);
-    wireParam("busSend", mix.getBusSend, mix.setBusSend, (v) => Number(v).toFixed(2), 0, 1, 0.01);
-    wireParam("reverbSend", mix.getReverbSend, mix.setReverbSend, (v) => Number(v).toFixed(2), 0, 1, 0.01);
+    wireParam("level", "Level", mix.getLevel, mix.setLevel, (v) => Number(v).toFixed(2), 0, 2, 0.01);
+    wireParam("pan", "Pan", mix.getPan, mix.setPan, formatPan, -1, 1, 0.01);
+    wireParam("busSend", "Echo", mix.getBusSend, mix.setBusSend, (v) => Number(v).toFixed(2), 0, 1, 0.01);
+    wireParam("reverbSend", "Reverb", mix.getReverbSend, mix.setReverbSend, (v) => Number(v).toFixed(2), 0, 1, 0.01);
+    ["busSend", "reverbSend"].forEach((key) => {
+      const label = panel.querySelector(`[data-control="${key}"]`)?.closest("label");
+      if (!label) return;
+      label.hidden = true;
+      label.style.display = "none";
+    });
 
     // Extra voice-specific config sliders declared in the track registry.
     const baseDef = TRACK_BY_ID[baseTrackId(hit)];
@@ -952,6 +1363,9 @@ export function createTrackPanels(deps) {
         range.type = "range";
         range.min = String(min); range.max = String(max); range.step = String(step);
         range.value = String(current);
+        range.dataset.midiParam = `config.${key}`;
+        range.dataset.midiLabel = `${instanceLabel(hit)} ${label}`;
+        range.dataset.midiAction = "value";
         const out = document.createElement("output");
         out.textContent = Number(current).toFixed(step < 1 ? 2 : 0);
         range.addEventListener("input", () => {
@@ -962,9 +1376,9 @@ export function createTrackPanels(deps) {
         lbl.append(span, range, out);
         extraWrap.appendChild(lbl);
       });
-      // Insert after the Verb (reverbSend) label — find it by data-control.
-      const verbLabel = panel.querySelector('[data-control="reverbSend"]')?.closest("label");
-      verbLabel ? verbLabel.after(extraWrap) : panel.querySelector("[data-track-panel]")?.appendChild(extraWrap);
+      // Keep instrument-specific knobs in the same compact row as Level/Pan.
+      const panLabel = panel.querySelector('[data-control="pan"]')?.closest("label");
+      panLabel ? panLabel.after(extraWrap) : panel.querySelector("[data-track-panel]")?.appendChild(extraWrap);
     }
 
     // Per-track 808 shape (only for 808-kit voices).
@@ -972,23 +1386,21 @@ export function createTrackPanels(deps) {
     const supportsShape = trackSupportsShape(hit);
     if (shapeWrap) {
       shapeWrap.hidden = !supportsShape;
+      shapeWrap.style.display = supportsShape ? "" : "none";
       if (supportsShape) {
         renderTrackShapeControls(hit, panel.querySelector('[data-field="shape-controls"]'));
       }
     }
 
     // Action buttons (delegated handlers via data-action + the panel's data-track-id).
-    const dupBtn = panel.querySelector('[data-action="duplicate"]');
-    if (dupBtn) {
-      const canDuplicate = Boolean(def?.instanceable);
-      dupBtn.hidden = !canDuplicate;
-      dupBtn.title = canDuplicate ? `Add another ${TRACK_LABELS[baseTrackId(hit)] || def.label} instance` : "";
-    }
     const delBtn = panel.querySelector('[data-action="delete"]');
     if (delBtn) {
-      const removable = Boolean(def?.removable);
-      delBtn.disabled = !removable;
-      delBtn.title = removable ? `Remove ${def.label}` : "Core kit tracks can't be removed";
+      delBtn.disabled = false;
+      delBtn.title = `Remove ${trackDisplayLabel(hit)}`;
+    }
+    const actions = panel.querySelector(".track-inspector-actions");
+    if (actions && Array.from(actions.children).every((btn) => btn.hidden)) {
+      actions.remove();
     }
 
     // Wire panel-scoped action buttons.
@@ -1015,9 +1427,6 @@ export function createTrackPanels(deps) {
       case "reset-shape":
         resetTrackShape(hit);
         break;
-      case "duplicate":
-        addTrackInstance(baseTrackId(hit), { select: true });
-        break;
       case "delete":
         removeGridTrack(hit);
         break;
@@ -1040,7 +1449,7 @@ export function createTrackPanels(deps) {
     state.selectedTracks = next;
     if (state.trackAnchor === hit) state.trackAnchor = next[next.length - 1];
     if (state.selected?.hit === hit) {
-      selectRow(next[0], { keepTracks: true });
+      selectRow(next[0], { keepTracks: true, bottomTab: "track" });
     }
     renderTrackInspector();
     renderTrackExplorer();
@@ -1053,10 +1462,14 @@ export function createTrackPanels(deps) {
    */
   function renderTrackInspector() {
     if (!trackInspectorPanels || !trackInspectorTemplate) return;
-    const tracks = orderBySelectedGrid(
-      (state.selectedTracks.length ? state.selectedTracks : (state.selected?.hit ? [state.selected.hit] : []))
-        .filter((id) => state.gridTrackIds.includes(id))
-    );
+    const selectedIds = state.selectedTracks.length
+      ? state.selectedTracks
+      : (state.selected?.hit ? [state.selected.hit] : []);
+    let tracks = orderBySelectedGrid(selectedIds.filter((id) => state.gridTrackIds.includes(id)));
+    if (state.trackEditorMode === "pianoRoll") {
+      const openPianoRollTracks = new Set(pianoRollTrackIds());
+      tracks = tracks.filter((id) => openPianoRollTracks.has(id));
+    }
     trackInspectorPanels.innerHTML = "";
     if (trackInspectorName) {
       trackInspectorName.textContent = tracks.length === 0
@@ -1067,6 +1480,15 @@ export function createTrackPanels(deps) {
     }
     if (trackInspectorMultiHint) {
       trackInspectorMultiHint.hidden = tracks.length > 1;
+    }
+    if (!tracks.length) {
+      const defaultPanel = buildDefaultNoteInspectorPanel();
+      if (defaultPanel) {
+        if (trackInspectorName) trackInspectorName.textContent = "Default Note";
+        if (trackInspectorMultiHint) trackInspectorMultiHint.hidden = true;
+        trackInspectorPanels.appendChild(defaultPanel);
+      }
+      return;
     }
     tracks.forEach((hit) => {
       trackInspectorPanels.appendChild(buildTrackInspectorPanel(hit));
@@ -1087,8 +1509,13 @@ export function createTrackPanels(deps) {
   // ── Per-track custom samples ─────────────────────────────────
 
   /** Apply a custom sample to a track (config + engine) and refresh UI. */
-  async function assignSampleToTrack(hit, sample) {
+  async function assignSampleToTrack(hit, sample, { expose = true } = {}) {
     if (!hit) return;
+    if (expose) addProjectTrack(hit, { render: false });
+    else {
+      hideGridTrack(hit);
+      removeProjectTrack(hit);
+    }
     const source = sample.source || (sample.handleId ? SAMPLE_SOURCE_BROWSER_HANDLE : sample.url ? SAMPLE_SOURCE_BUNDLED : SAMPLE_SOURCE_LOCAL_FILE);
     const stored = {
       source,
@@ -1169,12 +1596,12 @@ export function createTrackPanels(deps) {
     orderGridTrackIds,
     addGridTrack,
     addTrackInstance,
+    addProjectTrack,
+    openTrackPianoRoll,
     removeGridTrack,
     instanceLabel,
     renderAddTrackDialog,
     openAddTrackDialog,
-    addSampleGroupFromPrompt,
-    activeSampleGroupId: () => activeSampleGroupId,
     // explorer + inspector
     renderTrackExplorer,
     renderTrackInspector,

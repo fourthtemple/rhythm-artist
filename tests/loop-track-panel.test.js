@@ -1,7 +1,7 @@
 // Unit tests for loop-track editing math. `node --test`.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cutRegionsToSelection, makeUnscaledRevealRegion, regionSourceSlice } from "../src/ui/loop-track-panel.js";
+import { cutRegionsToSelection, makeUnscaledRevealRegion, regionSourceSlice } from "../src/ui/wave-edit/loop-track-panel.js";
 
 const closeTo = (actual, expected, epsilon = 1e-9) => {
   assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} should be close to ${expected}`);

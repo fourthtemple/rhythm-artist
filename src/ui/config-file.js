@@ -31,6 +31,7 @@
  * @param {() => void} deps.renderTrackInspector
  * @param {() => (void|Promise<any>)} deps.reapplyTrackSamples
  * @param {(tracks: any[]) => (void|Promise<any>)} [deps.restoreLoopTracks]
+ * @param {(config: any) => void} [deps.onConfigLoaded]
  * @param {() => void} deps.updateTwoBarClipboardButtons
  * @param {() => void} deps.updateTrackClipboardButtons
  */
@@ -57,6 +58,7 @@ export function createConfigFile(deps) {
     renderTrackInspector,
     reapplyTrackSamples,
     restoreLoopTracks = () => {},
+    onConfigLoaded = () => {},
     updateTwoBarClipboardButtons,
     updateTrackClipboardButtons
   } = deps;
@@ -81,6 +83,38 @@ export function createConfigFile(deps) {
       : payload;
   }
 
+  function sequencedHitCount(config) {
+    const bars = config?.patterns?.jazz?.bars;
+    if (!Array.isArray(bars) || !bars.length) return 0;
+    return bars.reduce((sum, bar) => (
+      sum + Object.values(bar || {}).reduce((barSum, row) => (
+        barSum + (Array.isArray(row) ? row.length : 0)
+      ), 0)
+    ), 0);
+  }
+
+  function sequencedHitCountInBars(bars = []) {
+    return bars.reduce((sum, bar) => (
+      sum + Object.values(bar || {}).reduce((barSum, row) => (
+        barSum + (Array.isArray(row) ? row.length : 0)
+      ), 0)
+    ), 0);
+  }
+
+  function assertUsableDefaultConfig(config, source = "default-project") {
+    const bars = config?.patterns?.jazz?.bars;
+    const loopTracks = Array.isArray(config?.loopTracks) ? config.loopTracks : [];
+    if (!Array.isArray(bars) || !bars.length) {
+      throw new Error(`${source}-has-no-bars`);
+    }
+    if (sequencedHitCount(config) <= 0 && loopTracks.length <= 0) {
+      throw new Error(`${source}-has-no-pattern-content`);
+    }
+    if (sequencedHitCountInBars(bars.slice(0, Math.min(2, bars.length))) <= 0 && loopTracks.length <= 0) {
+      throw new Error(`${source}-has-empty-start`);
+    }
+  }
+
   async function downloadConfig() {
     state.config = normalizeEditorConfig(getSerializableConfig());
     syncJson();
@@ -99,6 +133,9 @@ export function createConfigFile(deps) {
   // the "Load File" flow and the auto-load of the saved game rhythm.
   function applyLoadedConfig(nextConfig) {
     state.config = normalizeEditorConfig(nextConfig);
+    onConfigLoaded(state.config);
+    state.soloTracks = new Set(state.config.soloTracks || []);
+    state.mutedTracks = new Set(state.config.mutedTracks || []);
     state.activeBar = 0;
     state.activeLoopIndex = 0;
     state.twoBarClipboard = null;
@@ -130,7 +167,9 @@ export function createConfigFile(deps) {
       try {
         const payload = await loadDefaultProject();
         if (!payload) throw new Error("default-project-cache-empty");
-        applyLoadedConfig(configFromPayload(payload));
+        const config = configFromPayload(payload);
+        assertUsableDefaultConfig(config, "browser-default-project");
+        applyLoadedConfig(config);
         setStatus(payload?.name ? `Loaded ${payload.name}` : "Loaded browser default project");
         return;
       } catch (error) {
@@ -142,7 +181,7 @@ export function createConfigFile(deps) {
       applyLoadedConfig(configFromPayload(payload));
       setStatus(localMode.preferBundledDefault
         ? "Loaded bundled Default Project for editing"
-        : payload?.name ? `Loaded ${payload.name}` : "Loaded bundled default project");
+        : payload?.name ? `Loaded bundled ${payload.name}` : "Loaded bundled default project");
     } catch (fallbackError) {
       try {
         applyLoadedConfig(await fetchSavedConfig("./assets/game/rhythm-sequence.json"));

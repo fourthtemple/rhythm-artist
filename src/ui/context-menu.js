@@ -4,6 +4,38 @@
 // ════════════════════════════════════════════════════════════════════════
 
 let activeContextMenu = null;
+const CONTEXT_MENU_MARGIN = 8;
+
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+/**
+ * Position a context menu so it remains fully usable inside the viewport.
+ * The menu must already be attached to the document so it can be measured.
+ * @param {HTMLElement} menu
+ * @param {number} x
+ * @param {number} y
+ */
+export function positionContextMenu(menu, x, y) {
+  const viewportWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+  const viewportHeight = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+  const maxWidth = Math.max(160, viewportWidth - CONTEXT_MENU_MARGIN * 2);
+  const maxHeight = Math.max(96, viewportHeight - CONTEXT_MENU_MARGIN * 2);
+
+  menu.style.maxWidth = `${maxWidth}px`;
+  menu.style.maxHeight = `${maxHeight}px`;
+  menu.style.overflowY = "auto";
+  menu.style.left = `${Math.round(x)}px`;
+  menu.style.top = `${Math.round(y)}px`;
+
+  const rect = menu.getBoundingClientRect();
+  const maxLeft = Math.max(CONTEXT_MENU_MARGIN, viewportWidth - rect.width - CONTEXT_MENU_MARGIN);
+  const maxTop = Math.max(CONTEXT_MENU_MARGIN, viewportHeight - rect.height - CONTEXT_MENU_MARGIN);
+  const nextLeft = clamp(x, CONTEXT_MENU_MARGIN, maxLeft);
+  const nextTop = clamp(y, CONTEXT_MENU_MARGIN, maxTop);
+
+  menu.style.left = `${Math.round(nextLeft)}px`;
+  menu.style.top = `${Math.round(nextTop)}px`;
+}
 
 /** Close any open context menu and detach its dismiss listeners. */
 export function closeContextMenu() {
@@ -23,6 +55,7 @@ export function closeContextMenu() {
  */
 export function showContextMenu(event, items) {
   event.preventDefault();
+  event.stopPropagation();
   closeContextMenu();
   const menu = document.createElement("div");
   menu.className = "context-menu";
@@ -45,14 +78,9 @@ export function showContextMenu(event, items) {
     });
     menu.appendChild(btn);
   });
-  menu.style.left = `${event.clientX}px`;
-  menu.style.top = `${event.clientY}px`;
   document.body.appendChild(menu);
   activeContextMenu = menu;
-  // Reposition if it overflows the viewport.
-  const rect = menu.getBoundingClientRect();
-  if (rect.right > window.innerWidth) menu.style.left = `${window.innerWidth - rect.width - 8}px`;
-  if (rect.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - rect.height - 8}px`;
+  positionContextMenu(menu, event.clientX, event.clientY);
   // Defer so the opening click doesn't immediately close it.
   setTimeout(() => {
     document.addEventListener("click", closeContextMenu);

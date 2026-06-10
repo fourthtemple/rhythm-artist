@@ -10,6 +10,58 @@
 // thin hoisted wrappers so existing call sites (event wiring, render loop,
 // transport playhead) are unchanged.
 
+const PITCH_SCALE_MODES = [
+  { id: "major", label: "Major", intervals: [0, 2, 4, 5, 7, 9, 11] },
+  { id: "minor", label: "Natural Minor", intervals: [0, 2, 3, 5, 7, 8, 10] },
+  { id: "harmonicMinor", label: "Harmonic Minor", intervals: [0, 2, 3, 5, 7, 8, 11] },
+  { id: "melodicMinor", label: "Melodic Minor", intervals: [0, 2, 3, 5, 7, 9, 11] },
+  { id: "dorian", label: "Dorian", intervals: [0, 2, 3, 5, 7, 9, 10] },
+  { id: "phrygian", label: "Phrygian", intervals: [0, 1, 3, 5, 7, 8, 10] },
+  { id: "lydian", label: "Lydian", intervals: [0, 2, 4, 6, 7, 9, 11] },
+  { id: "mixolydian", label: "Mixolydian", intervals: [0, 2, 4, 5, 7, 9, 10] },
+  { id: "locrian", label: "Locrian", intervals: [0, 1, 3, 5, 6, 8, 10] },
+  { id: "majorPentatonic", label: "Major Pent", intervals: [0, 2, 4, 7, 9] },
+  { id: "minorPentatonic", label: "Minor Pent", intervals: [0, 3, 5, 7, 10] },
+  { id: "blues", label: "Blues", intervals: [0, 3, 5, 6, 7, 10] },
+  { id: "bebopMajor", label: "Bebop Major", intervals: [0, 2, 4, 5, 7, 8, 9, 11] },
+  { id: "bebopDominant", label: "Bebop Dom", intervals: [0, 2, 4, 5, 7, 9, 10, 11] },
+  { id: "altered", label: "Altered", intervals: [0, 1, 3, 4, 6, 8, 10] },
+  { id: "wholeTone", label: "Whole Tone", intervals: [0, 2, 4, 6, 8, 10] },
+  { id: "diminished", label: "Diminished", intervals: [0, 2, 3, 5, 6, 8, 9, 11] },
+  { id: "halfWhole", label: "Half-Whole", intervals: [0, 1, 3, 4, 6, 7, 9, 10] },
+  { id: "augmented", label: "Augmented", intervals: [0, 3, 4, 7, 8, 11] },
+  { id: "doubleHarmonic", label: "Double Harm", intervals: [0, 1, 4, 5, 7, 8, 11] },
+  { id: "hungarianMinor", label: "Hungarian Min", intervals: [0, 2, 3, 6, 7, 8, 11] },
+  { id: "spanishGypsy", label: "Spanish", intervals: [0, 1, 4, 5, 7, 8, 10] },
+  { id: "persian", label: "Persian", intervals: [0, 1, 4, 5, 6, 8, 11] },
+  { id: "arabic", label: "Arabic", intervals: [0, 2, 4, 5, 6, 8, 10] },
+  { id: "neapolitanMinor", label: "Neapolitan Min", intervals: [0, 1, 3, 5, 7, 8, 11] },
+  { id: "hirajoshi", label: "Hirajoshi", intervals: [0, 2, 3, 7, 8] },
+  { id: "inSen", label: "In Sen", intervals: [0, 1, 5, 7, 10] },
+  { id: "iwato", label: "Iwato", intervals: [0, 1, 5, 6, 10] },
+  { id: "yo", label: "Yo", intervals: [0, 2, 5, 7, 9] },
+  { id: "prometheus", label: "Prometheus", intervals: [0, 2, 4, 6, 9, 10] },
+  { id: "chromatic", label: "Chromatic", intervals: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }
+];
+
+const PITCH_CHORD_RECIPES = [
+  { id: "single", label: "1", degrees: [0] },
+  { id: "triad", label: "1-3-5", degrees: [0, 2, 4] },
+  { id: "seventh", label: "7", degrees: [0, 2, 4, 6] },
+  { id: "ninth", label: "9", degrees: [0, 2, 4, 6, 8] },
+  { id: "sus2", label: "sus2", degrees: [0, 1, 4] },
+  { id: "sus4", label: "sus4", degrees: [0, 3, 4] },
+  { id: "power", label: "5", intervals: [0, 7, 12] }
+];
+
+const SELECTED_PIANO_RANGE_OPTIONS = [
+  { keys: 13, label: "1 oct" },
+  { keys: 25, label: "2 oct" },
+  { keys: 37, label: "3 oct" },
+  { keys: 49, label: "4 oct" },
+  { keys: 73, label: "All" }
+];
+
 /**
  * @param {object} deps
  * @param {object} deps.state Shared editor state (mutated in place).
@@ -51,6 +103,9 @@
  * @param {() => void} deps.renderStepGrid
  * @param {() => number} deps.activeLoopLength
  * @param {(start?: number, length?: number) => number} deps.clampLoopStart
+ * @param {() => {instrument:string, velocity:number, options:any}} deps.defaultNoteState
+ * @param {(velocity:number) => void} deps.setDefaultNoteVelocity
+ * @param {(field:string, value:any) => any} deps.setDefaultNoteOption
  * @param {(hit: string) => string} deps.trackName
  */
 export function createNoteInspector(deps) {
@@ -94,9 +149,16 @@ export function createNoteInspector(deps) {
     renderStepGrid,
     activeLoopLength,
     clampLoopStart,
+    defaultNoteState = () => ({ instrument: "eightOhEightKick", velocity: 0.32, options: normalizeStepOptions() }),
+    setDefaultNoteVelocity = () => {},
+    setDefaultNoteOption = () => {},
     trackName
   } = deps;
   let deferredStepGridTimer = 0;
+  let selectedPitchScaleId = "major";
+  let selectedPitchScaleRoot = 0;
+  let selectedPitchChordId = "single";
+  let previewChordIntervals = [0];
 
   function hitIndexForStep(hit, step, barIndex = state.activeBar) {
     const hits = state.config.patterns.jazz.bars[barIndex]?.[hit] || [];
@@ -134,28 +196,252 @@ export function createNoteInspector(deps) {
     return Math.max(0, Math.round(Number(state.selected?.bar ?? state.activeBar) || 0));
   }
 
+  function selectedScaleMode() {
+    return PITCH_SCALE_MODES.find((scale) => scale.id === selectedPitchScaleId) || PITCH_SCALE_MODES[0];
+  }
+
+  function selectedChordRecipe() {
+    return PITCH_CHORD_RECIPES.find((recipe) => recipe.id === selectedPitchChordId) || PITCH_CHORD_RECIPES[0];
+  }
+
+  function scaleIntervalAt(scale, degree) {
+    const intervals = scale?.intervals?.length ? scale.intervals : PITCH_SCALE_MODES[0].intervals;
+    const safeDegree = Math.max(0, Math.round(Number(degree) || 0));
+    const octave = Math.floor(safeDegree / intervals.length);
+    return intervals[safeDegree % intervals.length] + octave * 12;
+  }
+
+  function scaleDegreeForPitch(scale, pitch, tonicPitch) {
+    const pc = ((Math.round(pitch - tonicPitch) % 12) + 12) % 12;
+    const index = scale.intervals.findIndex((interval) => ((interval % 12) + 12) % 12 === pc);
+    return index >= 0 ? index : 0;
+  }
+
+  function normalizeChordIntervalsForUi(intervals) {
+    return normalizeStepOptions({ chordIntervals: intervals }).chordIntervals;
+  }
+
+  function chordIntervalsForRecipe(recipe, scale = selectedScaleMode(), rootPitch = selectedPitchScaleRoot, tonicPitch = selectedPitchScaleRoot) {
+    if (Array.isArray(recipe?.intervals)) return normalizeChordIntervalsForUi(recipe.intervals);
+    const degrees = Array.isArray(recipe?.degrees) ? recipe.degrees : [0];
+    const rootDegree = scaleDegreeForPitch(scale, rootPitch, tonicPitch);
+    const root = scaleIntervalAt(scale, rootDegree);
+    return normalizeChordIntervalsForUi(degrees.map((degree) => scaleIntervalAt(scale, rootDegree + degree) - root));
+  }
+
+  function selectedChordIntervals(options = selectedPreviewOptions()) {
+    return normalizeChordIntervalsForUi(options?.chordIntervals);
+  }
+
+  function octaveForPitch(pitch) {
+    const midiNote = A1_MIDI_NOTE + Math.round(Number(pitch) || 0);
+    return Math.floor(midiNote / 12) - 1;
+  }
+
+  function pitchForOctave(octave) {
+    return ((Math.round(Number(octave) || 0) + 1) * 12) - A1_MIDI_NOTE;
+  }
+
+  function selectedPianoRangeKeys() {
+    const total = PITCH_SLIDER_MAX - PITCH_SLIDER_MIN + 1;
+    const requested = Math.round(Number(state.selectedPianoRangeKeys) || 25);
+    const option = SELECTED_PIANO_RANGE_OPTIONS.find((item) => item.keys === requested)
+      || SELECTED_PIANO_RANGE_OPTIONS[1]
+      || SELECTED_PIANO_RANGE_OPTIONS[0];
+    const keys = Math.min(total, option.keys);
+    state.selectedPianoRangeKeys = keys;
+    return keys;
+  }
+
+  function visiblePianoRange(octave, keyCount = selectedPianoRangeKeys()) {
+    const visible = Math.min(keyCount, PITCH_SLIDER_MAX - PITCH_SLIDER_MIN + 1);
+    const maxStart = Math.max(PITCH_SLIDER_MIN, PITCH_SLIDER_MAX - visible + 1);
+    const start = Math.round(clamp(pitchForOctave(octave), PITCH_SLIDER_MIN, maxStart, PITCH_SLIDER_MIN));
+    return {
+      start,
+      end: Math.min(PITCH_SLIDER_MAX, start + visible - 1)
+    };
+  }
+
+  function octaveStartRange(keyCount = selectedPianoRangeKeys()) {
+    const visible = Math.min(keyCount, PITCH_SLIDER_MAX - PITCH_SLIDER_MIN + 1);
+    const maxStart = Math.max(PITCH_SLIDER_MIN, PITCH_SLIDER_MAX - visible + 1);
+    return {
+      min: octaveForPitch(PITCH_SLIDER_MIN),
+      max: octaveForPitch(maxStart)
+    };
+  }
+
+  function octaveRangeLabel(octave, keyCount = selectedPianoRangeKeys()) {
+    const { start, end } = visiblePianoRange(octave, keyCount);
+    const startOctave = octaveForPitch(start);
+    const endOctave = octaveForPitch(end);
+    return startOctave === endOctave ? `O${startOctave}` : `O${startOctave}-${endOctave}`;
+  }
+
+  function octaveRangeTooltip(octave, keyCount, selectedPitch) {
+    const { start, end } = visiblePianoRange(octave, keyCount);
+    return [
+      `Selected note: ${noteNameForPitch(selectedPitch)} ${formatPitch(selectedPitch)}`,
+      `Visible octave range: ${octaveRangeLabel(octave, keyCount)}`,
+      `Keys shown: ${noteNameForPitch(start)} to ${noteNameForPitch(end)}`,
+      "Mouse wheel shifts the selected note/chord root by octave."
+    ].join("\n");
+  }
+
+  function keyboardSizeTooltip(keyCount) {
+    const option = SELECTED_PIANO_RANGE_OPTIONS.find((range) => range.keys === keyCount);
+    return [
+      `Keyboard size: ${option?.label || `${keyCount} keys`}`,
+      `${keyCount} keys visible.`,
+      "Mouse wheel changes the keyboard size."
+    ].join("\n");
+  }
+
+  function paintSelectedPitchControl(displayedPitch) {
+    const min = Number(selectedPitch.min);
+    const max = Number(selectedPitch.max);
+    const pitch = Math.round(clamp(
+      displayedPitch,
+      Number.isFinite(min) ? min : PITCH_SLIDER_MIN,
+      Number.isFinite(max) ? max : PITCH_SLIDER_MAX,
+      0
+    ));
+    setPairedControl(selectedPitch, selectedPitchNumber, selectedPitchValue, pitch, formatPitch);
+    return pitch;
+  }
+
+  function isScaleTone(rootPitch, notePitch, scale = selectedScaleMode()) {
+    const pc = ((Math.round(notePitch - rootPitch) % 12) + 12) % 12;
+    return scale.intervals.some((interval) => ((interval % 12) + 12) % 12 === pc);
+  }
+
   function renderSelectedPiano(displayedPitch = null, basePitch = null) {
     if (!selectedPiano) return;
     selectedPiano.innerHTML = "";
     const pitch = Number(displayedPitch);
     if (!Number.isFinite(pitch)) {
       selectedPiano.classList.add("is-empty");
+      selectedPiano.classList.remove("is-scale-mode");
       selectedPiano.textContent = "No sounding note";
       return;
     }
     selectedPiano.classList.remove("is-empty");
     const roundedPitch = Math.round(pitch);
     const roundedBase = Number.isFinite(Number(basePitch)) ? Math.round(Number(basePitch)) : null;
+    const previewOptions = selectedPreviewOptions();
+    const chordIntervals = selectedChordIntervals(previewOptions);
+    const activeScale = selectedScaleMode();
+    const scaleRootPitch = roundedPitch;
+    selectedPitchScaleRoot = scaleRootPitch;
+    selectedPiano.classList.add("is-scale-mode");
+    const noteWrap = document.createElement("div");
+    noteWrap.className = "selected-piano-info";
     const label = document.createElement("span");
     label.className = "selected-piano-note";
     label.textContent = `${noteNameForPitch(roundedPitch)} ${formatPitch(roundedPitch)}`;
     label.title = roundedBase === null
       ? "Selected pitch"
       : `Base ${noteNameForPitch(roundedBase)} ${formatPitch(roundedBase)} plus saved trim ${formatPitch(roundedPitch - roundedBase)}`;
+    const pitchOctave = octaveForPitch(roundedPitch);
+    const visibleKeyCount = selectedPianoRangeKeys();
+    const { min: minOctave, max: maxOctave } = octaveStartRange(visibleKeyCount);
+    if (!Number.isFinite(Number(state.selectedPianoOctave)) || state.selectedPianoFollowPitch !== false) {
+      state.selectedPianoOctave = pitchOctave;
+    }
+    const visibleOctave = Math.round(clamp(state.selectedPianoOctave, minOctave, maxOctave, pitchOctave));
+    state.selectedPianoOctave = visibleOctave;
+    const octaveTooltip = octaveRangeTooltip(visibleOctave, visibleKeyCount, roundedPitch);
+    const sizeTooltip = keyboardSizeTooltip(visibleKeyCount);
+    const pianoControlTooltip = `${octaveTooltip}\n${sizeTooltip}`;
+    noteWrap.title = pianoControlTooltip;
+    label.title = roundedBase === null
+      ? octaveTooltip
+      : `${octaveTooltip}\nBase: ${noteNameForPitch(roundedBase)} ${formatPitch(roundedBase)}, trim ${formatPitch(roundedPitch - roundedBase)}`;
+    const octaveSelect = document.createElement("select");
+    octaveSelect.className = "selected-piano-octave-wheel";
+    octaveSelect.title = pianoControlTooltip;
+    octaveSelect.setAttribute("aria-label", "Visible keyboard octave");
+    for (let octave = minOctave; octave <= maxOctave; octave += 1) {
+      const option = document.createElement("option");
+      option.value = String(octave);
+      option.textContent = octaveRangeLabel(octave, visibleKeyCount);
+      option.selected = octave === visibleOctave;
+      octaveSelect.appendChild(option);
+    }
+    const setVisibleOctave = (octave) => {
+      const nextOctave = Math.round(clamp(octave, minOctave, maxOctave, visibleOctave));
+      const octaveDelta = nextOctave - visibleOctave;
+      state.selectedPianoOctave = nextOctave;
+      if (octaveDelta !== 0) {
+        const nextPitch = Math.round(clamp(
+          roundedPitch + octaveDelta * 12,
+          PITCH_SLIDER_MIN,
+          PITCH_SLIDER_MAX,
+          roundedPitch
+        ));
+        void choosePianoPitch(nextPitch);
+        return;
+      }
+      state.selectedPianoFollowPitch = false;
+      renderSelectedPiano(roundedPitch, roundedBase);
+    };
+    octaveSelect.addEventListener("change", () => setVisibleOctave(Number(octaveSelect.value)));
+    octaveSelect.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const now = Date.now();
+      if (now - (state.selectedPianoOctaveWheelAt || 0) < 140) return;
+      state.selectedPianoOctaveWheelAt = now;
+      setVisibleOctave(visibleOctave + (event.deltaY < 0 ? 1 : -1));
+    }, { passive: false });
+    const rangeSelect = document.createElement("select");
+    rangeSelect.className = "selected-piano-range-wheel";
+    rangeSelect.title = pianoControlTooltip;
+    rangeSelect.setAttribute("aria-label", "Visible keyboard size");
+    SELECTED_PIANO_RANGE_OPTIONS.forEach((range) => {
+      const option = document.createElement("option");
+      option.value = String(range.keys);
+      option.textContent = range.label;
+      option.selected = range.keys === visibleKeyCount;
+      rangeSelect.appendChild(option);
+    });
+    const setVisibleRangeKeys = (keyCount) => {
+      state.selectedPianoRangeKeys = Math.round(Number(keyCount) || visibleKeyCount);
+      state.selectedPianoFollowPitch = false;
+      const nextBounds = octaveStartRange(state.selectedPianoRangeKeys);
+      state.selectedPianoOctave = Math.round(clamp(visibleOctave, nextBounds.min, nextBounds.max, nextBounds.min));
+      renderSelectedPiano(roundedPitch, roundedBase);
+    };
+    rangeSelect.addEventListener("change", () => {
+      setVisibleRangeKeys(rangeSelect.value);
+    });
+    rangeSelect.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const now = Date.now();
+      if (now - (state.selectedPianoRangeWheelAt || 0) < 140) return;
+      state.selectedPianoRangeWheelAt = now;
+      const currentIndex = SELECTED_PIANO_RANGE_OPTIONS.findIndex((range) => range.keys === visibleKeyCount);
+      const safeIndex = currentIndex >= 0 ? currentIndex : 1;
+      const nextIndex = Math.max(0, Math.min(
+        SELECTED_PIANO_RANGE_OPTIONS.length - 1,
+        safeIndex + (event.deltaY < 0 ? 1 : -1)
+      ));
+      setVisibleRangeKeys(SELECTED_PIANO_RANGE_OPTIONS[nextIndex].keys);
+    }, { passive: false });
+    noteWrap.addEventListener("wheel", (event) => {
+      if (!event.target?.closest?.(".selected-piano-octave-wheel, .selected-piano-range-wheel")) return;
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    noteWrap.append(label, octaveSelect, rangeSelect);
+    const keyboardWrap = document.createElement("div");
+    keyboardWrap.className = "selected-piano-keyboard";
     const keys = document.createElement("div");
     keys.className = "selected-piano-keys";
-    const start = PITCH_SLIDER_MIN;
-    const end = PITCH_SLIDER_MAX;
+    const { start, end } = visiblePianoRange(visibleOctave, visibleKeyCount);
+    keys.style.setProperty("--selected-piano-key-count", String(end - start + 1));
     for (let note = start; note <= end; note += 1) {
       const key = document.createElement("span");
       const midiNote = A1_MIDI_NOTE + note;
@@ -163,9 +449,13 @@ export function createNoteInspector(deps) {
       key.dataset.pitch = String(note);
       key.role = "button";
       key.tabIndex = 0;
-      key.classList.toggle("is-black", BLACK_NOTE_PITCH_CLASSES.has(((midiNote % 12) + 12) % 12));
+      const pitchClass = ((midiNote % 12) + 12) % 12;
+      key.classList.toggle("is-black", BLACK_NOTE_PITCH_CLASSES.has(pitchClass));
+      key.classList.toggle("is-octave-root", pitchClass === 0);
       key.classList.toggle("is-active", note === roundedPitch);
       key.classList.toggle("is-base", roundedBase !== null && note === roundedBase && note !== roundedPitch);
+      key.classList.toggle("is-scale-tone", isScaleTone(scaleRootPitch, note, activeScale));
+      key.classList.toggle("is-chord-tone", chordIntervals.some((interval) => note === roundedPitch + interval));
       key.title = `${noteNameForPitch(note)} ${formatPitch(note)}`;
       key.addEventListener("mousedown", (event) => {
         event.preventDefault();
@@ -182,11 +472,55 @@ export function createNoteInspector(deps) {
       });
       keys.appendChild(key);
     }
-    selectedPiano.append(label, keys);
+    keyboardWrap.append(keys);
+    selectedPiano.append(noteWrap, keyboardWrap);
+    const scalePanel = document.createElement("div");
+    scalePanel.className = "selected-piano-scale-panel";
+    const scaleSelect = document.createElement("select");
+    scaleSelect.className = "selected-piano-scale-select";
+    scaleSelect.title = "Scale";
+    PITCH_SCALE_MODES.forEach((scale) => {
+      const option = document.createElement("option");
+      option.value = scale.id;
+      option.textContent = scale.label;
+      option.selected = scale.id === activeScale.id;
+      scaleSelect.appendChild(option);
+    });
+    scaleSelect.addEventListener("change", () => {
+      selectedPitchScaleId = scaleSelect.value;
+      renderSelectedPiano(roundedPitch, roundedBase);
+    });
+    const chordButtons = document.createElement("div");
+    chordButtons.className = "selected-piano-chords";
+    PITCH_CHORD_RECIPES.forEach((recipe) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = recipe.label;
+      button.title = `${activeScale.label} ${recipe.label}`;
+      button.className = "selected-piano-chord";
+      button.dataset.midiParam = `selected.chord.${recipe.id}`;
+      button.dataset.midiLabel = `Chord ${recipe.label}`;
+      button.dataset.midiAction = "click";
+      button.classList.toggle("is-active", recipe.id === selectedPitchChordId);
+      button.addEventListener("mousedown", (event) => event.preventDefault());
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void choosePianoChord(recipe.id);
+      });
+      chordButtons.appendChild(button);
+    });
+    scalePanel.append(scaleSelect, chordButtons);
+    selectedPiano.append(scalePanel);
   }
 
   function selectedPreviewOptions() {
-    if (!state.selected) return normalizeStepOptions();
+    if (!state.selected) {
+      return normalizeStepOptions({
+        ...(defaultNoteState()?.options || {}),
+        chordIntervals: previewChordIntervals
+      });
+    }
     return normalizeStepOptions(getHitData(state.selected.hit, state.selected.step, selectedBarIndex()).options);
   }
 
@@ -201,32 +535,90 @@ export function createNoteInspector(deps) {
     await state.engine.ensureContext();
     await state.engine.context.resume();
     state.engine.setVolume(0.62, { immediate: true });
-    const frequency = SYNTH_ROOT_HZ * 2 ** (pitch / 12);
     const now = state.engine.context.currentTime + 0.015 + Math.max(0, options.offsetMs / 1000);
-    state.engine.playBassSynth(now, frequency, {
-      gain: 0.12,
-      duration: 0.42,
-      style: "jazz",
-      attackMs: options.attackMs,
-      delayMs: options.delayMs,
-      delaySend: options.delaySend,
-      reverbSend: options.reverbSend,
-      dubEcho: options.dubEcho
+    const intervals = selectedChordIntervals(options);
+    const voiceGain = 0.12 / Math.sqrt(Math.max(1, intervals.length));
+    intervals.forEach((interval, index) => {
+      const frequency = SYNTH_ROOT_HZ * 2 ** ((pitch + interval) / 12);
+      state.engine.playBassSynth(now + index * 0.006, frequency, {
+        gain: voiceGain,
+        duration: 0.42,
+        style: "jazz",
+        attackMs: options.attackMs,
+        delayMs: options.delayMs,
+        delaySend: options.delaySend,
+        reverbSend: options.reverbSend,
+        dubEcho: options.dubEcho
+      });
     });
   }
 
+  async function choosePianoChord(recipeId) {
+    const recipe = PITCH_CHORD_RECIPES.find((item) => item.id === recipeId) || PITCH_CHORD_RECIPES[1];
+    const rootPitch = Math.round(clamp(selectedPitch.value, PITCH_SLIDER_MIN, PITCH_SLIDER_MAX, 0));
+    selectedPitchScaleRoot = rootPitch;
+    const intervals = chordIntervalsForRecipe(recipe, selectedScaleMode(), rootPitch, rootPitch);
+    selectedPitchChordId = recipe.id;
+    previewChordIntervals = intervals;
+    const previewOptions = normalizeStepOptions({
+      ...selectedPreviewOptions(),
+      chordIntervals: intervals
+    });
+    if (ensureSelectedFromDom() && !selectedPitch.disabled) {
+      updateSelectedOption("chordIntervals", intervals, { renderGrid: true });
+      renderSelectedPiano(
+        rootPitch,
+        state.selected?.hit === "bass" ? bassBasePitch(state.selected.step, selectedBarIndex()) : null
+      );
+    } else {
+      setDefaultNoteOption("chordIntervals", intervals);
+      renderSelectedPiano(rootPitch, null);
+    }
+    const noteList = intervals.map((interval) => noteNameForPitch(rootPitch + interval)).join(" ");
+    setStatus(`${selectedScaleMode().label} ${recipe.label}: ${noteList}`);
+    await previewPianoPitch(rootPitch, previewOptions);
+  }
+
   async function choosePianoPitch(displayedPitch) {
+    const pitch = paintSelectedPitchControl(displayedPitch);
+    state.selectedPianoFollowPitch = true;
+    state.selectedPianoOctave = octaveForPitch(pitch);
+    selectedPitchScaleRoot = pitch;
+    const chordIntervals = chordIntervalsForRecipe(selectedChordRecipe(), selectedScaleMode(), pitch, pitch);
+    const noteList = chordIntervals.map((interval) => noteNameForPitch(pitch + interval)).join(" ");
+    const statusText = selectedChordRecipe().id === "single"
+      ? `Preview pitch ${noteNameForPitch(pitch)} ${formatPitch(pitch)}`
+      : `${selectedScaleMode().label} ${selectedChordRecipe().label}: ${noteList}`;
     if (!ensureSelectedFromDom()) {
-      await previewPianoPitch(displayedPitch);
+      previewChordIntervals = chordIntervals;
+      setDefaultNoteOption("pitch", pitch);
+      setDefaultNoteOption("chordIntervals", chordIntervals);
+      renderSelectedPiano(pitch, null);
+      setStatus(statusText);
+      await previewPianoPitch(pitch, normalizeStepOptions({
+        ...selectedPreviewOptions(),
+        pitch,
+        chordIntervals
+      }));
       return;
     }
     if (!selectedPitch.disabled) {
-      setSelectedOptionFromControl("pitch", displayedPitch);
+      setSelectedOptionFromControl("pitch", pitch);
+      updateSelectedOption("chordIntervals", chordIntervals, { renderGrid: true });
+      previewChordIntervals = chordIntervals;
+      renderSelectedPiano(
+        pitch,
+        state.selected?.hit === "bass" ? bassBasePitch(state.selected.step, selectedBarIndex()) : null
+      );
     } else {
-      renderSelectedPiano(displayedPitch, null);
+      previewChordIntervals = chordIntervals;
+      renderSelectedPiano(pitch, null);
     }
-    await previewPianoPitch(displayedPitch, selectedPreviewOptions());
-    setStatus(`Preview pitch ${noteNameForPitch(displayedPitch)} ${formatPitch(displayedPitch)}`);
+    await previewPianoPitch(pitch, normalizeStepOptions({
+      ...selectedPreviewOptions(),
+      chordIntervals
+    }));
+    setStatus(statusText);
   }
 
   function syncSelectedPitchDisplay(barIndex = selectedBarIndex()) {
@@ -234,13 +626,16 @@ export function createNoteInspector(deps) {
     const { hit, step } = state.selected;
     const hitData = getHitData(hit, step, barIndex);
     if (hitData.velocity <= 0.005) {
+      const showDefaultPitch = state.trackEditorMode === "pianoRoll";
       selectedPitch.min = String(PITCH_SLIDER_MIN);
       selectedPitch.max = String(PITCH_SLIDER_MAX);
+      selectedPitchNumber.min = selectedPitch.min;
+      selectedPitchNumber.max = selectedPitch.max;
       selectedPitch.value = "0";
       selectedPitchNumber.value = "0";
-      selectedPitchValue.textContent = "-";
-      selectedPitch.title = "No note on this step.";
-      renderSelectedPiano(null);
+      selectedPitchValue.textContent = showDefaultPitch ? formatPitch(0) : "-";
+      selectedPitch.title = showDefaultPitch ? "Default pitch" : "No note on this step.";
+      renderSelectedPiano(showDefaultPitch ? 0 : null);
       return;
     }
     const displayedPitch = displayedPitchForHit(hit, step, hitData.options, barIndex);
@@ -315,7 +710,11 @@ export function createNoteInspector(deps) {
   }
 
   function setSelectedVelocityFromControl(value = selectedVelocity.value, options = {}) {
-    if (!ensureSelectedFromDom()) return;
+    if (!ensureSelectedFromDom()) {
+      const velocity = paintSelectedVelocity(value, { syncKnob: !options.live });
+      if (!options.live) setDefaultNoteVelocity(velocity);
+      return;
+    }
     const barIndex = selectedBarIndex();
     const velocity = paintSelectedVelocity(value, { syncKnob: !options.live });
     if (options.live) {
@@ -329,15 +728,7 @@ export function createNoteInspector(deps) {
     let number = Number(value);
     const barIndex = selectedBarIndex();
     if (field === "pitch" && state.selected) {
-      const min = Number(selectedPitch.min);
-      const max = Number(selectedPitch.max);
-      const displayedPitch = Math.round(clamp(
-        number,
-        Number.isFinite(min) ? min : PITCH_SLIDER_MIN,
-        Number.isFinite(max) ? max : PITCH_SLIDER_MAX,
-        0
-      ));
-      setPairedControl(selectedPitch, selectedPitchNumber, selectedPitchValue, displayedPitch, formatPitch);
+      const displayedPitch = paintSelectedPitchControl(number);
       number = storedPitchForDisplay(state.selected.hit, state.selected.step, displayedPitch, barIndex);
       renderSelectedPiano(
         displayedPitch,
@@ -349,6 +740,14 @@ export function createNoteInspector(deps) {
         ? Math.round(clamp(number, control.min, control.max, STEP_OPTION_DEFAULTS[field] ?? 0))
         : clamp(number, control.min, control.max, STEP_OPTION_DEFAULTS[field] ?? 0);
       setPairedControl(control.range, control.number, control.output, number, control.format);
+    }
+    if (!state.selected && !ensureSelectedFromDom()) {
+      if (field === "pitch") {
+        number = paintSelectedPitchControl(number);
+        renderSelectedPiano(number, null);
+      }
+      setDefaultNoteOption(field, number);
+      return;
     }
     updateSelectedOption(field, number, options);
   }
@@ -365,7 +764,9 @@ export function createNoteInspector(deps) {
 
   function setSelectedDubEchoFromControl(value = selectedDubEcho.value, options = {}) {
     if (!ensureSelectedFromDom()) {
-      setStatus("Select a note or row first");
+      const amount = clamp(value, 0, 1, 0);
+      setPairedControl(selectedDubEcho, selectedDubEchoNumber, selectedDubEchoValue, Number(amount.toFixed(2)), (next) => next.toFixed(2));
+      if (!options.live) setDefaultNoteOption("dubEcho", Number(amount.toFixed(2)));
       return;
     }
     const hit = state.selected.hit;

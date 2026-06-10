@@ -10,7 +10,7 @@ import {
   regionAtBar,
   pixelsToBars,
   regionPercent
-} from "../src/ui/loop-region.js";
+} from "../src/ui/wave-edit/loop-region.js";
 
 test("clampRegionBar keeps the region inside the song", () => {
   assert.equal(clampRegionBar(10, 2, 8), 6);

@@ -78,6 +78,11 @@ function enhanceInput(input) {
   knob.setAttribute("role", "slider");
   knob.setAttribute("aria-label", labelFor(input));
   knob.title = `${labelFor(input)}: drag, scroll, or use arrow keys`;
+  if (input.dataset.midiParam) {
+    knob.dataset.midiParam = input.dataset.midiParam;
+    knob.dataset.midiLabel = input.dataset.midiLabel || labelFor(input);
+    knob.dataset.midiAction = "value";
+  }
   knob.innerHTML = '<span class="rotary-control__cap"></span><span class="rotary-control__pointer"></span>';
   input.before(knob);
   input.__rotaryKnob = knob;

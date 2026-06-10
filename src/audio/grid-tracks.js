@@ -14,6 +14,8 @@ export const TRACK_CONFIG_MAP_KEYS = [
   "trackReverbSends",
   "trackLevels",
   "trackPans",
+  "trackOptionDefaults",
+  "trackDefaultVelocities",
   "trackSamples",
   "trackStepCounts"
 ];
@@ -56,14 +58,16 @@ export function orderGridTrackIds(ids, { registryIds, baseTrackId, isInstanceId 
  * @param {object} config The editor config (patterns + per-track maps).
  * @param {object} deps
  * @param {string[]} deps.registryIds Base voice ids in registry order.
- * @param {string[]} deps.defaultIds Always-on default grid track ids.
+ * @param {string[]} deps.defaultIds Default grid track ids.
+ * @param {string[]} [deps.hiddenIds] Track ids the user removed from the grid.
  * @param {(id: string) => boolean} deps.isInstanceId
  * @param {(id: string) => any} deps.getTrackDef Resolve a track id to its def (or null).
  * @param {(id: string) => string} deps.baseTrackId
  * @returns {string[]} Ordered grid track ids.
  */
-export function reconcileGridTrackIds(config, { registryIds, defaultIds, isInstanceId, getTrackDef, baseTrackId }) {
+export function reconcileGridTrackIds(config, { registryIds, defaultIds, hiddenIds = [], isInstanceId, getTrackDef, baseTrackId }) {
   const wanted = new Set(defaultIds);
+  const hidden = new Set(hiddenIds);
   const loadedBars = config?.patterns?.jazz?.bars ?? [];
   registryIds.forEach((id) => {
     const hasNotes = loadedBars.some((bar) => Array.isArray(bar?.[id]) && bar[id].length > 0);
@@ -83,6 +87,7 @@ export function reconcileGridTrackIds(config, { registryIds, defaultIds, isInsta
     });
   });
   instanceIds.forEach((id) => wanted.add(id));
+  hidden.forEach((id) => wanted.delete(id));
   return orderGridTrackIds([...wanted], { registryIds, baseTrackId, isInstanceId });
 }
 
@@ -123,5 +128,112 @@ export function removeTrackFromConfigMaps(config, trackId) {
       next[mapKey] = map;
     }
   });
+  return next;
+}
+
+const replaceIdInUniqueArray = (value, oldId, newId) => {
+  if (!Array.isArray(value)) return value;
+  const seen = new Set();
+  const out = [];
+  value.forEach((id) => {
+    const nextId = id === oldId ? newId : id;
+    if (seen.has(nextId)) return;
+    seen.add(nextId);
+    out.push(nextId);
+  });
+  return out;
+};
+
+const uniqueArray = (value) => {
+  if (!Array.isArray(value)) return value;
+  return [...new Set(value.filter(Boolean))];
+};
+
+const replaceKeyInMap = (value, oldId, newId) => {
+  if (!value || typeof value !== "object" || value[oldId] === undefined) return value;
+  const next = { ...value };
+  next[newId] = next[oldId];
+  delete next[oldId];
+  return next;
+};
+
+const replaceLaneKeyTrackId = (key, oldId, newId) => {
+  const oldGrid = `grid:${oldId}`;
+  const oldPiano = `piano:${oldId}`;
+  if (key === oldGrid) return `grid:${newId}`;
+  if (key === oldPiano) return `piano:${newId}`;
+  return key;
+};
+
+const replaceMidiControlTrackId = (map, oldId, newId) => {
+  if (!map || typeof map !== "object") return map;
+  const oldPrefix = `track.${oldId}.`;
+  const newPrefix = `track.${newId}.`;
+  let changed = false;
+  const next = {};
+  Object.entries(map).forEach(([paramId, mapping]) => {
+    const targetId = paramId.startsWith(oldPrefix)
+      ? `${newPrefix}${paramId.slice(oldPrefix.length)}`
+      : paramId;
+    if (targetId !== paramId) changed = true;
+    next[targetId] = mapping;
+  });
+  return changed ? next : map;
+};
+
+/**
+ * Immutably rename a track id across the project config. This keeps notes,
+ * per-track mix/sample/shape maps, piano-roll lane heights, MIDI maps, and
+ * visual lane order together when the UI changes a row's instrument.
+ *
+ * @param {object} config
+ * @param {string} oldId
+ * @param {string} newId
+ * @returns {object}
+ */
+export function replaceTrackIdInConfig(config, oldId, newId) {
+  if (!config || !oldId || !newId || oldId === newId) return config;
+  const next = { ...config };
+
+  const bars = config.patterns?.jazz?.bars;
+  if (Array.isArray(bars)) {
+    next.patterns = { ...(config.patterns || {}) };
+    next.patterns.jazz = { ...(config.patterns?.jazz || {}) };
+    next.patterns.jazz.bars = bars.map((bar) => {
+      if (!bar || typeof bar !== "object" || !(oldId in bar)) return bar;
+      const row = { ...bar };
+      const oldHits = Array.isArray(row[oldId]) ? row[oldId] : [];
+      const existing = Array.isArray(row[newId]) ? row[newId] : [];
+      row[newId] = existing.length ? [...existing, ...oldHits] : oldHits;
+      delete row[oldId];
+      return row;
+    });
+  }
+
+  TRACK_CONFIG_MAP_KEYS.forEach((mapKey) => {
+    next[mapKey] = replaceKeyInMap(next[mapKey], oldId, newId);
+  });
+
+  [
+    "trackViewTrackIds",
+    "hiddenGridTrackIds",
+    "pianoRollTracks",
+    "soloTracks",
+    "mutedTracks"
+  ].forEach((arrayKey) => {
+    next[arrayKey] = replaceIdInUniqueArray(next[arrayKey], oldId, newId);
+  });
+
+  next.pianoRollLaneHeights = replaceKeyInMap(next.pianoRollLaneHeights, oldId, newId);
+  next.pianoRollAutomationHeights = replaceKeyInMap(next.pianoRollAutomationHeights, oldId, newId);
+  next.midiNoteMap = replaceKeyInMap(next.midiNoteMap, oldId, newId);
+  next.midiControlMap = replaceMidiControlTrackId(next.midiControlMap, oldId, newId);
+
+  if (Array.isArray(next.editorLaneOrder)) {
+    next.editorLaneOrder = uniqueArray(
+      next.editorLaneOrder.map((key) => replaceLaneKeyTrackId(key, oldId, newId))
+    );
+  }
+
   return next;
 }

@@ -40,6 +40,7 @@ test("hasStepOptions is false for defaults and true for a change", () => {
   const base = normalizeHitEntry([0, 1]).options;
   assert.equal(hasStepOptions(base), false);
   assert.equal(hasStepOptions({ ...base, pitch: 4 }), true);
+  assert.equal(hasStepOptions({ ...base, chordIntervals: [0, 4, 7] }), true);
 });
 
 test("serializeHitEntry drops default options but keeps real ones", () => {
@@ -47,6 +48,33 @@ test("serializeHitEntry drops default options but keeps real ones", () => {
   const tuple = serializeHitEntry({ step: 2, velocity: 0.5, options: { pitch: 3 } });
   assert.equal(tuple.length, 3);
   assert.equal(tuple[2].pitch, 3);
+});
+
+test("normalizeHitEntry preserves polyphonic chord intervals", () => {
+  const entry = normalizeHitEntry([2, 0.5, { chordIntervals: [0, 4, 7, 12] }]);
+  assert.deepEqual(entry.options.chordIntervals, [0, 4, 7, 12]);
+  const tuple = serializeHitEntry(entry);
+  assert.deepEqual(tuple[2].chordIntervals, [0, 4, 7, 12]);
+});
+
+test("normalizeHitEntry preserves MIDI pressure", () => {
+  const entry = normalizeHitEntry([2, 0.5, { pressure: 0.74 }]);
+  assert.equal(entry.options.pressure, 0.74);
+  const tuple = serializeHitEntry(entry);
+  assert.equal(tuple[2].pressure, 0.74);
+});
+
+test("normalizeHitEntry preserves piano roll note ownership", () => {
+  const entry = normalizeHitEntry([2, 0.5, { pitch: 7, pianoRoll: 1 }]);
+  assert.equal(entry.options.pitch, 7);
+  assert.equal(entry.options.pianoRoll, 1);
+  const tuple = serializeHitEntry(entry);
+  assert.equal(tuple[2].pianoRoll, 1);
+});
+
+test("normalizeHitEntry preserves the full MIDI pitch offset range", () => {
+  assert.equal(normalizeHitEntry([2, 0.5, { pitch: -99 }]).options.pitch, -33);
+  assert.equal(normalizeHitEntry([2, 0.5, { pitch: 120 }]).options.pitch, 94);
 });
 
 test("buildHitMap keys entries by step", () => {

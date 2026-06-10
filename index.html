@@ -18,64 +18,24 @@
         <div class="transport-row transport-main-row">
           <div class="transport-cluster transport-brand-cluster">
             <span class="transport-wordmark">rhythmartist</span>
-            <button id="open-global-mix" type="button" class="topbar-view-btn">Mixer</button>
-            <button id="open-project-manager" type="button" class="topbar-view-btn">Projects</button>
-            <button id="save-project" type="button" class="topbar-view-btn">Save</button>
-            <a href="./rhythm-api-demo.html" class="transport-nav-link">API Demo</a>
-          </div>
-          <div class="transport-cluster transport-play-cluster">
+            <button id="restart" type="button" title="Rewind to the start">Rewind</button>
             <button id="play-toggle" type="button">Play</button>
-            <button id="restart" type="button">Restart</button>
-            <button id="play-song" type="button">Full Song</button>
-            <button id="loop-bar" type="button" title="Loop the selected bar(s). Shift-click bars to select a range.">Loop Selected</button>
+            <button id="stop" type="button">Stop</button>
             <span id="transport-position" class="transport-position" aria-live="polite">1.01 · 01</span>
           </div>
-        </div>
-        <div class="transport-row transport-settings-row">
-          <div class="transport-cluster transport-meter-cluster">
-            <label class="transport-bpm-label">
-              <span>BPM</span>
-              <input id="transport-bpm-number" class="transport-number" type="number" min="40" max="220" step="1" value="118" />
+          <div class="transport-cluster transport-play-cluster" aria-label="Playback controls">
+            <label class="follow-toggle-label" title="Follow playback in the canvas view">
+              <input id="camera-follow-enabled" type="checkbox" />
+              <span>Follow</span>
             </label>
-            <label class="time-sig-label" title="Time signature">
-              <span>Time</span>
-              <span class="time-sig-control">
-                <input id="time-sig-numerator" class="time-sig-number" type="number" min="1" max="16" step="1" value="4" aria-label="Time signature numerator" />
-                <span class="time-sig-slash">/</span>
-                <input id="time-sig-denominator" class="time-sig-number" type="number" min="2" max="16" step="1" value="4" aria-label="Time signature denominator" />
-                <button id="time-sig-menu-button" class="time-sig-menu-button" type="button" aria-label="Common time signatures" aria-haspopup="listbox" aria-expanded="false" title="Common time signatures"></button>
-                <select id="time-sig-select" class="time-sig-native-select" aria-hidden="true" tabindex="-1">
-                  <option value="4/4" selected>4/4</option>
-                  <option value="3/4">3/4</option>
-                  <option value="6/8">6/8</option>
-                  <option value="5/4">5/4</option>
-                  <option value="7/8">7/8</option>
-                </select>
-                <div id="time-sig-menu" class="time-sig-menu" role="listbox" hidden>
-                  <button type="button" class="time-sig-menu-option" data-time-sig="4/4" role="option"><span>4</span><span>/</span><span>4</span></button>
-                  <button type="button" class="time-sig-menu-option" data-time-sig="3/4" role="option"><span>3</span><span>/</span><span>4</span></button>
-                  <button type="button" class="time-sig-menu-option" data-time-sig="6/8" role="option"><span>6</span><span>/</span><span>8</span></button>
-                  <button type="button" class="time-sig-menu-option" data-time-sig="5/4" role="option"><span>5</span><span>/</span><span>4</span></button>
-                  <button type="button" class="time-sig-menu-option" data-time-sig="7/8" role="option"><span>7</span><span>/</span><span>8</span></button>
-                </div>
-              </span>
-            </label>
-          </div>
-          <div class="transport-cluster transport-metronome-cluster">
-            <label class="metronome-toggle-label" title="Play a metronome click based on the selected time signature">
-              <input id="metronome-enabled" type="checkbox" />
-              <span>Metro</span>
-            </label>
-            <label title="Metronome volume">
-              <span>Click</span>
-              <input id="metronome-volume" class="transport-number" type="number" min="0" max="1" step="0.05" value="0.45" />
+            <label class="visible-bars-label" title="Visible bars: higher values show more bars and compress the grid">
+              <span class="visible-bars-icon" aria-hidden="true"></span>
+              <input id="segments-count" type="number" min="1" max="32" step="1" value="2" aria-label="Visible bars" />
             </label>
           </div>
           <div class="transport-cluster transport-view-cluster">
-            <label title="Horizontal zoom: higher values show more bars and compress the grid">
-              <span>Zoom</span>
-              <input id="segments-count" type="number" min="1" max="32" step="1" value="2" aria-label="Horizontal zoom" />
-            </label>
+            <button id="open-global-mix" type="button" class="topbar-view-btn">Mixer</button>
+            <button id="open-project-manager" type="button" class="topbar-view-btn">Projects</button>
           </div>
           <p id="status">Ready</p>
         </div>
@@ -84,30 +44,37 @@
       <section class="workspace">
         <section class="sequencer-panel" aria-label="Step sequencer">
           <div class="loop-toolbar" aria-label="Verse arrangement controls">
-            <div class="loop-tabs" role="tablist" aria-label="Song verses"></div>
-            <label>
-              <span>Verses</span>
-              <input id="loop-count" type="number" min="1" max="8" step="1" value="1" />
-            </label>
-            <label>
-              <span>Bars/Verse</span>
-              <input id="verse-bars" type="number" min="1" max="64" step="1" value="32" />
-            </label>
-            <label>
-              <span>Bars/Section</span>
-              <input id="section-bars" type="number" min="1" max="32" step="1" value="8" />
-            </label>
+            <div class="ruler-row ruler-row--verses">
+              <span class="ruler-row-label">Verse</span>
+              <div class="loop-tabs" role="tablist" aria-label="Song verses"></div>
+            </div>
           </div>
-          <div class="bar-tabs" role="tablist" aria-label="Pattern bars"></div>
+          <div class="ruler-row ruler-row--bars">
+            <span class="ruler-row-label">Bar</span>
+            <div class="bar-tabs" role="tablist" aria-label="Pattern bars"></div>
+          </div>
           <div id="step-grid" class="step-grid"></div>
           <div class="selected-step-resize-handle" id="selected-step-resize-handle" title="Drag to resize"></div>
           <section class="selected-step" id="selected-step-panel">
+            <strong id="selected-label" hidden>none</strong>
             <div class="selected-step-header">
-              <span class="panel-label">Selected</span>
-              <strong id="selected-label">none</strong>
-              <button id="clear-selected" type="button">Clear</button>
+              <div class="selected-midi-actions" role="group" aria-label="Computer keyboard recording">
+                <button id="computer-keyboard-toggle" class="selected-midi-keyboard-button" type="button" aria-label="Keyboard and MIDI input" aria-pressed="false" title="Use the computer keyboard or a MIDI keyboard as a piano" data-icon-button="keyboard">
+                  <span class="selected-midi-keyboard-icon" aria-hidden="true"></span>
+                </button>
+                <output id="computer-keyboard-octave" class="selected-midi-octave" title="Computer keyboard octave: press 1-9 or 0 for 10">Oct 4</output>
+                <button id="midi-record-toggle" class="selected-midi-record-button" type="button" aria-pressed="false" title="Record computer-keyboard notes into the active piano roll">Record</button>
+                <button id="midi-clear-take" class="selected-midi-clear-take-button" type="button" title="Clear the last recording take" disabled>Clear Take</button>
+              </div>
+              <div class="selected-step-header-tools">
+                <label id="selected-grid-steps" class="selected-grid-steps" hidden>
+                  <span>Steps/bar</span>
+                  <input id="selected-grid-steps-input" type="number" min="1" max="128" step="1" value="16" aria-label="Grid steps per bar" />
+                  <output id="selected-grid-steps-output">16</output>
+                </label>
+              </div>
             </div>
-            <div class="selected-controls">
+            <div id="selected-controls" class="selected-controls" data-bottom-tab="note">
               <label>
                 <span>Volume</span>
                 <input id="selected-velocity" type="range" min="0" max="0.9" step="0.01" value="0" disabled />
@@ -121,6 +88,45 @@
                 <input id="selected-pitch-number" class="selected-number" type="number" min="-24" max="48" step="1" value="0" disabled />
                 <div id="selected-piano" class="selected-piano" aria-label="Selected note piano"></div>
               </label>
+              <div class="selected-bottom-tabs" role="tablist" aria-label="Bottom editor view">
+                <button id="selected-tab-note" class="selected-bottom-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="selected-controls" data-selected-bottom-tab="note">Note</button>
+                <button id="selected-tab-track" class="selected-bottom-tab" type="button" role="tab" aria-selected="false" aria-controls="selected-track-panel" data-selected-bottom-tab="track">Instrument</button>
+                <button id="selected-tab-effects" class="selected-bottom-tab" type="button" role="tab" aria-selected="false" aria-controls="selected-effects-chain-panel" data-selected-bottom-tab="effects">Effects</button>
+              </div>
+              <div id="selected-track-panel" class="selected-track-panel" role="tabpanel" aria-labelledby="selected-tab-track" hidden></div>
+              <div id="selected-effects-chain-panel" class="selected-effects-chain-panel" role="tabpanel" aria-labelledby="selected-tab-effects" hidden>
+                <div class="effects-chain-row" aria-label="Effects chain">
+                  <div class="effects-chain-slot effects-chain-slot--instrument">
+                    <span>Instrument</span>
+                    <strong id="effects-chain-track-name">No track</strong>
+                  </div>
+                  <button class="effects-chain-slot" type="button" data-effect-slot="delay" disabled>
+                    <span>Echo</span>
+                    <strong>Bus</strong>
+                  </button>
+                  <button class="effects-chain-slot" type="button" data-effect-slot="verb" disabled>
+                    <span>Reverb</span>
+                    <strong>Bus</strong>
+                  </button>
+                  <button class="effects-chain-slot" type="button" data-effect-slot="dubEcho" disabled>
+                    <span>Dub Echo</span>
+                    <strong>Note</strong>
+                  </button>
+                  <button class="effects-chain-add" type="button" disabled>+</button>
+                </div>
+                <div id="selected-effects-default-controls" class="selected-effects-default-controls" aria-label="Selected track effect defaults" hidden>
+                  <label>
+                    <span>Echo Default</span>
+                    <input id="effects-default-delay" type="range" min="0" max="1" step="0.01" value="0" />
+                    <output id="effects-default-delay-value">0.00</output>
+                  </label>
+                  <label>
+                    <span>Reverb</span>
+                    <input id="effects-default-verb" type="range" min="0" max="1" step="0.01" value="0" />
+                    <output id="effects-default-verb-value">0.00</output>
+                  </label>
+                </div>
+              </div>
               <label>
                 <span>Offset</span>
                 <input id="selected-offset" type="range" min="-120" max="120" step="1" value="0" disabled />
@@ -133,7 +139,7 @@
                 <output id="selected-attack-value">18ms</output>
                 <input id="selected-attack-number" class="selected-number" type="number" min="0" max="220" step="1" value="18" disabled />
               </label>
-              <label>
+              <label id="selected-delay-control" hidden>
                 <span>Delay</span>
                 <input id="selected-delay" type="range" min="0" max="520" step="1" value="0" disabled />
                 <output id="selected-delay-value">0ms</output>
@@ -158,7 +164,7 @@
                 <input id="selected-note-delay-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
               </label>
               <label>
-                <span>Note Verb</span>
+                <span>Reverb</span>
                 <input id="selected-note-reverb-send" type="range" min="0" max="1" step="0.01" value="0" disabled />
                 <output id="selected-note-reverb-send-value">0.00</output>
                 <input id="selected-note-reverb-send-number" class="selected-number" type="number" min="0" max="1" step="0.01" value="0" disabled />
@@ -170,6 +176,68 @@
         <div class="workspace-resize-handle" id="workspace-resize-handle" title="Drag to resize panel"></div>
 
         <aside class="control-panel" aria-label="Rhythm controls">
+          <section id="song-properties-section" class="song-properties-section">
+            <span class="panel-label">Song Properties</span>
+            <label class="song-property-row">
+              <span>BPM</span>
+              <input id="transport-bpm-number" class="song-property-number" type="number" min="40" max="220" step="1" value="118" />
+            </label>
+            <label class="song-property-row time-sig-label" title="Time signature">
+              <span>Time</span>
+              <span class="time-sig-control">
+                <input id="time-sig-numerator" class="time-sig-number" type="number" min="1" max="16" step="1" value="4" aria-label="Time signature numerator" />
+                <span class="time-sig-slash">/</span>
+                <input id="time-sig-denominator" class="time-sig-number" type="number" min="2" max="16" step="1" value="4" aria-label="Time signature denominator" />
+                <button id="time-sig-menu-button" class="time-sig-menu-button" type="button" aria-label="Common time signatures" aria-haspopup="listbox" aria-expanded="false" title="Common time signatures"></button>
+                <select id="time-sig-select" class="time-sig-native-select" aria-hidden="true" tabindex="-1">
+                  <option value="4/4" selected>4/4</option>
+                  <option value="3/4">3/4</option>
+                  <option value="6/8">6/8</option>
+                  <option value="5/4">5/4</option>
+                  <option value="7/8">7/8</option>
+                </select>
+                <div id="time-sig-menu" class="time-sig-menu" role="listbox" hidden>
+                  <button type="button" class="time-sig-menu-option" data-time-sig="4/4" role="option"><span>4</span><span>/</span><span>4</span></button>
+                  <button type="button" class="time-sig-menu-option" data-time-sig="3/4" role="option"><span>3</span><span>/</span><span>4</span></button>
+                  <button type="button" class="time-sig-menu-option" data-time-sig="6/8" role="option"><span>6</span><span>/</span><span>8</span></button>
+                  <button type="button" class="time-sig-menu-option" data-time-sig="5/4" role="option"><span>5</span><span>/</span><span>4</span></button>
+                  <button type="button" class="time-sig-menu-option" data-time-sig="7/8" role="option"><span>7</span><span>/</span><span>8</span></button>
+                </div>
+              </span>
+            </label>
+            <div class="song-property-metronome-row" aria-label="Metronome controls">
+              <label class="song-property-compact-toggle" title="Play a metronome click based on the selected time signature">
+                <span>Metronome</span>
+                <span class="song-property-toggle">
+                  <input id="metronome-enabled" type="checkbox" />
+                  <span>On</span>
+                </span>
+              </label>
+              <label class="song-property-compact-knob song-property-click-volume" title="Metronome volume">
+                <span>Click</span>
+                <input id="metronome-volume" type="range" min="0" max="1" step="0.05" value="0.45" />
+                <output id="metronome-volume-value">0.45</output>
+              </label>
+            </div>
+            <label class="song-property-row">
+              <span>Verses</span>
+              <input id="loop-count" class="song-property-number" type="number" min="1" max="8" step="1" value="1" />
+            </label>
+            <label class="song-property-row">
+              <span>Bars/Verse</span>
+              <input id="verse-bars" class="song-property-number" type="number" min="1" max="64" step="1" value="32" />
+            </label>
+            <label class="song-property-row">
+              <span>Bars/Section</span>
+              <input id="section-bars" class="song-property-number" type="number" min="1" max="32" step="1" value="8" />
+            </label>
+            <label class="song-property-row">
+              <span>Swing</span>
+              <input data-config="patterns.jazz.swing" type="range" min="0" max="0.42" step="0.01" />
+              <output></output>
+            </label>
+          </section>
+
           <!-- ── Track Inspector (per-track settings) ─────── -->
           <section id="track-inspector-section" class="track-inspector-section">
             <div class="track-inspector-header">
@@ -179,11 +247,36 @@
             <p id="track-inspector-multi-hint" class="panel-hint" hidden>Shift-click track rows to inspect several at once.</p>
             <!-- One panel per selected track is rendered here. -->
             <div id="track-inspector-panels" class="track-inspector-panels"></div>
+            <!-- Piano roll/sample editor snapping belongs with the selected track context. -->
+            <section id="quantize-panel" class="quantize-panel" hidden>
+              <span class="panel-label">Quantize</span>
+              <div class="quantize-controls">
+                <label class="quantize-toggle-label">
+                  <input id="quantize-enabled" type="checkbox" />
+                  <span>On</span>
+                </label>
+                <label class="quantize-grid-label">
+                  <span>Grid</span>
+                  <select id="quantize-value">
+                    <option value="4">4 bars</option>
+                    <option value="2">2 bars</option>
+                    <option value="1">1 bar</option>
+                    <option value="0.5">1/2</option>
+                    <option value="0.25" selected>1/4</option>
+                    <option value="0.125">1/8</option>
+                    <option value="0.0625">1/16</option>
+                  </select>
+                </label>
+              </div>
+            </section>
             <!-- Hidden single-panel template cloned per selected track. -->
             <template id="track-inspector-template">
               <div class="track-inspector-body" data-track-panel>
                 <div class="track-inspector-panel-head">
-                  <strong class="track-inspector-panel-name" data-field="name">Track</strong>
+                  <label class="track-instrument-field">
+                    <span class="track-inspector-sublabel">Instrument</span>
+                    <select class="track-instrument-select" data-control="instrument" aria-label="Track instrument"></select>
+                  </label>
                   <button type="button" class="track-inspector-panel-close" data-action="deselect" title="Remove from inspector">×</button>
                 </div>
                 <div class="track-inspector-sample">
@@ -195,33 +288,33 @@
                   </div>
                 </div>
                 <div class="track-inspector-layout">
-                  <span class="track-inspector-sublabel">Drum Grid</span>
+                  <span class="track-inspector-sublabel">Grid</span>
                   <label class="track-grid-density-row">
-                    <span>Steps / bar</span>
+                    <span>Steps</span>
                     <input class="selected-number" type="number" min="1" max="128" step="1" value="16" data-control="stepsPerBar" />
                     <output data-output="stepsPerBar">16</output>
                   </label>
                 </div>
                 <label>
-                  <span>Track Level</span>
+                  <span>Level</span>
                   <input type="range" min="0" max="2" step="0.01" value="1" data-control="level" />
                   <output data-output="level">1.00</output>
                   <input class="selected-number" type="number" min="0" max="2" step="0.01" value="1" data-number="level" />
                 </label>
                 <label>
-                  <span>Track Pan</span>
+                  <span>Pan</span>
                   <input type="range" min="-1" max="1" step="0.01" value="0" data-control="pan" />
                   <output data-output="pan">C</output>
                   <input class="selected-number" type="number" min="-1" max="1" step="0.01" value="0" data-number="pan" />
                 </label>
                 <label>
-                  <span>Track Delay</span>
+                  <span>Echo</span>
                   <input type="range" min="0" max="1" step="0.01" value="0" data-control="busSend" />
                   <output data-output="busSend">0.00</output>
                   <input class="selected-number" type="number" min="0" max="1" step="0.01" value="0" data-number="busSend" />
                 </label>
                 <label>
-                  <span>Track Verb</span>
+                  <span>Reverb</span>
                   <input type="range" min="0" max="1" step="0.01" value="0" data-control="reverbSend" />
                   <output data-output="reverbSend">0.00</output>
                   <input class="selected-number" type="number" min="0" max="1" step="0.01" value="0" data-number="reverbSend" />
@@ -232,10 +325,6 @@
                     <button type="button" class="track-shape-reset" data-action="reset-shape" title="Reset this track's shape to the global 808 defaults">Reset</button>
                   </div>
                   <div class="track-inspector-shape-controls" data-field="shape-controls"></div>
-                </div>
-                <div class="track-inspector-actions">
-                  <button type="button" class="btn-secondary" data-action="duplicate" hidden>Duplicate Track</button>
-                  <button type="button" class="btn-danger" data-action="delete">Delete Track</button>
                 </div>
               </div>
             </template>
@@ -257,56 +346,38 @@
 
           <!-- ── Sample Browser ──────────────────────────── -->
           <section id="sample-browser-section" class="sample-browser-section">
-            <div class="sample-browser-header">
-              <span class="panel-label">Sample Browser</span>
-              <div class="sample-browser-mode" role="group" aria-label="Sample add mode">
-                <button id="sample-add-mode-hit" type="button" class="sample-mode-btn is-active" data-sample-add-mode="hit" aria-pressed="true">Drum Hit</button>
-                <button id="sample-add-mode-loop" type="button" class="sample-mode-btn" data-sample-add-mode="loop" aria-pressed="false">Wave Edit</button>
-              </div>
+            <div class="sample-browser-mode" role="group" aria-label="Sample add mode">
+              <button id="sample-add-mode-hit" type="button" class="sample-mode-btn is-active" data-sample-add-mode="hit" aria-pressed="true">Drum Hit</button>
+              <button id="sample-add-mode-loop" type="button" class="sample-mode-btn" data-sample-add-mode="loop" aria-pressed="false">Wave Edit</button>
+              <button id="sample-add-mode-piano" type="button" class="sample-mode-btn" data-sample-add-mode="pianoRoll" aria-pressed="false">Piano Roll</button>
             </div>
-            <div class="sample-browser-breadcrumb" id="sample-breadcrumb"></div>
-            <div id="sample-browser-list" class="sample-browser-list" aria-label="Samples"></div>
-            <p class="sample-browser-hint">Drum Hit uses the selected drum track · Wave Edit creates an editable waveform lane</p>
-          </section>
 
-          <!-- ── Track Explorer + Sample Tracks ─────────── -->
-          <section id="track-explorer-section" class="track-explorer-section">
-            <div class="track-explorer-header">
-              <span class="panel-label">Tracks</span>
-              <div class="track-explorer-actions">
-                <button id="manage-groups-btn" type="button" class="add-track-btn">+ Sample Group</button>
+            <details class="sample-browser-drawer" open>
+              <summary class="sample-browser-summary">
+                <span class="panel-label">Sample Browser</span>
+              </summary>
+              <div class="sample-browser-body">
+              <div class="sample-browser-breadcrumb" id="sample-breadcrumb"></div>
+              <div id="sample-browser-list" class="sample-browser-list" aria-label="Samples"></div>
+              <p class="sample-browser-hint">Drum Hit assigns to the selected row · Wave Edit creates a waveform lane · Piano Roll creates a sampler instrument</p>
               </div>
-            </div>
-            <div id="track-explorer-list" class="track-explorer-list" aria-label="Track list"></div>
-            <!-- Sample / Loop tracks sit below drum tracks in the same section -->
-            <div class="track-explorer-group" id="loop-tracks-group">
-              <div class="track-explorer-group-heading" style="--group-accent:#a78bfa">Sample Tracks</div>
-              <p class="panel-hint" style="margin:2px 0 6px;font-size:11px">Load audio loops — each appears as a lane below the grid.</p>
-              <div id="loop-track-list" class="loop-track-list"></div>
-            </div>
-          </section>
+            </details>
 
-          <!-- ── Quantize Panel ────────────────────────── -->
-          <section id="quantize-panel" class="quantize-panel">
-            <span class="panel-label">Quantize</span>
-            <div class="quantize-controls">
-              <label class="quantize-toggle-label">
-                <input id="quantize-enabled" type="checkbox" />
-                <span>On</span>
-              </label>
-              <label class="quantize-grid-label">
-                <span>Grid</span>
-                <select id="quantize-value">
-                  <option value="4">4 bars</option>
-                  <option value="2">2 bars</option>
-                  <option value="1">1 bar</option>
-                  <option value="0.5">1/2</option>
-                  <option value="0.25" selected>1/4</option>
-                  <option value="0.125">1/8</option>
-                  <option value="0.0625">1/16</option>
-                </select>
-              </label>
-            </div>
+            <details id="instrument-panel-section" class="track-add-section instrument-panel-section">
+              <summary>
+                <span>Available Instruments</span>
+                <span id="instrument-palette-count" class="track-add-count"></span>
+              </summary>
+              <div id="instrument-palette-list" class="track-add-palette" aria-label="Available instruments"></div>
+            </details>
+
+            <details id="effects-panel-section" class="track-add-section effects-panel-section">
+              <summary>
+                <span>Available Effects</span>
+                <span id="effects-palette-count" class="track-add-count"></span>
+              </summary>
+              <div id="effects-palette-list" class="track-add-palette" aria-label="Available effects"></div>
+            </details>
           </section>
 
           <!-- ── Sample Region Panel ────────────────────── -->
@@ -341,19 +412,6 @@
             </div>
           </section>
 
-          <section>
-            <span class="panel-label">Groove</span>
-            <label>
-              <span>BPM</span>
-              <input data-config="patterns.jazz.bpm" type="range" min="40" max="220" step="1" />
-              <output></output>
-            </label>
-            <label>
-              <span>Swing</span>
-              <input data-config="patterns.jazz.swing" type="range" min="0" max="0.42" step="0.01" />
-              <output></output>
-            </label>
-          </section>
         </aside>
       </section>
 
@@ -367,7 +425,7 @@
           <p class="global-mix-kicker">Per-track mixer</p>
           <h2>Mixer</h2>
         </div>
-        <p class="global-mix-view-hint">Every track's Level, Pan, Delay, Verb &amp; 808 shape in one place, plus song-wide bus &amp; effects below.</p>
+        <p class="global-mix-view-hint">Every track's Level, Pan, Echo, Reverb &amp; 808 shape in one place, plus song-wide bus &amp; effects below.</p>
         <button id="close-global-mix" type="button" class="global-mix-close">Close</button>
       </header>
 

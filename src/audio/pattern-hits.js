@@ -6,7 +6,12 @@
 // prefer the richer `{ step, velocity, options }` shape. These helpers convert
 // between the two representations and have no dependency on editor state, which
 // keeps them easy to unit test in isolation.
-import { normalizePatternStep, normalizeStepOptions, STEP_OPTION_DEFAULTS } from "./rhythm-config.js";
+import {
+  normalizeChordIntervals,
+  normalizePatternStep,
+  normalizeStepOptions,
+  STEP_OPTION_DEFAULTS
+} from "./rhythm-config.js";
 
 const clampNumber = (value, min, max, fallback = 0) => {
   const number = Number(value);
@@ -45,7 +50,13 @@ export function normalizeHitEntry(entry) {
  */
 export function hasStepOptions(options = {}) {
   return Object.entries(STEP_OPTION_DEFAULTS)
-    .some(([key, value]) => Math.abs(Number(options[key] ?? value) - value) > 0.0001);
+    .some(([key, value]) => {
+      if (Array.isArray(value)) {
+        const normalized = normalizeChordIntervals(options[key]);
+        return normalized.length !== value.length || normalized.some((item, index) => item !== value[index]);
+      }
+      return Math.abs(Number(options[key] ?? value) - value) > 0.0001;
+    });
 }
 
 /**
@@ -61,13 +72,17 @@ export function serializeHitEntry(entry) {
   if (hasStepOptions(normalized.options)) {
     tuple.push({
       pitch: normalized.options.pitch,
+      chordIntervals: normalized.options.chordIntervals,
       offsetMs: normalized.options.offsetMs,
       attackMs: normalized.options.attackMs,
       delayMs: normalized.options.delayMs,
       delaySend: Number(normalized.options.delaySend.toFixed(2)),
       reverbSend: Number(normalized.options.reverbSend.toFixed(2)),
       dubEcho: Number(normalized.options.dubEcho.toFixed(2)),
-      wobble: Number(normalized.options.wobble.toFixed(2))
+      wobble: Number(normalized.options.wobble.toFixed(2)),
+      pressure: Number(normalized.options.pressure.toFixed(2)),
+      durationSteps: Number(normalized.options.durationSteps.toFixed(2)),
+      pianoRoll: normalized.options.pianoRoll >= 0.5 ? 1 : 0
     });
   }
   return tuple;

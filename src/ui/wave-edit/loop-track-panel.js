@@ -17,7 +17,9 @@ import {
   SAMPLE_SOURCE_BROWSER_HANDLE,
   storeFileHandle,
   supportsPersistentFileHandles
-} from "./sample-assets.js";
+} from "../sample-assets.js";
+import { positionContextMenu } from "../context-menu.js";
+import { syncStepGridLaneRows } from "../grid/lane-grid-layout.js";
 
 /**
  * @typedef {{ bar: number, len: number, gain: number, chops: number, sliceSensitivity: number, mode: "cut"|"stretch", srcStartFrac?: number, srcEndFrac?: number, sampleOffset?: number }} LoopRegion
@@ -330,11 +332,20 @@ export function createLoopTrackPanel({
   getEngine = () => null,
   getQuantize = () => ({ enabled: false, value: 0.25 }),
   getCameraMode = () => false,
-  getSampleGroups = () => [],
+  getTrackEditorMode = () => null,
   getSelectedPatternTrack = () => null,
-  addTrackInstance = null,
-  assignSampleToTrack = null,
+  onEditorLaneOpen = null,
+  onEditorLaneFocus = null,
+  onTrackSelect = null,
+  onTrackRemove = null,
+  editorLaneGridRow = null,
+  rebuildTrackStack = null,
+  showContextMenu = null,
+  moveTrackLane = null,
+  addSampleToBrowser = null,
   trackName = (id) => id,
+  isTrackMuted = () => false,
+  toggleMute = null,
   onSoloChange = null,
   onNavigate = null   // (bar: number) => void  — called to scroll view to a bar
 }) {
@@ -495,45 +506,60 @@ export function createLoopTrackPanel({
     setStatus(`Pasted wave edit into "${track.name}"`);
   }
 
-  async function assignRegionSliceToNewDrumTrack(track, region, labelStartBar = 0) {
-    if (!assignSampleToTrack) {
-      setStatus("Drum-track paste is not available");
-      return;
+  function fileFromWaveEditBlob(blob, name) {
+    if (typeof File === "function") {
+      return new File([blob], name, { type: blob.type || "audio/wav" });
     }
-    if (!addTrackInstance) {
-      setStatus("New drum-track paste is not available");
-      return;
-    }
+    try { blob.name = name; } catch {}
+    return blob;
+  }
+
+  function regionSliceSample(track, region, labelStartBar = 0) {
     if (!track.buffer) {
-      setStatus(`"${track.name}" needs audio before pasting to a drum track`);
-      return;
-    }
-    const hit = addTrackInstance("sampler", { select: true });
-    if (!hit) {
-      setStatus("Could not create a new drum track");
-      return;
+      return null;
     }
     const srcStartFrac = Number.isFinite(Number(region?.srcStartFrac)) ? Number(region.srcStartFrac) : 0;
     const srcEndFrac = Number.isFinite(Number(region?.srcEndFrac)) ? Number(region.srcEndFrac) : 1;
     const safeEndFrac = Math.max(srcStartFrac + 1e-9, Math.min(1, srcEndFrac));
     const blob = wavBlobFromBufferSlice(track.buffer, srcStartFrac, safeEndFrac);
-    const label = `${track.name} edit ${formatBars(labelStartBar + 1)}`;
+    const baseName = String(track.name || "Wave Edit").replace(/\.[^.]+$/, "").trim() || "Wave Edit";
+    const label = `${baseName} edit ${formatBars(labelStartBar + 1)}`;
+    const fileName = `${label}.wav`;
+    const file = fileFromWaveEditBlob(blob, fileName);
     const url = URL.createObjectURL(blob);
-    await assignSampleToTrack(hit, {
-      ...localFileReference({ label, path: `${label}.wav` }),
+    return {
       label,
+      name: fileName,
+      path: fileName,
+      file,
       url
-    });
-    setStatus(`Pasted wave edit to new drum track ${trackName(hit)}`);
+    };
   }
 
-  async function pasteSelectionToNewDrumTrack(track, startBar, len) {
+  function copyRegionSliceToSampleBrowser(track, region, labelStartBar = 0) {
+    if (!addSampleToBrowser) {
+      setStatus("Sample Browser capture is not available");
+      return;
+    }
+    if (!track.buffer) {
+      setStatus(`"${track.name}" needs audio before copying to Sample Browser`);
+      return;
+    }
+    const sample = regionSliceSample(track, region, labelStartBar);
+    if (!sample) {
+      setStatus("Could not copy wave edit to Sample Browser");
+      return;
+    }
+    addSampleToBrowser(sample);
+  }
+
+  function copySelectionToSampleBrowser(track, startBar, len) {
     const regions = copiedRegionsForSelection(track, startBar, len);
     const slice = regions[0];
-    await assignRegionSliceToNewDrumTrack(track, slice, startBar);
+    copyRegionSliceToSampleBrowser(track, slice, startBar);
   }
 
-  async function pasteClipboardToNewDrumTrack() {
+  function copyClipboardToSampleBrowser() {
     if (!waveEditClipboard?.regions?.length) {
       setStatus("Copy a wave edit selection first");
       return;
@@ -543,7 +569,7 @@ export function createLoopTrackPanel({
       setStatus("Copied wave edit source is gone");
       return;
     }
-    await assignRegionSliceToNewDrumTrack(track, waveEditClipboard.regions[0], 0);
+    copyRegionSliceToSampleBrowser(track, waveEditClipboard.regions[0], 0);
   }
 
   function serializeTracks() {
@@ -561,7 +587,6 @@ export function createLoopTrackPanel({
         root: track.root ?? null,
         path: track.path ?? null,
         fileName: track.fileName ?? null,
-        sampleGroupId: track.sampleGroupId ?? null,
         handleId: track.handleId ?? null,
         relinkRequired: Boolean(track.relinkRequired),
         regions: track.regions.map(serializeRegion)
@@ -613,8 +638,25 @@ export function createLoopTrackPanel({
   // ── Smooth playhead animation ────────────────────────────────────────────
   // We interpolate sub-bar position using ctx.currentTime vs scheduledTime
   // so the line glides smoothly across each bar rather than jumping.
+  function samplePlayheads() {
+    return Array.from(stepGrid.querySelectorAll(".sample-lane-playhead"));
+  }
+
+  function hideSamplePlayheads(playheads = samplePlayheads()) {
+    playheads.forEach((el) => { el.style.display = "none"; });
+  }
+
   function renderPlayheads() {
-    if (_playheadRaf) cancelAnimationFrame(_playheadRaf);
+    if (_playheadRaf) {
+      cancelAnimationFrame(_playheadRaf);
+      _playheadRaf = null;
+    }
+
+    const playheads = samplePlayheads();
+    if (!playheads.length || getCameraMode()) {
+      hideSamplePlayheads(playheads);
+      return;
+    }
 
     const engine = getEngine();
     const ctx = engine?.context;
@@ -622,16 +664,12 @@ export function createLoopTrackPanel({
     const bars = totalBars();
     const secPerBeat = 60 / bpm;
     const barDurationSec = secPerBeat * 4;
+    const laneWidth = playheads[0]?.parentElement?.clientWidth || 0;
 
     function frame() {
-      _playheadRaf = requestAnimationFrame(frame);
-      if (!engine?.playing) {
-        // engine stopped — hide playheads
-        stepGrid.querySelectorAll(".sample-lane-playhead").forEach((el) => { el.style.display = "none"; });
-        return;
-      }
-      if (getCameraMode()) {
-        stepGrid.querySelectorAll(".sample-lane-playhead").forEach((el) => { el.style.display = "none"; });
+      if (!engine?.playing || getCameraMode()) {
+        _playheadRaf = null;
+        hideSamplePlayheads(playheads);
         return;
       }
       const now = ctx ? ctx.currentTime : 0;
@@ -643,22 +681,25 @@ export function createLoopTrackPanel({
       const activeBar = getActiveBar();
       const localBar = _playheadBar - activeBar;
       if (localBar < 0 || localBar >= segments) {
-        stepGrid.querySelectorAll(".sample-lane-playhead").forEach((el) => { el.style.display = "none"; });
+        _playheadRaf = null;
+        hideSamplePlayheads(playheads);
         return;
       }
       const pct = Math.min(100, Math.max(0, ((localBar + fracInBar) / segments) * 100));
+      const x = laneWidth * (pct / 100);
 
-      stepGrid.querySelectorAll(".sample-lane-playhead").forEach((el) => {
+      playheads.forEach((el) => {
         el.style.display = "";
-        el.style.left = `${pct}%`;
+        el.style.transform = `translateX(${Math.round(x) - 1}px)`;
       });
+      _playheadRaf = requestAnimationFrame(frame);
     }
     frame();
   }
 
   function stopPlayheads() {
     if (_playheadRaf) { cancelAnimationFrame(_playheadRaf); _playheadRaf = null; }
-    stepGrid.querySelectorAll(".sample-lane-playhead").forEach((el) => { el.style.display = "none"; });
+    hideSamplePlayheads();
   }
 
   // ── Audio context: always reuse the engine's context so everything stays
@@ -688,6 +729,7 @@ export function createLoopTrackPanel({
     renderPlayheads();
 
     loopTracks.forEach((track) => {
+      if (isTrackMuted(track.id)) return;
       if (!track.buffer) {
         // Buffer not ready yet — try a synchronous decode from stash
         if (track._rawBytes && ctx) {
@@ -832,6 +874,7 @@ export function createLoopTrackPanel({
   const totalBars = () => Math.max(1, getSegmentsCount());
   // Full song length: used for scheduling so regions outside the window still play.
   const totalSongBars = () => Math.max(1, getBarsLength());
+  const shouldShowWaveLanes = () => loopTracks.length > 0;
   const currentBarDurationSec = () => {
     const bpm = getEngine()?.currentBpm?.() ?? 120;
     return (60 / Math.max(1, finiteNumber(bpm, 120))) * 4;
@@ -1145,7 +1188,6 @@ export function createLoopTrackPanel({
       root: source.root ?? null,
       path: source.path ?? null,
       fileName: source.fileName ?? file?.name ?? null,
-      sampleGroupId: source.sampleGroupId ?? null,
       handleId: source.handleId ?? null,
       relinkRequired: Boolean(source.relinkRequired),
       missing: false,
@@ -1155,6 +1197,8 @@ export function createLoopTrackPanel({
       _rawBytes: null
     };
     loopTracks.push(track);
+    onEditorLaneOpen?.("wave", id);
+    rebuildTrackStack?.();
 
     // Seed a default region that covers the song lane. The detected/source bar
     // count is still kept on the track for explicit loop-length workflows, but
@@ -1181,6 +1225,8 @@ export function createLoopTrackPanel({
     attachScheduler();
     renderTrackList();
     rebuildStepGridRows();
+    onTrackSelect?.(track);
+    onEditorLaneFocus?.("wave", id);
     setStatus(`Loading loop track "${name}"`);
 
     // Decode audio, then repaint the already-visible lane as soon as the
@@ -1206,6 +1252,7 @@ export function createLoopTrackPanel({
     redoStack.length = 0;
     selectedLoopRegion = null;
     activeRegionEdit = null;
+    syncRegionPanel();
     const hadLoopSolo = soloTracks.size > 0;
     soloTracks.clear();
     if (hadLoopSolo) syncLoopSoloState();
@@ -1234,7 +1281,6 @@ export function createLoopTrackPanel({
         root: typeof saved.root === "string" ? saved.root : null,
         path: typeof saved.path === "string" ? saved.path : null,
         fileName: typeof saved.fileName === "string" ? saved.fileName : null,
-        sampleGroupId: typeof saved.sampleGroupId === "string" ? saved.sampleGroupId : null,
         handleId: hasHandle ? saved.handleId : null,
         relinkRequired,
         missing: !hasUrl && !hasHandle,
@@ -1295,6 +1341,7 @@ export function createLoopTrackPanel({
     renderTrackList();
     rebuildStepGridRows();
     if (hadLoopSolo) syncLoopSoloState();
+    onTrackRemove?.(track);
     setStatus(`Removed loop track "${track.name}"`);
   }
 
@@ -1444,7 +1491,6 @@ export function createLoopTrackPanel({
 
     const menu = document.createElement("div");
     menu.className = "context-menu loop-region-ctx-menu";
-    menu.style.cssText = `left:${x}px;top:${y}px`;
 
     const addItem = (label, action, disabled = false) => {
       const btn = document.createElement("button");
@@ -1515,9 +1561,9 @@ export function createLoopTrackPanel({
       pasteWaveEdit(track, clickBar);
     }, !waveEditClipboard || waveEditClipboard.trackId !== track.id);
 
-    addItem("▣  Paste region to new drum track", () => {
-      void pasteSelectionToNewDrumTrack(track, finiteNumber(region.bar, 0), Math.max(MIN_REGION_BARS, finiteNumber(region.len, 1)));
-    }, !addTrackInstance || !assignSampleToTrack || !track.buffer);
+    addItem("⇢  Copy region to Sample Browser", () => {
+      copySelectionToSampleBrowser(track, finiteNumber(region.bar, 0), Math.max(MIN_REGION_BARS, finiteNumber(region.len, 1)));
+    }, !addSampleToBrowser || !track.buffer);
 
     sep();
 
@@ -1532,6 +1578,7 @@ export function createLoopTrackPanel({
     });
 
     document.body.appendChild(menu);
+    positionContextMenu(menu, x, y);
 
     // Dismiss on outside click
     const dismiss = (e) => {
@@ -1557,7 +1604,6 @@ export function createLoopTrackPanel({
 
     const popup = document.createElement("div");
     popup.className = "context-menu marquee-action-popup";
-    popup.style.cssText = `left:${x}px;top:${y}px`;
 
     const addItem = (label, action, disabled = false) => {
       const btn = document.createElement("button");
@@ -1602,9 +1648,9 @@ export function createLoopTrackPanel({
       pasteWaveEdit(track, startBar, len);
     }, !waveEditClipboard || waveEditClipboard.trackId !== track.id);
 
-    addItem("▣  Paste selection to new drum track", async (startBar, len) => {
-      await pasteSelectionToNewDrumTrack(track, startBar, len);
-    }, !addTrackInstance || !assignSampleToTrack || !track.buffer);
+    addItem("⇢  Copy selection to Sample Browser", (startBar, len) => {
+      copySelectionToSampleBrowser(track, startBar, len);
+    }, !addSampleToBrowser || !track.buffer);
 
     sep();
 
@@ -1662,6 +1708,7 @@ export function createLoopTrackPanel({
     addItem("✕  Dismiss selection", () => { /* marquee already removed by addItem wrapper */ });
 
     document.body.appendChild(popup);
+    positionContextMenu(popup, x, y);
 
     // Close popup on outside click — but keep the marquee alive
     const dismiss = (e) => {
@@ -1826,25 +1873,7 @@ export function createLoopTrackPanel({
       });
       list.appendChild(item);
     };
-    const groups = Array.isArray(getSampleGroups()) ? getSampleGroups() : [];
-    const knownGroupIds = new Set(groups.map((group) => group.id));
-    const groupedTracks = groups
-      .map((group) => ({
-        group,
-        tracks: loopTracks.filter((track) => track.sampleGroupId === group.id)
-      }))
-      .filter((entry) => entry.tracks.length > 0);
-    const ungroupedTracks = loopTracks.filter((track) => !track.sampleGroupId || !knownGroupIds.has(track.sampleGroupId));
-    [...groupedTracks, ...(ungroupedTracks.length ? [{ group: { label: "Ungrouped" }, tracks: ungroupedTracks }] : [])]
-      .forEach(({ group, tracks }) => {
-        if (groups.length || groupedTracks.length) {
-          const heading = document.createElement("div");
-          heading.className = "loop-track-group-heading";
-          heading.textContent = group.label;
-          list.appendChild(heading);
-        }
-        tracks.forEach(renderTrackItem);
-      });
+    loopTracks.forEach(renderTrackItem);
   }
 
   /** Paint a single lane's region blocks + waveform snippets on top of the ruler canvas. */
@@ -2266,20 +2295,63 @@ export function createLoopTrackPanel({
 
   function rebuildStepGridRows() {
     stepGrid.querySelectorAll(".sample-lane-label, .sample-lane").forEach((el) => el.remove());
+    if (!shouldShowWaveLanes()) {
+      syncStepGridLaneRows(stepGrid);
+      return;
+    }
 
-    loopTracks.forEach((track) => {
+    const gridTrackRows = stepGrid.querySelectorAll(".track-label[data-hit]:not(.piano-roll-lane-label):not(.sample-lane-label)").length;
+    const startRow = gridTrackRows + 2;
+
+    loopTracks.forEach((track, index) => {
+      const gridRow = String(editorLaneGridRow?.("wave", track.id, index, gridTrackRows) ?? (startRow + index));
       // Label cell (first grid column)
       const label = document.createElement("div");
       label.className = "track-label sample-lane-label";
       label.dataset.loopTrackId = track.id;
+      label.dataset.hit = track.id;
+      label.dataset.laneKey = `wave:${track.id}`;
+      label.style.gridColumn = "1";
+      label.style.gridRow = gridRow;
+      label.style.height = `${LANE_H}px`;
+      label.style.minHeight = `${LANE_H}px`;
+      label.title = `Select ${track.name}`;
+      label.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        if (event.target?.closest?.(".track-row-control")) return;
+        event.preventDefault();
+        onTrackSelect?.(track);
+      });
+      label.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onTrackSelect?.(track);
+        if (showContextMenu) {
+          showContextMenu(event, [
+            {
+              label: `Move ${track.name}`,
+              action: () => moveTrackLane?.("wave", track.id, track.name)
+            },
+            { separator: true },
+            {
+              label: `Delete ${track.name}`,
+              action: () => removeTrack(track.id)
+            }
+          ]);
+        } else {
+          moveTrackLane?.("wave", track.id, track.name);
+        }
+      });
 
       const span = document.createElement("span");
       span.textContent = track.name;
 
-      // Solo button — use the same class as drum-track solo buttons so style is consistent
+      const trackStateButtons = document.createElement("div");
+      trackStateButtons.className = "track-state-buttons";
+
       const soloBtn = document.createElement("button");
       soloBtn.type = "button";
-      soloBtn.className = `solo-button${soloTracks.has(track.id) ? " is-active" : ""}`;
+      soloBtn.className = `solo-button track-row-control${soloTracks.has(track.id) ? " is-active" : ""}`;
       soloBtn.dataset.loopSoloTrack = track.id;
       soloBtn.textContent = "S";
       soloBtn.title = `Solo "${track.name}"`;
@@ -2295,22 +2367,28 @@ export function createLoopTrackPanel({
         setStatus(active ? `Solo loop: ${track.name}` : "Loop solo cleared");
       });
 
-      const removeBtn = document.createElement("button");
-      removeBtn.type = "button";
-      removeBtn.className = "loop-track-item-remove sample-lane-remove";
-      removeBtn.textContent = "×";
-      removeBtn.title = `Remove "${track.name}"`;
-      removeBtn.addEventListener("click", (e) => {
+      const muteBtn = document.createElement("button");
+      muteBtn.type = "button";
+      muteBtn.className = `mute-button track-row-control${isTrackMuted(track.id) ? " is-active" : ""}`;
+      muteBtn.dataset.muteTrack = track.id;
+      muteBtn.textContent = "M";
+      muteBtn.title = `Mute "${track.name}"`;
+      muteBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        removeTrack(track.id);
+        toggleMute?.(track.id);
       });
 
-      label.append(span, soloBtn, removeBtn);
+      trackStateButtons.append(soloBtn, muteBtn);
+      label.append(span, trackStateButtons);
 
       // The timeline lane (spans all step columns)
       const lane = document.createElement("div");
       lane.className = "sample-lane";
       lane.dataset.loopTrack = track.id;
+      lane.style.gridColumn = "2 / -1";
+      lane.style.gridRow = gridRow;
+      lane.style.height = `${LANE_H}px`;
+      lane.style.minHeight = `${LANE_H}px`;
 
       // Ruler canvas sits behind everything
       const rulerCanvas = document.createElement("canvas");
@@ -2403,7 +2481,6 @@ export function createLoopTrackPanel({
         document.querySelector(".loop-region-ctx-menu")?.remove();
         const menu = document.createElement("div");
         menu.className = "context-menu loop-region-ctx-menu";
-        menu.style.cssText = `left:${e.clientX}px;top:${e.clientY}px`;
 
         const addItem = (label, action, disabled = false) => {
           const btn = document.createElement("button");
@@ -2443,9 +2520,9 @@ export function createLoopTrackPanel({
           pasteWaveEdit(track, clickBar);
         }, !waveEditClipboard || waveEditClipboard.trackId !== track.id);
 
-        addItem("▣  Paste copied wave edit to new drum track", () => {
-          void pasteClipboardToNewDrumTrack();
-        }, !waveEditClipboard || !addTrackInstance || !assignSampleToTrack);
+        addItem("⇢  Copy copied wave edit to Sample Browser", () => {
+          copyClipboardToSampleBrowser();
+        }, !waveEditClipboard || !addSampleToBrowser);
 
         if (track.regions.length > 0) {
           sep();
@@ -2459,6 +2536,7 @@ export function createLoopTrackPanel({
         }
 
         document.body.appendChild(menu);
+        positionContextMenu(menu, e.clientX, e.clientY);
         const dismiss = (ev) => {
           if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener("mousedown", dismiss); }
         };
@@ -2478,6 +2556,7 @@ export function createLoopTrackPanel({
         renderLane(track.id);
       }));
     });
+    syncStepGridLaneRows(stepGrid);
   }
 
   return {

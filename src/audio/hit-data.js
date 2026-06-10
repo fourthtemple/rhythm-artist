@@ -75,9 +75,9 @@ export function createHitData(deps) {
     };
     merged.step = step;
     merged.velocity = clamp(merged.velocity, 0, 1, 0);
-    const historyField = patch.options
+    const historyField = patch.historyField || (patch.options
       ? Object.keys(patch.options).sort().join(",") || "options"
-      : "velocity";
+      : "velocity");
     const currentComparable = {
       velocity: current.velocity <= 0.005 ? 0 : Number(current.velocity.toFixed(4)),
       options: normalizeStepOptions(current.options)
@@ -88,8 +88,8 @@ export function createHitData(deps) {
     };
     if (JSON.stringify(currentComparable) === JSON.stringify(mergedComparable)) return;
     pushEditHistory?.({
-      label: `${hit} ${historyField}`,
-      groupKey: `hit:${barIndex}:${hit}:${step}:${historyField}`
+      label: patch.historyLabel || `${hit} ${historyField}`,
+      groupKey: patch.historyGroupKey || `hit:${barIndex}:${hit}:${step}:${historyField}`
     });
     commitHitEntry(bar, hit, step, merged.velocity <= 0.005 ? null : merged);
     applyConfig();
@@ -99,9 +99,45 @@ export function createHitData(deps) {
     setHitData(hit, step, { velocity: Number(velocity) }, barIndex);
   }
 
+  function setHitVelocities(edits = []) {
+    const changes = [];
+    edits.forEach((edit) => {
+      const hit = edit?.hit;
+      const step = Number(edit?.step);
+      const barIndex = Math.max(0, Math.round(Number(edit?.barIndex ?? state.activeBar) || 0));
+      const bar = state.config.patterns.jazz.bars[barIndex];
+      if (!hit || !Number.isFinite(step) || !bar) return;
+      const current = getHitData(hit, step, barIndex);
+      const velocity = clamp(Number(edit.velocity), 0, 1, 0);
+      const currentVelocity = current.velocity <= 0.005 ? 0 : Number(current.velocity.toFixed(4));
+      const nextVelocity = velocity <= 0.005 ? 0 : Number(velocity.toFixed(4));
+      if (currentVelocity === nextVelocity) return;
+      changes.push({
+        bar,
+        hit,
+        step,
+        merged: {
+          ...current,
+          step,
+          velocity,
+          options: normalizeStepOptions(current.options)
+        }
+      });
+    });
+    if (!changes.length) return;
+    pushEditHistory?.({
+      label: changes.length === 1 ? `${changes[0].hit} velocity` : `${changes.length} hits velocity`,
+      groupKey: "hit:batch:velocity"
+    });
+    changes.forEach(({ bar, hit, step, merged }) => {
+      commitHitEntry(bar, hit, step, merged.velocity <= 0.005 ? null : merged);
+    });
+    applyConfig();
+  }
+
   function getHitVelocity(hit, step, barIndex = state.activeBar) {
     return getHitData(hit, step, barIndex).velocity || 0;
   }
 
-  return { patternBar, getHitData, setHitData, setHitVelocity, getHitVelocity, getGeneratedHitData, generatedEventsAtStep };
+  return { patternBar, getHitData, setHitData, setHitVelocity, setHitVelocities, getHitVelocity, getGeneratedHitData, generatedEventsAtStep };
 }

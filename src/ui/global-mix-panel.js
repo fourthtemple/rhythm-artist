@@ -1,7 +1,7 @@
 // Mixer overlay controller.
 //
 // Owns the full-screen "Mixer" view: a live spectrum/mastering-EQ widget
-// plus one mixer strip per grid track (Level / Pan / Delay / Verb sends and an
+// plus one mixer strip per grid track (Level / Pan / Echo / Reverb sends and an
 // optional compact 808-shape readout). It reaches the rest of the app only
 // through injected dependencies, so it has no direct reference to the editor's
 // module-level `state`.
@@ -168,7 +168,7 @@ export function createGlobalMixPanel({
 
   /**
    * Render the Mixer grid: one strip per grid track showing Level, Pan,
-   * Delay (bus) and Verb sends, plus a compact 808 shape readout. Edits here
+   * Echo (bus) and Reverb sends, plus a compact 808 shape readout. Edits here
    * write to the same per-track config maps as the inspector.
    */
   function render() {
@@ -248,8 +248,8 @@ export function createGlobalMixPanel({
         };
         addParam("Level", mix.getLevel, mix.setLevel, (v) => Number(v).toFixed(2), 0, 2, 0.01);
         addParam("Pan", mix.getPan, mix.setPan, formatPan, -1, 1, 0.01);
-        addParam("Delay", mix.getBusSend, mix.setBusSend, (v) => Number(v).toFixed(2), 0, 1, 0.01);
-        addParam("Verb", mix.getReverbSend, mix.setReverbSend, (v) => Number(v).toFixed(2), 0, 1, 0.01);
+        addParam("Echo", mix.getBusSend, mix.setBusSend, (v) => Number(v).toFixed(2), 0, 1, 0.01);
+        addParam("Reverb", mix.getReverbSend, mix.setReverbSend, (v) => Number(v).toFixed(2), 0, 1, 0.01);
 
         if (trackSupportsShape(hit)) {
           const shape = document.createElement("div");

@@ -23,7 +23,8 @@ export const SynthVoices = {
     delayMs = STEP_OPTION_DEFAULTS.delayMs,
     delaySend = STEP_OPTION_DEFAULTS.delaySend,
     reverbSend = STEP_OPTION_DEFAULTS.reverbSend,
-    dubEcho = STEP_OPTION_DEFAULTS.dubEcho
+    dubEcho = STEP_OPTION_DEFAULTS.dubEcho,
+    track = "bass"
   } = {}) {
     if (!this.context || !this.masterGain) return;
     const now = Math.max(this.context.currentTime, time);
@@ -60,8 +61,8 @@ export const SynthVoices = {
     accent.connect(accentGain);
     accentGain.connect(bassOut);
     const nodes = [oscillator, sub, accent, filter, bassGain, accentGain, bassOut];
-    this.connectTrackOutput(bassOut, "bass", this.masterGain, nodes);
-    this.connectTrackBus(bassGain, "bass", { delaySend, reverbSend, dubEcho }, nodes);
+    this.connectTrackOutput(bassOut, track, this.masterGain, nodes);
+    this.connectTrackBus(bassGain, track, { delaySend, reverbSend, dubEcho }, nodes);
     const echoAmount = Math.max(clamp01(delaySend), clamp01(dubEcho));
     if (echoAmount > 0.001) {
       this.pushDubFx(now + Math.max(0, finiteNumber(delayMs, 0) / 1000), echoAmount * 0.7, {
@@ -84,7 +85,8 @@ export const SynthVoices = {
     wobble = STEP_OPTION_DEFAULTS.wobble,
     delaySend = STEP_OPTION_DEFAULTS.delaySend,
     reverbSend = STEP_OPTION_DEFAULTS.reverbSend,
-    dubEcho = STEP_OPTION_DEFAULTS.dubEcho
+    dubEcho = STEP_OPTION_DEFAULTS.dubEcho,
+    track = "pluck"
   } = {}) {
     if (!this.context || !this.masterGain) return;
     const now = Math.max(this.context.currentTime, time);
@@ -130,8 +132,8 @@ export const SynthVoices = {
     if (panner) nodes.push(panner);
     if (lfo) nodes.push(lfo);
     if (lfoGain) nodes.push(lfoGain);
-    this.connectTrackOutput(pluckGain, "pluck", this.masterGain, nodes);
-    this.connectTrackBus(pluckGain, "pluck", { delaySend, reverbSend, dubEcho }, nodes);
+    this.connectTrackOutput(pluckGain, track, this.masterGain, nodes);
+    this.connectTrackBus(pluckGain, track, { delaySend, reverbSend, dubEcho }, nodes);
     oscillator.start(now);
     if (lfo) lfo.start(now);
     oscillator.stop(now + safeDuration + 0.02);
@@ -147,7 +149,8 @@ export const SynthVoices = {
     wobble = STEP_OPTION_DEFAULTS.wobble,
     delaySend = STEP_OPTION_DEFAULTS.delaySend,
     reverbSend = STEP_OPTION_DEFAULTS.reverbSend,
-    dubEcho = STEP_OPTION_DEFAULTS.dubEcho
+    dubEcho = STEP_OPTION_DEFAULTS.dubEcho,
+    track = "funk"
   } = {}) {
     if (!this.context || !this.masterGain) return;
     const now = Math.max(this.context.currentTime, time);
@@ -203,8 +206,8 @@ export const SynthVoices = {
     if (lfo) nodes.push(lfo);
     if (lfoGain) nodes.push(lfoGain);
     if (filterLfoGain) nodes.push(filterLfoGain);
-    this.connectTrackOutput(funkGain, "funk", this.masterGain, nodes);
-    this.connectTrackBus(funkGain, "funk", { delaySend, reverbSend, dubEcho }, nodes);
+    this.connectTrackOutput(funkGain, track, this.masterGain, nodes);
+    this.connectTrackBus(funkGain, track, { delaySend, reverbSend, dubEcho }, nodes);
     oscillator.start(now);
     if (lfo) lfo.start(now);
     oscillator.stop(now + safeDuration + 0.03);
@@ -219,7 +222,8 @@ export const SynthVoices = {
     pan = 0,
     delaySend = STEP_OPTION_DEFAULTS.delaySend,
     reverbSend = STEP_OPTION_DEFAULTS.reverbSend,
-    dubEcho = STEP_OPTION_DEFAULTS.dubEcho
+    dubEcho = STEP_OPTION_DEFAULTS.dubEcho,
+    track = "pad"
   } = {}) {
     if (!this.context || !this.masterGain) return;
     const now = Math.max(this.context.currentTime, time);
@@ -260,6 +264,7 @@ export const SynthVoices = {
   },
 
   playPadSynth(time, frequencies, {
+    track = "pad",
     gain = 0.045,
     duration = 1.5,
     style = this.activePatternStyle,
@@ -315,8 +320,8 @@ export const SynthVoices = {
     if (lfo) nodes.push(lfo);
     if (detuneGain) nodes.push(detuneGain);
     if (filterLfoGain) nodes.push(filterLfoGain);
-    this.connectTrackOutput(padGain, "pad", this.masterGain, nodes);
-    this.connectTrackBus(padGain, "pad", { delaySend, reverbSend, dubEcho }, nodes);
+    this.connectTrackOutput(padGain, track, this.masterGain, nodes);
+    this.connectTrackBus(padGain, track, { delaySend, reverbSend, dubEcho }, nodes);
     if (lfo) {
       lfo.start(now);
       lfo.stop(now + safeDuration + 0.04);
@@ -364,7 +369,8 @@ export const SynthVoices = {
     pan = 0,
     delaySend = STEP_OPTION_DEFAULTS.delaySend,
     reverbSend = STEP_OPTION_DEFAULTS.reverbSend,
-    dubEcho = STEP_OPTION_DEFAULTS.dubEcho
+    dubEcho = STEP_OPTION_DEFAULTS.dubEcho,
+    track = "whale"
   } = {}) {
     if (!this.context || !this.masterGain) return;
     const now = Math.max(this.context.currentTime, time);
@@ -416,8 +422,8 @@ export const SynthVoices = {
     second.connect(filter);
     const nodes = [oscillator, second, lfo, lfoDepth, filter, voiceGain];
     if (panner) nodes.push(panner);
-    this.connectTrackOutput(voiceGain, "whale", this.masterGain, nodes);
-    this.connectTrackBus(voiceGain, "whale", { delaySend, reverbSend, dubEcho }, nodes);
+    this.connectTrackOutput(voiceGain, track, this.masterGain, nodes);
+    this.connectTrackBus(voiceGain, track, { delaySend, reverbSend, dubEcho }, nodes);
     oscillator.start(now);
     second.start(now);
     lfo.start(now);

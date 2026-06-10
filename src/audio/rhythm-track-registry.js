@@ -18,7 +18,7 @@
  *                 "generated"-> a synth/808 voice (was the "Generated Parts")
  *   voice         which engine voice plays it (see RhythmEngine.playTrackVoice)
  *   defaultVelocity  velocity used when a step is first toggled on
- *   busSend       default delay/echo send (0..1)
+ *   busSend       default echo send (0..1)
  *   reverbSend    default reverb send (0..1)
  *   level         default per-track output level / gain trim (0..2, 1 = unity)
  *   pan           default per-track stereo pan (-1 = left .. 1 = right)
@@ -42,16 +42,16 @@ export const TRACK_REGISTRY = [
   { id: "rim", label: "Rim", group: "core", kind: "pattern", voice: "sample", sample: "rim", defaultVelocity: 0.12, busSend: 0.4, reverbSend: 0.3, removable: false, addByDefault: true },
 
   // ── Synths (generated) ──────────────────────────────────────
-  { id: "bass", label: "Bass", group: "synth", kind: "pattern", voice: "bass", defaultVelocity: 0.68, busSend: 0, reverbSend: 0.08, removable: false, addByDefault: true,
+  { id: "bass", label: "Bass", group: "synth", kind: "pattern", voice: "bass", instanceable: true, defaultVelocity: 0.68, busSend: 0, reverbSend: 0.08, removable: false, addByDefault: true,
     extraConfig: [
-      { label: "Level", key: "bassLevel",  min: 0, max: 2.5, step: 0.01 },
+      { label: "Voice", key: "bassLevel",  min: 0, max: 2.5, step: 0.01 },
       { label: "Tone",  key: "bassTone",   min: 0, max: 1,   step: 0.01 }
     ]
   },
-  { id: "pluck", label: "Pluck", group: "synth", kind: "generated", voice: "pluck", defaultVelocity: 0.18, busSend: 0.45, reverbSend: 0.32, removable: true, addByDefault: true },
-  { id: "funk", label: "Funk", group: "synth", kind: "generated", voice: "funk", defaultVelocity: 0.22, busSend: 0.38, reverbSend: 0.24, removable: true, addByDefault: true },
-  { id: "pad", label: "Pad", group: "synth", kind: "generated", voice: "pad", defaultVelocity: 0.2, busSend: 0.62, reverbSend: 0.62, removable: true, addByDefault: true },
-  { id: "whale", label: "LFO", group: "synth", kind: "generated", voice: "whale", defaultVelocity: 0.24, busSend: 0.58, reverbSend: 0.46, removable: true, addByDefault: true,
+  { id: "pluck", label: "Pluck", group: "synth", kind: "generated", voice: "pluck", instanceable: true, defaultVelocity: 0.18, busSend: 0.45, reverbSend: 0.32, removable: true, addByDefault: true },
+  { id: "funk", label: "Funk", group: "synth", kind: "generated", voice: "funk", instanceable: true, defaultVelocity: 0.22, busSend: 0.38, reverbSend: 0.24, removable: true, addByDefault: true },
+  { id: "pad", label: "Pad", group: "synth", kind: "generated", voice: "pad", instanceable: true, defaultVelocity: 0.2, busSend: 0.62, reverbSend: 0.62, removable: true, addByDefault: true },
+  { id: "whale", label: "LFO", group: "synth", kind: "generated", voice: "whale", instanceable: true, defaultVelocity: 0.24, busSend: 0.58, reverbSend: 0.46, removable: true, addByDefault: true,
     extraConfig: [
       { label: "Auto Amount", key: "whaleAutoAmount", min: 0, max: 1, step: 0.01 }
     ]

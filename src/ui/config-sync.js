@@ -53,6 +53,9 @@ export function createConfigSync(deps) {
     if (metronomeEnabled) metronomeEnabled.checked = state.config.metronomeEnabled >= 0.5;
     const metronomeVolume = $("#metronome-volume");
     if (metronomeVolume) metronomeVolume.value = String(state.config.metronomeVolume);
+    metronomeVolume?.__syncRotaryControl?.();
+    const metronomeVolumeValue = $("#metronome-volume-value");
+    if (metronomeVolumeValue) metronomeVolumeValue.textContent = Number(state.config.metronomeVolume).toFixed(2);
     const verseBars = $("#verse-bars");
     if (verseBars) verseBars.value = String(state.config.barsPerVerse);
     const sectionBars = $("#section-bars");

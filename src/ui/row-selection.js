@@ -27,13 +27,20 @@ export function createRowSelection(deps) {
     PATTERN_ROW_IDS,
     DEFAULT_VELOCITY = {},
     setPairedControl, formatPitch,
+    effectiveStepOptionsForTrack = (_config, _hit, options) => options,
     getHitData, setHitVelocity,
     syncSelectedPitchDisplay, syncSelectedDubEchoDisplay, renderSelectedPiano,
     soundingStepForRow,
     updateTrackClipboardButtons,
     renderTrackInspector, renderTrackExplorer,
     renderStepGrid,
-    previewConfig
+    previewConfig,
+    defaultNoteState = () => ({
+      instrument: "eightOhEightKick",
+      velocity: 0.32,
+      options: { ...STEP_OPTION_DEFAULTS }
+    }),
+    trackName = (hit) => hit || "track"
   } = deps;
   let deferredTrackPanelRaf = 0;
   let deferredTrackPanelTimer = 0;
@@ -102,20 +109,78 @@ export function createRowSelection(deps) {
     else renderTrackPanels();
   }
 
+  function resetNoteControlsOnly({ defaultMode = false } = {}) {
+    state.selected = null;
+    if (defaultMode) {
+      const defaults = defaultNoteState() || {};
+      const options = { ...STEP_OPTION_DEFAULTS, ...(defaults.options || {}) };
+      const label = trackName(defaults.instrument || "eightOhEightKick");
+      selectedLabel.textContent = `default ${label}`;
+      selectedControls.forEach((control) => {
+        control.disabled = false;
+      });
+      setPairedControl(
+        selectedVelocity,
+        selectedVelocityNumber,
+        selectedVelocityValue,
+        defaults.velocity ?? 0.32,
+        (next) => next.toFixed(2)
+      );
+      selectedPitch.min = String(PITCH_SLIDER_MIN);
+      selectedPitch.max = String(PITCH_SLIDER_MAX);
+      selectedPitchNumber.min = selectedPitch.min;
+      selectedPitchNumber.max = selectedPitch.max;
+      setPairedControl(selectedPitch, selectedPitchNumber, selectedPitchValue, options.pitch ?? 0, formatPitch);
+      renderSelectedPiano(options.pitch ?? 0);
+      setPairedControl(selectedOffset, selectedOffsetNumber, selectedOffsetValue, options.offsetMs ?? 0, (next) => `${Math.round(next)}ms`);
+      setPairedControl(selectedAttack, selectedAttackNumber, selectedAttackValue, options.attackMs ?? STEP_OPTION_DEFAULTS.attackMs, (next) => `${Math.round(next)}ms`);
+      setPairedControl(selectedDelay, selectedDelayNumber, selectedDelayValue, options.delayMs ?? 0, (next) => `${Math.round(next)}ms`);
+      setPairedControl(selectedWobble, selectedWobbleNumber, selectedWobbleValue, options.wobble ?? 0, (next) => next.toFixed(2));
+      setPairedControl(selectedDubEcho, selectedDubEchoNumber, selectedDubEchoValue, options.dubEcho ?? 0, (next) => next.toFixed(2));
+      setPairedControl(selectedNoteDelaySend, selectedNoteDelaySendNumber, selectedNoteDelaySendValue, options.delaySend ?? 0, (next) => next.toFixed(2));
+      setPairedControl(selectedNoteReverbSend, selectedNoteReverbSendNumber, selectedNoteReverbSendValue, options.reverbSend ?? 0, (next) => next.toFixed(2));
+      return;
+    }
+    selectedLabel.textContent = "none";
+    selectedControls.forEach((control) => {
+      control.disabled = true;
+    });
+    setPairedControl(selectedVelocity, selectedVelocityNumber, selectedVelocityValue, 0, (next) => next.toFixed(2));
+    selectedPitch.min = String(PITCH_SLIDER_MIN);
+    selectedPitch.max = String(PITCH_SLIDER_MAX);
+    selectedPitchNumber.min = selectedPitch.min;
+    selectedPitchNumber.max = selectedPitch.max;
+    setPairedControl(selectedPitch, selectedPitchNumber, selectedPitchValue, 0, formatPitch);
+    renderSelectedPiano(null);
+    setPairedControl(selectedOffset, selectedOffsetNumber, selectedOffsetValue, 0, (next) => `${Math.round(next)}ms`);
+    setPairedControl(selectedAttack, selectedAttackNumber, selectedAttackValue, STEP_OPTION_DEFAULTS.attackMs, (next) => `${Math.round(next)}ms`);
+    setPairedControl(selectedDelay, selectedDelayNumber, selectedDelayValue, 0, (next) => `${Math.round(next)}ms`);
+    setPairedControl(selectedWobble, selectedWobbleNumber, selectedWobbleValue, 0, (next) => next.toFixed(2));
+    setPairedControl(selectedDubEcho, selectedDubEchoNumber, selectedDubEchoValue, 0, (next) => next.toFixed(2));
+    setPairedControl(selectedNoteDelaySend, selectedNoteDelaySendNumber, selectedNoteDelaySendValue, 0, (next) => next.toFixed(2));
+    setPairedControl(selectedNoteReverbSend, selectedNoteReverbSendNumber, selectedNoteReverbSendValue, 0, (next) => next.toFixed(2));
+  }
+
   // ── Step / row selection ──────────────────────────────────────────────────
 
   function selectStep(hit, step, mode = "step", barIndex = state.activeBar, pressure = state.intensity, generated = !PATTERN_ROW_IDS.has(hit), selectOptions = {}) {
     const selectedBar = Math.max(0, Math.round(Number(barIndex) || 0));
     state.selected = { hit, step, mode, generated, bar: selectedBar };
     const hitData = getHitData(hit, step, selectedBar);
-    const { velocity, options } = hitData;
+    const { velocity } = hitData;
+    const options = effectiveStepOptionsForTrack(state.config, hit, hitData.options);
     selectedLabel.textContent = mode === "row"
       ? `${hit} row · ${formatStepLabel(step)}${hitData.generated ? ` · ${hitData.label || "generated"}` : ""}`
       : `${hit} ${formatStepLabel(step)}${hitData.generated && hitData.label ? ` · ${hitData.label}` : ""}`;
     selectedControls.forEach((control) => {
       control.disabled = hitData.generated && state.config.generatedRowsEditable < 0.5;
     });
-    const displayVelocity = mode === "row" && velocity <= 0.005 ? defaultVelocityFor(hit) : velocity;
+    const previewVelocity = Number(selectOptions.previewVelocity);
+    const displayVelocity = velocity > 0.005
+      ? velocity
+      : Number.isFinite(previewVelocity)
+        ? previewVelocity
+        : mode === "row" ? defaultVelocityFor(hit) : velocity;
     setPairedControl(selectedVelocity, selectedVelocityNumber, selectedVelocityValue, displayVelocity, (next) => next.toFixed(2));
     syncSelectedPitchDisplay(selectedBar);
     setPairedControl(selectedOffset, selectedOffsetNumber, selectedOffsetValue, options.offsetMs, (next) => `${Math.round(next)}ms`);
@@ -136,23 +201,18 @@ export function createRowSelection(deps) {
   }
 
   function selectRow(hit, { keepTracks = false, deferTrackPanels = false } = {}) {
-    const playback = state.engine.getPlaybackState();
-    const playheadStep = state.playing && playback.playing
-      ? (playback.step + 15) % 16
-      : state.playheadStep || state.selected?.step || 0;
-    const barIndex = state.playing && playback.playing
-      ? playback.phraseBar % state.config.patterns.jazz.bars.length
-      : state.activeBar;
-    const step = state.playing && playback.playing
-      ? soundingStepForRow(hit, playheadStep, barIndex)
-      : playheadStep;
     const tracksBefore = keepTracks ? state.selectedTracks.slice() : null;
     const anchorBefore = keepTracks ? state.trackAnchor : null;
-    selectStep(hit, step, "row", barIndex, playback.activeBarIntensity ?? state.intensity, undefined, { deferTrackPanels });
+    state.selected = null;
+    state.selectedTracks = [hit];
+    state.trackAnchor = hit;
+    resetNoteControlsOnly({ defaultMode: true });
     if (keepTracks && tracksBefore) {
       state.selectedTracks = tracksBefore.includes(hit) ? tracksBefore : [...tracksBefore, hit];
       state.trackAnchor = anchorBefore;
     }
+    updateTrackClipboardButtons();
+    renderTrackPanelsMaybe({ deferTrackPanels });
   }
 
   function previewRowSelectionControls(hit) {
@@ -187,7 +247,7 @@ export function createRowSelection(deps) {
 
   /** Toggle a row selection: re-clicking the selected row deselects it. */
   function selectRowToggle(hit, options = {}) {
-    if (state.selected?.hit === hit && state.selected?.mode === "row") {
+    if (!state.selected && state.selectedTracks.length === 1 && state.selectedTracks[0] === hit) {
       resetSelectedPanel();
       return;
     }
@@ -238,27 +298,9 @@ export function createRowSelection(deps) {
   }
 
   function resetSelectedPanel() {
-    state.selected = null;
     state.selectedTracks = [];
     state.trackAnchor = null;
-    selectedLabel.textContent = "none";
-    selectedControls.forEach((control) => {
-      control.disabled = true;
-    });
-    setPairedControl(selectedVelocity, selectedVelocityNumber, selectedVelocityValue, 0, (next) => next.toFixed(2));
-    selectedPitch.min = String(PITCH_SLIDER_MIN);
-    selectedPitch.max = String(PITCH_SLIDER_MAX);
-    selectedPitchNumber.min = selectedPitch.min;
-    selectedPitchNumber.max = selectedPitch.max;
-    setPairedControl(selectedPitch, selectedPitchNumber, selectedPitchValue, 0, formatPitch);
-    renderSelectedPiano(null);
-    setPairedControl(selectedOffset, selectedOffsetNumber, selectedOffsetValue, 0, (next) => `${Math.round(next)}ms`);
-    setPairedControl(selectedAttack, selectedAttackNumber, selectedAttackValue, STEP_OPTION_DEFAULTS.attackMs, (next) => `${Math.round(next)}ms`);
-    setPairedControl(selectedDelay, selectedDelayNumber, selectedDelayValue, 0, (next) => `${Math.round(next)}ms`);
-    setPairedControl(selectedWobble, selectedWobbleNumber, selectedWobbleValue, 0, (next) => next.toFixed(2));
-    setPairedControl(selectedDubEcho, selectedDubEchoNumber, selectedDubEchoValue, 0, (next) => next.toFixed(2));
-    setPairedControl(selectedNoteDelaySend, selectedNoteDelaySendNumber, selectedNoteDelaySendValue, 0, (next) => next.toFixed(2));
-    setPairedControl(selectedNoteReverbSend, selectedNoteReverbSendNumber, selectedNoteReverbSendValue, 0, (next) => next.toFixed(2));
+    resetNoteControlsOnly({ defaultMode: true });
     updateTrackClipboardButtons();
     renderTrackInspector();
     renderTrackExplorer();
@@ -271,11 +313,14 @@ export function createRowSelection(deps) {
     renderStepGrid();
   }
 
-  // ── Solo tracks ────────────────────────────────────────────────────────────
+  // ── Solo / mute tracks ─────────────────────────────────────────────────────
 
   function renderSoloButtons() {
     document.querySelectorAll("[data-solo-track]").forEach((button) => {
       button.classList.toggle("is-active", state.soloTracks.has(button.dataset.soloTrack));
+    });
+    document.querySelectorAll("[data-mute-track]").forEach((button) => {
+      button.classList.toggle("is-active", state.mutedTracks?.has(button.dataset.muteTrack));
     });
   }
 
@@ -296,6 +341,17 @@ export function createRowSelection(deps) {
     status.textContent = "Solo cleared";
   }
 
+  function toggleMute(track) {
+    if (!state.mutedTracks) state.mutedTracks = new Set();
+    if (state.mutedTracks.has(track)) state.mutedTracks.delete(track);
+    else state.mutedTracks.add(track);
+    state.engine.setConfig(previewConfig());
+    renderSoloButtons();
+    status.textContent = state.mutedTracks.size
+      ? `Muted: ${Array.from(state.mutedTracks).join(", ")}`
+      : "Mute cleared";
+  }
+
   return {
     selectStep,
     selectRow,
@@ -308,6 +364,7 @@ export function createRowSelection(deps) {
     resetSelectedPanel,
     clearSelection,
     toggleSolo,
+    toggleMute,
     clearSolo,
     renderSoloButtons
   };
