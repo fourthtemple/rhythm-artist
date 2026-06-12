@@ -239,6 +239,10 @@ button.is-active {
   margin: 0;
 }
 
+.transport .follow-toggle-label + .visible-bars-label {
+  margin-left: 6px;
+}
+
 .time-sig-label {
   grid-template-columns: auto auto;
 }
@@ -468,12 +472,29 @@ button.is-active {
 }
 
 .workspace {
+  position: relative;
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) 4px minmax(214px, var(--right-panel-width, 260px));
+  grid-template-columns: minmax(0, 1fr) 4px minmax(208px, var(--right-panel-width, 208px));
   gap: 0;
   min-height: 0;
   overflow: hidden;
   max-width: 100%;
+}
+
+.workspace.is-control-panel-animating {
+  transition: grid-template-columns 150ms ease;
+}
+
+.workspace.is-control-panel-collapse-preview {
+  grid-template-columns: minmax(0, 1fr) 4px var(--right-panel-width, 208px);
+}
+
+.workspace.is-control-panel-collapsed {
+  grid-template-columns: minmax(0, 1fr) 14px 0;
+}
+
+.workspace.is-control-panel-collapsed .control-panel {
+  display: none;
 }
 
 .sequencer-panel {
@@ -484,7 +505,7 @@ button.is-active {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  padding: 4px 4px 0;
+  padding: 4px 4px 0 0;
   border-width: 0 1px 0 0;
   border-radius: 0;
 }
@@ -628,6 +649,25 @@ button.is-active {
 
 .visible-bars-label {
   --magnifier-color: #b9cbd2;
+}
+
+.visible-bars-icon-button {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+}
+
+.visible-bars-icon-button:hover,
+.visible-bars-icon-button:focus-visible {
+  --magnifier-color: #dffdf8;
+  background: rgba(139, 216, 189, 0.1);
 }
 
 .visible-bars-icon {
@@ -1157,6 +1197,7 @@ button.is-active {
   align-items: start;
   align-content: start;
   gap: 2px;
+  width: 100%;
   margin-top: -3px;
   padding: 2px 5px 4px;
   border-top: 1px solid var(--line);
@@ -1377,13 +1418,14 @@ button.is-active {
 
 .selected-controls {
   display: grid;
-  grid-template-columns: repeat(auto-fill, 68px);
+  grid-template-columns: repeat(auto-fit, minmax(68px, 1fr));
   grid-auto-rows: min-content;
   grid-auto-flow: dense;
   gap: 4px;
   align-items: start;
   align-content: start;
   justify-content: start;
+  width: 100%;
   min-width: 0;
   min-height: 0;
   max-height: 100%;
@@ -1774,12 +1816,12 @@ button.is-active {
 .selected-track-panel .track-shape-row.has-rotary {
   display: grid;
   grid-template-columns: 1fr;
-  grid-template-rows: 8px 18px 8px;
+  grid-template-rows: 9px 32px 9px;
   justify-items: center;
   gap: 1px;
-  width: 48px;
-  min-width: 48px;
-  min-height: 34px;
+  width: 68px;
+  min-width: 68px;
+  min-height: 48px;
   padding: 2px;
   border: 1px solid #263340;
   border-radius: 3px;
@@ -1787,28 +1829,19 @@ button.is-active {
 }
 
 .selected-track-panel .track-shape-row.has-rotary .rotary-control {
-  --rotary-size: 18px;
-  width: 18px;
-  height: 18px;
-}
-
-.selected-track-panel .track-shape-row.has-rotary .rotary-control__cap {
-  inset: 4px;
-}
-
-.selected-track-panel .track-shape-row.has-rotary .rotary-control__pointer {
-  width: 1px;
-  height: 34%;
+  --rotary-size: 32px;
+  width: var(--rotary-size);
+  height: var(--rotary-size);
 }
 
 .selected-track-panel .track-shape-row.has-rotary .track-shape-name {
   max-width: 100%;
-  font-size: 8px;
+  font-size: 9px;
   line-height: 1;
 }
 
 .selected-track-panel .track-shape-value {
-  font-size: 8px;
+  font-size: 9px;
   line-height: 1;
   text-align: center;
 }
@@ -1857,10 +1890,6 @@ button.is-active {
   line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.effects-chain-slot--instrument {
-  min-width: 112px;
 }
 
 .effects-chain-add {
@@ -2079,7 +2108,7 @@ button.is-active {
 
 .selected-controls label.has-rotary {
   grid-template-columns: 1fr;
-  grid-template-rows: 9px 22px 9px;
+  grid-template-rows: 9px 32px 9px;
   gap: 1px;
   padding: 2px;
 }
@@ -2089,37 +2118,26 @@ button.is-active {
 }
 
 .selected-controls label.has-rotary .rotary-control {
-  --rotary-size: 22px;
-  width: 22px;
-  height: 22px;
+  --rotary-size: 32px;
+  width: var(--rotary-size);
+  height: var(--rotary-size);
 }
 
 .selected-controls .selected-track-panel .track-inspector-body > label.has-rotary,
 .selected-controls .selected-track-panel .track-inspector-extra-config label.has-rotary {
   grid-template-columns: 1fr;
-  grid-template-rows: 8px 18px 8px;
+  grid-template-rows: 9px 32px 9px;
   gap: 1px;
-  width: 50px;
-  min-height: 34px;
+  width: 68px;
+  min-height: 48px;
   padding: 2px;
 }
 
 .selected-controls .selected-track-panel .track-inspector-body > label.has-rotary .rotary-control,
 .selected-controls .selected-track-panel .track-inspector-extra-config label.has-rotary .rotary-control {
-  --rotary-size: 18px;
-  width: 18px;
-  height: 18px;
-}
-
-.selected-controls .selected-track-panel .track-inspector-body > label.has-rotary .rotary-control__cap,
-.selected-controls .selected-track-panel .track-inspector-extra-config label.has-rotary .rotary-control__cap {
-  inset: 4px;
-}
-
-.selected-controls .selected-track-panel .track-inspector-body > label.has-rotary .rotary-control__pointer,
-.selected-controls .selected-track-panel .track-inspector-extra-config label.has-rotary .rotary-control__pointer {
-  width: 1px;
-  height: 34%;
+  --rotary-size: 32px;
+  width: var(--rotary-size);
+  height: var(--rotary-size);
 }
 
 .selected-piano {
@@ -2480,9 +2498,15 @@ button.is-active {
   /* Let the whole panel scroll — sections size to their content */
 }
 
+.workspace.is-control-panel-collapse-preview .control-panel {
+  overflow: hidden;
+  pointer-events: none;
+}
+
 /* ── Workspace resize handle ── */
 .workspace-resize-handle {
   grid-column: 2;
+  position: relative;
   cursor: ew-resize;
   width: 4px;
   background: var(--line);
@@ -2492,8 +2516,56 @@ button.is-active {
 }
 
 .workspace-resize-handle:hover,
-.workspace-resize-handle.is-dragging {
+.workspace-resize-handle.is-dragging,
+.workspace-resize-handle.is-collapse-armed {
   background: var(--accent-2);
+}
+
+.workspace.is-control-panel-collapsed .workspace-resize-handle {
+  width: 14px;
+  cursor: ew-resize;
+  background:
+    linear-gradient(90deg, rgba(139, 216, 189, 0.56) 0 3px, transparent 3px 100%),
+    #101822;
+}
+
+.control-panel-toggle {
+  display: none;
+  position: absolute;
+  top: 8px;
+  left: 3px;
+  z-index: 8;
+  box-sizing: border-box;
+  width: 11px;
+  height: 42px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #2a3a4b;
+  border-radius: 3px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.012)),
+    #121b27;
+  color: #a9d8d2;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.workspace.is-control-panel-collapsed .control-panel-toggle {
+  display: block;
+}
+
+.control-panel-toggle:hover,
+.control-panel-toggle:focus-visible {
+  border-color: rgba(139, 216, 189, 0.72);
+  color: #e0fffa;
+  background:
+    linear-gradient(180deg, rgba(139, 216, 189, 0.18), rgba(139, 216, 189, 0.045)),
+    #12211f;
 }
 
 .control-panel section {
@@ -4552,6 +4624,11 @@ input[type="range"] {
   color: #7ee4d4;
 }
 
+.track-add-palette button.is-effect-control::before {
+  content: "fx";
+  color: #b9a8ff;
+}
+
 .track-add-palette button:hover,
 .track-add-palette button:focus-visible {
   border-color: #5c6f86;
@@ -4562,6 +4639,11 @@ input[type="range"] {
 .track-add-palette button:disabled {
   opacity: 0.42;
   cursor: default;
+}
+
+.selected-controls label.is-palette-target {
+  border-color: #8bd8bd;
+  box-shadow: 0 0 0 1px rgba(139, 216, 189, 0.32), 0 0 12px rgba(139, 216, 189, 0.18);
 }
 
 .sample-browser-section .track-add-section {
@@ -5181,7 +5263,11 @@ input[type="range"] {
 
 @media (max-width: 760px) {
   .workspace {
-    grid-template-columns: minmax(260px, 1fr) 3px minmax(198px, 34vw);
+    grid-template-columns: minmax(0, 1fr) 3px minmax(198px, var(--right-panel-width, 208px));
+  }
+
+  .workspace-resize-handle {
+    width: 3px;
   }
 
 }

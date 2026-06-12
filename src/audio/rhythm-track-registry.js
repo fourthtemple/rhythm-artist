@@ -31,7 +31,7 @@ export const TRACK_GROUPS = [
   { id: "synth", label: "Synths", accent: "#c4b5fd" },
   { id: "eightOhEight", label: "808 Kit", accent: "#fca5a5" },
   { id: "sampler", label: "Samplers", accent: "#fcd34d" },
-  { id: "fx", label: "FX & Space", accent: "#86efac" }
+  { id: "spaceVoices", label: "Space Voices", accent: "#86efac" }
 ];
 
 export const TRACK_REGISTRY = [
@@ -75,9 +75,9 @@ export const TRACK_REGISTRY = [
   // ── Samplers (play a user-loaded sample, add as many as needed) ──
   { id: "sampler", label: "Sampler", group: "sampler", kind: "generated", voice: "sampler", instanceable: true, defaultVelocity: 0.5, busSend: 0.2, reverbSend: 0.12, removable: true, addByDefault: false },
 
-  // ── FX & space (generated) ──────────────────────────────────
-  { id: "echo", label: "Echo", group: "fx", kind: "generated", voice: "echo", defaultVelocity: 0.3, busSend: 1, reverbSend: 0.42, removable: true, addByDefault: true },
-  { id: "space", label: "Space", group: "fx", kind: "generated", voice: "space", defaultVelocity: 0.4, busSend: 1, reverbSend: 1, removable: true, addByDefault: true }
+  // ── Space voices (generated instruments, not effects) ───────
+  { id: "echo", label: "Echo", group: "spaceVoices", kind: "generated", voice: "echo", defaultVelocity: 0.3, busSend: 1, reverbSend: 0.42, removable: true, addByDefault: true },
+  { id: "space", label: "Space", group: "spaceVoices", kind: "generated", voice: "space", defaultVelocity: 0.4, busSend: 1, reverbSend: 1, removable: true, addByDefault: true }
 ];
 
 // ── Lookups + derived lists ───────────────────────────────────
@@ -137,12 +137,12 @@ export const PATTERN_TRACK_IDS = TRACK_REGISTRY
   .filter((t) => t.kind === "pattern")
   .map((t) => t.id);
 
-/** Generated (synth/808/fx) track ids that ship on by default. */
+/** Generated (synth/808/sampler/space voice) track ids that ship on by default. */
 export const GENERATED_TRACK_IDS = TRACK_REGISTRY
   .filter((t) => t.kind === "generated" && t.addByDefault)
   .map((t) => t.id);
 
-/** Every generated (synth/808/sampler/fx) track id, default or not. */
+/** Every generated (synth/808/sampler/space voice) track id, default or not. */
 export const ALL_GENERATED_TRACK_IDS = TRACK_REGISTRY
   .filter((t) => t.kind === "generated")
   .map((t) => t.id);

@@ -122,6 +122,13 @@ export function createEventWiring(deps) {
     if (segmentsInput) {
       segmentsInput.addEventListener("input", () => applySegments(Number(segmentsInput.value)));
     }
+    const visibleBarsZoomOut = $("#visible-bars-zoom-out");
+    if (visibleBarsZoomOut && segmentsInput) {
+      visibleBarsZoomOut.addEventListener("click", (event) => {
+        event.preventDefault();
+        applySegments(Number(segmentsInput.value) + 1);
+      });
+    }
     const verseBarsInput = /** @type {HTMLInputElement|null} */ ($("#verse-bars"));
     if (verseBarsInput) {
       wireNumberControl(verseBarsInput, applyVerseBarCount);

@@ -1089,7 +1089,7 @@ export class RhythmEngine {
   }
 
   /**
-   * Every generated (synth/808/sampler/fx) track id that should be scheduled
+   * Every generated (synth/808/sampler/space voice) track id that should be scheduled
    * for this bar: the registry's editable generated rows plus any *instance*
    * tracks the user has added (e.g. extra "808 Clap" instances written as
    * `eightOhEightClap~ab12`). Instances are discovered from the bar's own

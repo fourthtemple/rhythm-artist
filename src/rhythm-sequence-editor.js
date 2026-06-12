@@ -487,12 +487,18 @@ const selectedNoteReverbSendValue = $("#selected-note-reverb-send-value");
 const selectedNoteReverbSendNumber = $("#selected-note-reverb-send-number");
 const selectedControlsWrap = $("#selected-controls");
 const selectedTrackPanel = $("#selected-track-panel");
+const selectedTrackTab = $("#selected-tab-track");
 const selectedEffectsChainPanel = $("#selected-effects-chain-panel");
-const effectsChainTrackName = $("#effects-chain-track-name");
 const selectedGridSteps = $("#selected-grid-steps");
 const selectedGridStepsInput = $("#selected-grid-steps-input");
 const selectedGridStepsOutput = $("#selected-grid-steps-output");
 const effectsDefaultControls = $("#selected-effects-default-controls");
+const effectsDefaultLevel = $("#effects-default-level");
+const effectsDefaultLevelValue = $("#effects-default-level-value");
+const effectsDefaultPan = $("#effects-default-pan");
+const effectsDefaultPanValue = $("#effects-default-pan-value");
+const effectsDefaultDubEcho = $("#effects-default-dub-echo");
+const effectsDefaultDubEchoValue = $("#effects-default-dub-echo-value");
 const effectsDefaultDelay = $("#effects-default-delay");
 const effectsDefaultDelayValue = $("#effects-default-delay-value");
 const effectsDefaultVerb = $("#effects-default-verb");
@@ -678,23 +684,55 @@ function syncSelectedEffectsDefaults() {
   const visible = Boolean(hit);
   if (effectsDefaultControls) effectsDefaultControls.hidden = !visible;
   if (!visible) return;
+  const level = selectedTrackLevelFor(hit);
+  const pan = selectedTrackPanFor(hit);
+  const dubEcho = selectedEffectsDubEchoAmount();
   const delay = selectedTrackBusSend(hit);
   const verb = selectedTrackReverbSend(hit);
+  if (effectsDefaultLevel) effectsDefaultLevel.value = String(level);
+  if (effectsDefaultLevelValue) effectsDefaultLevelValue.textContent = Number(level).toFixed(2);
+  if (effectsDefaultPan) effectsDefaultPan.value = String(pan);
+  if (effectsDefaultPanValue) effectsDefaultPanValue.textContent = formatPan(pan);
+  if (effectsDefaultDubEcho) effectsDefaultDubEcho.value = String(dubEcho);
+  if (effectsDefaultDubEchoValue) effectsDefaultDubEchoValue.textContent = Number(dubEcho).toFixed(2);
   if (effectsDefaultDelay) effectsDefaultDelay.value = String(delay);
   if (effectsDefaultDelayValue) effectsDefaultDelayValue.textContent = Number(delay).toFixed(2);
   if (effectsDefaultVerb) effectsDefaultVerb.value = String(verb);
   if (effectsDefaultVerbValue) effectsDefaultVerbValue.textContent = Number(verb).toFixed(2);
 }
 
-function commitSelectedEffectDefault(kind, value) {
+function selectedEffectsDubEchoAmount() {
+  const options = state.selected && Number.isFinite(Number(state.selected.step))
+    ? getHitData(state.selected.hit, state.selected.step, state.activeBar).options
+    : defaultNoteState().options;
+  return clamp(options?.dubEcho, 0, 1, 0);
+}
+
+function commitSelectedEffectDefault(kind, value, options = {}) {
   const hit = selectedPanelTrackId();
   if (!hit) return;
-  const next = clamp(value, 0, 1, 0);
-  if (kind === "delay") {
+  if (kind === "level") {
+    const next = clamp(value, 0, 2, 1);
+    setTrackLevel(hit, next);
+    if (effectsDefaultLevel) effectsDefaultLevel.value = String(next);
+    if (effectsDefaultLevelValue) effectsDefaultLevelValue.textContent = next.toFixed(2);
+  } else if (kind === "pan") {
+    const next = clamp(value, -1, 1, 0);
+    setTrackPan(hit, next);
+    if (effectsDefaultPan) effectsDefaultPan.value = String(next);
+    if (effectsDefaultPanValue) effectsDefaultPanValue.textContent = formatPan(next);
+  } else if (kind === "dubEcho") {
+    const next = clamp(value, 0, 1, 0);
+    setSelectedDubEchoFromControl(next, options);
+    if (effectsDefaultDubEcho) effectsDefaultDubEcho.value = String(next);
+    if (effectsDefaultDubEchoValue) effectsDefaultDubEchoValue.textContent = next.toFixed(2);
+  } else if (kind === "delay") {
+    const next = clamp(value, 0, 1, 0);
     setTrackBusSend(hit, next);
     if (effectsDefaultDelay) effectsDefaultDelay.value = String(next);
     if (effectsDefaultDelayValue) effectsDefaultDelayValue.textContent = next.toFixed(2);
   } else if (kind === "verb") {
+    const next = clamp(value, 0, 1, 0);
     setTrackReverbSend(hit, next);
     if (effectsDefaultVerb) effectsDefaultVerb.value = String(next);
     if (effectsDefaultVerbValue) effectsDefaultVerbValue.textContent = next.toFixed(2);
@@ -708,10 +746,7 @@ function setSelectedBottomTab(tab = "note") {
   if (selectedControlsWrap) selectedControlsWrap.dataset.bottomTab = next;
   if (selectedTrackPanel) selectedTrackPanel.hidden = next !== "track";
   if (selectedEffectsChainPanel) selectedEffectsChainPanel.hidden = next !== "effects";
-  if (effectsChainTrackName) {
-    const hit = selectedPanelTrackId();
-    effectsChainTrackName.textContent = hit ? trackName(hit) : "No track";
-  }
+  syncSelectedTrackTabLabel();
   document.querySelectorAll("[data-selected-bottom-tab]").forEach((button) => {
     if (button.dataset.selectedBottomTab === "note") {
       button.hidden = !noteAvailable;
@@ -723,6 +758,14 @@ function setSelectedBottomTab(tab = "note") {
   });
   syncSelectedGridStepsControl();
   syncSelectedEffectsDefaults();
+}
+
+function syncSelectedTrackTabLabel(trackCount = null) {
+  if (!selectedTrackTab) return;
+  const count = Number.isFinite(trackCount)
+    ? trackCount
+    : (state.selectedTracks?.length || (state.selected?.hit ? 1 : 0));
+  selectedTrackTab.textContent = count > 1 ? "Instruments" : "Instrument";
 }
 
 document.querySelectorAll("[data-selected-bottom-tab]").forEach((button) => {
@@ -741,6 +784,21 @@ if (selectedGridStepsInput) {
   });
 }
 
+effectsDefaultLevel?.addEventListener("input", () => {
+  commitSelectedEffectDefault("level", effectsDefaultLevel.value);
+});
+effectsDefaultLevel?.addEventListener("change", syncSelectedEffectsDefaults);
+effectsDefaultPan?.addEventListener("input", () => {
+  commitSelectedEffectDefault("pan", effectsDefaultPan.value);
+});
+effectsDefaultPan?.addEventListener("change", syncSelectedEffectsDefaults);
+effectsDefaultDubEcho?.addEventListener("input", () => {
+  commitSelectedEffectDefault("dubEcho", effectsDefaultDubEcho.value, { live: true, renderGrid: false });
+});
+effectsDefaultDubEcho?.addEventListener("change", () => {
+  commitSelectedEffectDefault("dubEcho", effectsDefaultDubEcho.value, { live: false, renderGrid: false });
+  syncSelectedEffectsDefaults();
+});
 effectsDefaultDelay?.addEventListener("input", () => {
   commitSelectedEffectDefault("delay", effectsDefaultDelay.value);
 });
@@ -1880,6 +1938,7 @@ trackPanels = createTrackPanels({
   onEditorLaneOpen: registerEditorLane,
   onTrackIdReplaced: () => syncEditorLaneOrderFromConfig(state.config),
   onTrackEditorModeChange: syncContextPanels,
+  onTrackInspectorSelectionChange: syncSelectedTrackTabLabel,
   defaultNoteState,
   setDefaultNoteInstrument
 });
@@ -1903,6 +1962,26 @@ function wireTrackPaletteButtons() {
   const effectsList = $("#effects-palette-list");
   const instrumentCount = $("#instrument-palette-count");
   const effectsCount = $("#effects-palette-count");
+  const effectPalette = [
+    {
+      id: "dubEcho",
+      label: "Dub Echo",
+      title: "Edit per-note dub echo amount",
+      control: selectedDubEcho
+    },
+    {
+      id: "noteDelay",
+      label: "Note Delay",
+      title: "Edit per-note delay send",
+      control: selectedNoteDelaySend
+    },
+    {
+      id: "reverb",
+      label: "Reverb",
+      title: "Edit per-note reverb send",
+      control: selectedNoteReverbSend
+    }
+  ];
   const projectIds = () => new Set([
     ...(Array.isArray(state.config.trackViewTrackIds) ? state.config.trackViewTrackIds : []),
     ...Object.keys(state.config.trackSamples || {}),
@@ -1971,11 +2050,38 @@ function wireTrackPaletteButtons() {
       host.appendChild(button);
     });
   };
+  const focusEffectControl = (effect) => {
+    if (state.trackEditorMode !== "grid") {
+      status.textContent = `${effect.label} is available on grid notes`;
+      return;
+    }
+    setSelectedBottomTab("note");
+    effect.control?.focus?.();
+    effect.control?.closest?.("label")?.classList.add("is-palette-target");
+    window.setTimeout(() => {
+      effect.control?.closest?.("label")?.classList.remove("is-palette-target");
+    }, 420);
+    status.textContent = `${effect.label} is edited in the Note panel`;
+  };
+  const renderEffectPalette = () => {
+    if (!effectsList) return;
+    effectsList.innerHTML = "";
+    if (effectsCount) effectsCount.textContent = `${effectPalette.length}`;
+    effectPalette.forEach((effect) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "is-effect-control";
+      button.dataset.effectPalette = effect.id;
+      button.textContent = effect.label;
+      button.title = effect.title;
+      button.addEventListener("click", () => focusEffectControl(effect));
+      effectsList.appendChild(button);
+    });
+  };
   function renderTrackPaletteButtons() {
     const instruments = TRACK_REGISTRY.filter((track) => track.group !== "fx" && track.voice !== "sample");
-    const effects = TRACK_REGISTRY.filter((track) => track.group === "fx");
     renderPalette(instrumentList, instrumentCount, instruments, { respectsAddMode: true });
-    renderPalette(effectsList, effectsCount, effects);
+    renderEffectPalette();
   }
   renderTrackPaletteButtons();
   window.rhythmEditorRenderTrackPalettes = renderTrackPaletteButtons;

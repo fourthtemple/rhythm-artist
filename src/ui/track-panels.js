@@ -15,10 +15,7 @@ import {
 const SAMPLER_TRACK_DEFAULT_CONTROLS = [
   { key: "offsetMs", label: "Offset", min: -180, max: 180, step: 1, format: (v) => `${Math.round(v)}ms` },
   { key: "attackMs", label: "Attack", min: 0, max: 260, step: 1, format: (v) => `${Math.round(v)}ms` },
-  { key: "wobble", label: "LFO", min: 0, max: 4, step: 0.01, format: (v) => Number(v).toFixed(2) },
-  { key: "dubEcho", label: "Dub Echo", min: 0, max: 1, step: 0.01, format: (v) => Number(v).toFixed(2) },
-  { key: "delaySend", label: "Note Delay", min: 0, max: 1, step: 0.01, format: (v) => Number(v).toFixed(2) },
-  { key: "reverbSend", label: "Reverb", min: 0, max: 1, step: 0.01, format: (v) => Number(v).toFixed(2) }
+  { key: "wobble", label: "LFO", min: 0, max: 4, step: 0.01, format: (v) => Number(v).toFixed(2) }
 ];
 
 // Owns the right-side track UI cluster:
@@ -27,7 +24,7 @@ const SAMPLER_TRACK_DEFAULT_CONTROLS = [
 //   • The "Add Track" dialog (grouped chips with add/remove controls).
 //   • The Track Explorer (grouped, selectable track list with solo + sample dot).
 //   • The Track Inspector (one independent panel per selected track: sample row,
-//     Level/Pan/Echo/Reverb, optional 808 shape, delete/deselect).
+//     instrument parameters, optional 808 shape, delete/deselect).
 //   • Per-track custom sample assignment/clear/reapply.
 //
 // It reaches the rest of the app through injected dependencies plus the shared
@@ -91,6 +88,7 @@ const SAMPLER_TRACK_DEFAULT_CONTROLS = [
  * @param {(kind: string, id: string) => void} [deps.onEditorLaneOpen]
  * @param {() => void} [deps.onTrackIdReplaced]
  * @param {() => void} [deps.onTrackEditorModeChange]
+ * @param {(trackCount: number) => void} [deps.onTrackInspectorSelectionChange]
  * @param {() => {instrument:string, velocity:number, options:any}} [deps.defaultNoteState]
  * @param {(instrument:string) => void} [deps.setDefaultNoteInstrument]
  */
@@ -147,6 +145,7 @@ export function createTrackPanels(deps) {
     onEditorLaneOpen = null,
     onTrackIdReplaced = () => {},
     onTrackEditorModeChange = () => {},
+    onTrackInspectorSelectionChange = () => {},
     defaultNoteState = null,
     setDefaultNoteInstrument = null
   } = deps;
@@ -548,12 +547,14 @@ export function createTrackPanels(deps) {
     const choices = [
       { id: "sampler", label: "Sampler" },
       ...TRACK_REGISTRY
-        .filter((track) => track.group === "synth")
+        .filter((track) => track.group === "synth" || track.group === "spaceVoices")
         .map((track) => ({ id: track.id, label: track.label || track.id })),
       { id: "eightOhEight", label: "808" }
     ];
     const currentDef = TRACK_BY_ID[current];
-    if (currentDef?.group === "fx") choices.push({ id: currentDef.id, label: currentDef.label || currentDef.id });
+    if (currentDef && !choices.some((choice) => choice.id === currentDef.id)) {
+      choices.push({ id: currentDef.id, label: currentDef.label || currentDef.id });
+    }
     return choices;
   }
 
@@ -692,8 +693,8 @@ export function createTrackPanels(deps) {
       lbl.append(span, range, out, number);
       wrap.appendChild(lbl);
     });
-    const panLabel = panel.querySelector('[data-control="pan"]')?.closest("label");
-    panLabel ? panLabel.after(wrap) : panel.querySelector("[data-track-panel]")?.appendChild(wrap);
+    const sampleWrap = panel.querySelector(".track-inspector-sample");
+    sampleWrap ? sampleWrap.after(wrap) : panel.querySelector("[data-track-panel]")?.appendChild(wrap);
   }
 
   function renderEightOhEightParameter(hit, panel) {
@@ -1266,7 +1267,7 @@ export function createTrackPanels(deps) {
 
   /**
    * Build one inspector panel (cloned from the template) for a single track id,
-   * wiring its sample row, Level/Pan/Echo/Reverb controls, optional 808 shape, and
+   * wiring its sample row, instrument controls, optional 808 shape, and
    * Delete actions. Each panel is fully independent so several can be
    * shown at once for a multi-track selection.
    */
@@ -1314,7 +1315,8 @@ export function createTrackPanels(deps) {
       gridLayout.style.display = "none";
     }
 
-    // Paired range + number controls for Level / Pan / Echo / Reverb.
+    // Paired range + number controls for track defaults. Level/Pan/Delay/Reverb
+    // are surfaced in the Effects tab so the Instrument panel stays instrument-only.
     const wireParam = (key, label, getValue, setValue, format, min, max, step) => {
       const range = panel.querySelector(`[data-control="${key}"]`);
       const number = panel.querySelector(`[data-number="${key}"]`);
@@ -1340,9 +1342,9 @@ export function createTrackPanels(deps) {
     };
     wireParam("level", "Level", mix.getLevel, mix.setLevel, (v) => Number(v).toFixed(2), 0, 2, 0.01);
     wireParam("pan", "Pan", mix.getPan, mix.setPan, formatPan, -1, 1, 0.01);
-    wireParam("busSend", "Echo", mix.getBusSend, mix.setBusSend, (v) => Number(v).toFixed(2), 0, 1, 0.01);
+    wireParam("busSend", "Note Delay", mix.getBusSend, mix.setBusSend, (v) => Number(v).toFixed(2), 0, 1, 0.01);
     wireParam("reverbSend", "Reverb", mix.getReverbSend, mix.setReverbSend, (v) => Number(v).toFixed(2), 0, 1, 0.01);
-    ["busSend", "reverbSend"].forEach((key) => {
+    ["level", "pan", "busSend", "reverbSend"].forEach((key) => {
       const label = panel.querySelector(`[data-control="${key}"]`)?.closest("label");
       if (!label) return;
       label.hidden = true;
@@ -1376,9 +1378,8 @@ export function createTrackPanels(deps) {
         lbl.append(span, range, out);
         extraWrap.appendChild(lbl);
       });
-      // Keep instrument-specific knobs in the same compact row as Level/Pan.
-      const panLabel = panel.querySelector('[data-control="pan"]')?.closest("label");
-      panLabel ? panLabel.after(extraWrap) : panel.querySelector("[data-track-panel]")?.appendChild(extraWrap);
+      const sampleWrap = panel.querySelector(".track-inspector-sample:not([hidden])");
+      sampleWrap ? sampleWrap.after(extraWrap) : panel.querySelector("[data-track-panel]")?.appendChild(extraWrap);
     }
 
     // Per-track 808 shape (only for 808-kit voices).
@@ -1470,6 +1471,7 @@ export function createTrackPanels(deps) {
       const openPianoRollTracks = new Set(pianoRollTrackIds());
       tracks = tracks.filter((id) => openPianoRollTracks.has(id));
     }
+    onTrackInspectorSelectionChange(tracks.length);
     trackInspectorPanels.innerHTML = "";
     if (trackInspectorName) {
       trackInspectorName.textContent = tracks.length === 0

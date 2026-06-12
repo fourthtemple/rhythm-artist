@@ -29,7 +29,9 @@
               <span>Follow</span>
             </label>
             <label class="visible-bars-label" title="Visible bars: higher values show more bars and compress the grid">
-              <span class="visible-bars-icon" aria-hidden="true"></span>
+              <button id="visible-bars-zoom-out" class="visible-bars-icon-button" type="button" aria-label="Zoom out by one bar" title="Zoom out by one bar">
+                <span class="visible-bars-icon" aria-hidden="true"></span>
+              </button>
               <input id="segments-count" type="number" min="1" max="32" step="1" value="2" aria-label="Visible bars" />
             </label>
           </div>
@@ -96,27 +98,38 @@
               <div id="selected-track-panel" class="selected-track-panel" role="tabpanel" aria-labelledby="selected-tab-track" hidden></div>
               <div id="selected-effects-chain-panel" class="selected-effects-chain-panel" role="tabpanel" aria-labelledby="selected-tab-effects" hidden>
                 <div class="effects-chain-row" aria-label="Effects chain">
-                  <div class="effects-chain-slot effects-chain-slot--instrument">
-                    <span>Instrument</span>
-                    <strong id="effects-chain-track-name">No track</strong>
-                  </div>
-                  <button class="effects-chain-slot" type="button" data-effect-slot="delay" disabled>
-                    <span>Echo</span>
-                    <strong>Bus</strong>
-                  </button>
-                  <button class="effects-chain-slot" type="button" data-effect-slot="verb" disabled>
-                    <span>Reverb</span>
-                    <strong>Bus</strong>
-                  </button>
                   <button class="effects-chain-slot" type="button" data-effect-slot="dubEcho" disabled>
                     <span>Dub Echo</span>
                     <strong>Note</strong>
+                  </button>
+                  <button class="effects-chain-slot" type="button" data-effect-slot="delay" disabled>
+                    <span>Note Delay</span>
+                    <strong>Send</strong>
+                  </button>
+                  <button class="effects-chain-slot" type="button" data-effect-slot="verb" disabled>
+                    <span>Reverb</span>
+                    <strong>Send</strong>
                   </button>
                   <button class="effects-chain-add" type="button" disabled>+</button>
                 </div>
                 <div id="selected-effects-default-controls" class="selected-effects-default-controls" aria-label="Selected track effect defaults" hidden>
                   <label>
-                    <span>Echo Default</span>
+                    <span>Level</span>
+                    <input id="effects-default-level" type="range" min="0" max="2" step="0.01" value="1" />
+                    <output id="effects-default-level-value">1.00</output>
+                  </label>
+                  <label>
+                    <span>Pan</span>
+                    <input id="effects-default-pan" type="range" min="-1" max="1" step="0.01" value="0" />
+                    <output id="effects-default-pan-value">C</output>
+                  </label>
+                  <label>
+                    <span>Dub Echo</span>
+                    <input id="effects-default-dub-echo" type="range" min="0" max="1" step="0.01" value="0" />
+                    <output id="effects-default-dub-echo-value">0.00</output>
+                  </label>
+                  <label>
+                    <span>Note Delay</span>
                     <input id="effects-default-delay" type="range" min="0" max="1" step="0.01" value="0" />
                     <output id="effects-default-delay-value">0.00</output>
                   </label>
@@ -173,7 +186,9 @@
           </section>
         </section>
 
-        <div class="workspace-resize-handle" id="workspace-resize-handle" title="Drag to resize panel"></div>
+        <div class="workspace-resize-handle" id="workspace-resize-handle" title="Drag right to close the panel, drag left to reopen it">
+          <button id="control-panel-toggle" class="control-panel-toggle" type="button" aria-label="Show right panel" title="Show right panel">‹</button>
+        </div>
 
         <aside class="control-panel" aria-label="Rhythm controls">
           <section id="song-properties-section" class="song-properties-section">
@@ -308,7 +323,7 @@
                   <input class="selected-number" type="number" min="-1" max="1" step="0.01" value="0" data-number="pan" />
                 </label>
                 <label>
-                  <span>Echo</span>
+                  <span>Note Delay</span>
                   <input type="range" min="0" max="1" step="0.01" value="0" data-control="busSend" />
                   <output data-output="busSend">0.00</output>
                   <input class="selected-number" type="number" min="0" max="1" step="0.01" value="0" data-number="busSend" />
@@ -517,38 +532,116 @@
     <script>
       // ── Workspace right-panel drag-to-resize ──
       (function () {
-        const MIN_W = 208, MAX_W = 560, STORAGE_KEY = "rightPanelWidthCompact";
+        const MIN_W = 208, DEFAULT_W = 208, MAX_W = 208, CLOSE_DRAG_W = 8, CLOSE_PREVIEW_W = 18, REOPEN_DRAG_W = 32;
+        const STORAGE_KEY = "rightPanelWidthCompactV2", COLLAPSED_KEY = "rightPanelCollapsed";
         const handle = document.getElementById("workspace-resize-handle");
+        const toggle = document.getElementById("control-panel-toggle");
         const workspace = handle && handle.closest(".workspace");
         if (!handle || !workspace) return;
 
-        function applyWidth(w) {
-          w = Math.max(MIN_W, Math.min(MAX_W, w));
+        function applyWidth(w, { previewCollapse = false } = {}) {
+          w = Math.max(previewCollapse ? 0 : MIN_W, Math.min(MAX_W, w));
           workspace.style.setProperty("--right-panel-width", w + "px");
           return w;
         }
 
+        function setCollapsed(collapsed, animate = false) {
+          if (animate) {
+            workspace.classList.add("is-control-panel-animating");
+            window.setTimeout(() => {
+              workspace.classList.remove("is-control-panel-animating");
+            }, 180);
+          }
+          workspace.classList.toggle("is-control-panel-collapsed", collapsed);
+          if (toggle) {
+            toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+          }
+          localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
+        }
+
         // Restore saved width
         const saved = parseInt(localStorage.getItem(STORAGE_KEY), 10);
-        if (saved) applyWidth(saved);
+        applyWidth(saved || DEFAULT_W);
+        setCollapsed(localStorage.getItem(COLLAPSED_KEY) === "1");
 
         let startX, startW;
 
+        if (toggle) {
+          toggle.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setCollapsed(false);
+            applyWidth(parseInt(localStorage.getItem(STORAGE_KEY), 10) || MIN_W);
+          });
+        }
+
         handle.addEventListener("pointerdown", (e) => {
+          if (e.target.closest?.("#control-panel-toggle")) return;
           e.preventDefault();
           handle.classList.add("is-dragging");
           startX = e.clientX;
           const cs = getComputedStyle(workspace);
           const cols = cs.gridTemplateColumns.split(" ");
-          startW = parseInt(cols[cols.length - 1], 10) || 320;
+          const wasCollapsed = workspace.classList.contains("is-control-panel-collapsed");
+          startW = wasCollapsed ? 0 : (parseInt(cols[cols.length - 1], 10) || 320);
+          const savedWAtStart = parseInt(localStorage.getItem(STORAGE_KEY), 10) || startW || MIN_W;
+          let collapseArmed = false;
+          let dragPreviewWidth = startW;
+          let closePreviewing = false;
+          let closedDuringDrag = false;
 
           const onMove = (ev) => {
+            if (closedDuringDrag) return;
             const delta = startX - ev.clientX; // dragging left = panel grows
-            const newW = applyWidth(startW + delta);
+            const closeDrag = ev.clientX - startX;
+            const requestedW = startW + delta;
+            if (workspace.classList.contains("is-control-panel-collapsed")) {
+              if (requestedW < REOPEN_DRAG_W) return;
+              setCollapsed(false, true);
+              workspace.classList.remove("is-control-panel-collapse-preview");
+              const savedWidth = parseInt(localStorage.getItem(STORAGE_KEY), 10) || MIN_W;
+              const newW = applyWidth(Math.max(requestedW, savedWidth));
+              localStorage.setItem(STORAGE_KEY, newW);
+              return;
+            }
+
+            if (closeDrag > 0) {
+              closePreviewing = true;
+              const previewSlide = Math.min(closeDrag, CLOSE_PREVIEW_W);
+              dragPreviewWidth = applyWidth(startW - previewSlide, { previewCollapse: true });
+              workspace.classList.add("is-control-panel-collapse-preview");
+              collapseArmed = closeDrag >= CLOSE_DRAG_W;
+              handle.classList.toggle("is-collapse-armed", collapseArmed);
+              if (collapseArmed) {
+                closedDuringDrag = true;
+                workspace.classList.remove("is-control-panel-collapse-preview");
+                localStorage.setItem(STORAGE_KEY, savedWAtStart);
+                setCollapsed(true, true);
+              }
+              return;
+            }
+
+            closePreviewing = false;
+            workspace.classList.remove("is-control-panel-collapse-preview");
+            collapseArmed = false;
+            handle.classList.remove("is-collapse-armed");
+            dragPreviewWidth = applyWidth(requestedW);
+            const newW = dragPreviewWidth;
             localStorage.setItem(STORAGE_KEY, newW);
           };
           const onUp = () => {
             handle.classList.remove("is-dragging");
+            handle.classList.remove("is-collapse-armed");
+            workspace.classList.remove("is-control-panel-collapse-preview");
+            if (closedDuringDrag) {
+              localStorage.setItem(STORAGE_KEY, savedWAtStart);
+            } else if (collapseArmed || closePreviewing) {
+              localStorage.setItem(STORAGE_KEY, savedWAtStart);
+              setCollapsed(true, true);
+            } else if (!workspace.classList.contains("is-control-panel-collapsed")) {
+              const newW = applyWidth(dragPreviewWidth);
+              localStorage.setItem(STORAGE_KEY, newW);
+            }
             window.removeEventListener("pointermove", onMove);
             window.removeEventListener("pointerup", onUp);
           };

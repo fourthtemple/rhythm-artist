@@ -1456,20 +1456,16 @@ export function createStepGridBuilder(deps) {
         bar: state.selected.bar ?? state.activeBar
       } : null;
       if (!sameSelection) {
+        cancelCameraSelectionCommit();
         const storedVelocity = getHitData(hit.hit, hit.step, hit.bar).velocity;
-        if (previousSelection && !sameCameraTarget(previousSelection, hit)) {
-          paintCameraCellNow(previousSelection, { selected: false });
+        const currentVelocity = visualVelocityFor(hit.hit, hit.step, hit.bar);
+        const visualVelocity = currentVelocity > 0.005 ? currentVelocity : defaultVelocityForHit(hit.hit);
+        if (storedVelocity <= 0.005 && currentVelocity <= 0.005) {
+          queueHitVelocity(hit.hit, hit.step, visualVelocity, hit.bar, 240);
         }
-        const visualVelocity = paintCameraHitQueued(hit, {
-          selected: true,
-          previewControls: true,
-          deferPreviewControls: true,
-          flushDelay: 240
-        });
-        setCameraHover(hit);
-        scheduleCameraSelectionCommit({
+        commitCameraSelection({
           target: hit,
-          previousSelection: null,
+          previousSelection,
           visualVelocity,
           storedVelocity,
           scrollLeft: stepGrid.scrollLeft,

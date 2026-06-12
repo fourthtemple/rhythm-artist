@@ -1,6 +1,6 @@
 /**
  * dev-server.mjs
- * Zero-dependency static dev server for rhythm-artist on http://localhost:3000.
+ * Zero-dependency static dev server for rhythm-artist.
  *
  * User mode only serves the app and bundled assets. Project persistence lives
  * in the user's browser storage.
@@ -10,13 +10,17 @@
  */
 
 import http from "http";
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
-const PORT = 3000;
+const HOST = "127.0.0.1";
+const LOCAL_ENV_PATH = path.join(ROOT, ".rhythm-artist-dev.env");
+const DEDICATED_PORT_MIN = 49152;
+const DEDICATED_PORT_MAX = 65535;
 const PROJECT_SCHEMA = "rhythm-artist/project@1";
 const DEFAULT_PROJECT_NAME = "Default Project";
 const DEFAULT_PROJECT_PATH = path.join(ROOT, "assets", "projects", "default-project.rhythm-project.json");
@@ -29,6 +33,47 @@ function argValue(name, fallback = null) {
 
 const MODE = argValue("mode", "user") === "edit-default" ? "edit-default" : "user";
 const CAN_EDIT_DEFAULT = MODE === "edit-default";
+const parsePort = (value) => {
+  const port = Number.parseInt(value, 10);
+  return Number.isInteger(port) && port >= 0 && port <= 65535 ? port : null;
+};
+const explicitPortValue = argValue("port", process.env.RHYTHM_ARTIST_PORT || process.env.PORT || "");
+const EXPLICIT_PORT = explicitPortValue ? parsePort(explicitPortValue) : null;
+
+function randomDedicatedPort(exclusions = new Set()) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const port = crypto.randomInt(DEDICATED_PORT_MIN, DEDICATED_PORT_MAX + 1);
+    if (!exclusions.has(port)) return port;
+  }
+  return 0;
+}
+
+function readDedicatedPort() {
+  try {
+    const source = fs.readFileSync(LOCAL_ENV_PATH, "utf8");
+    const match = source.match(/^\s*RHYTHM_ARTIST_PORT\s*=\s*(\d+)\s*$/m);
+    const port = match ? parsePort(match[1]) : null;
+    return port >= DEDICATED_PORT_MIN ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDedicatedPort(port) {
+  if (!port) return;
+  fs.writeFileSync(LOCAL_ENV_PATH, `RHYTHM_ARTIST_PORT=${port}\n`);
+}
+
+function dedicatedPort(exclusions = new Set()) {
+  const stored = readDedicatedPort();
+  if (stored && !exclusions.has(stored)) return stored;
+  const port = randomDedicatedPort(exclusions);
+  writeDedicatedPort(port);
+  return port;
+}
+
+let requestedPort = EXPLICIT_PORT ?? dedicatedPort();
+let portIsExplicit = EXPLICIT_PORT !== null;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -194,10 +239,33 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, "127.0.0.1", () => {
+function listen(port) {
+  server.listen(port, HOST);
+}
+
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE" && !portIsExplicit) {
+    const takenPort = requestedPort;
+    const nextPort = dedicatedPort(new Set([takenPort]));
+    requestedPort = nextPort;
+    console.warn(`\n  Port ${takenPort} is busy; reserved ${nextPort} for Rhythm Artist instead.`);
+    listen(nextPort);
+    return;
+  }
+  throw error;
+});
+
+server.on("listening", () => {
+  const address = server.address();
+  const actualPort = address && typeof address === "object" ? address.port : requestedPort;
   console.log(`\n  ♪  Rhythm Artist static dev server (${MODE} mode)\n`);
-  console.log(`  →  http://localhost:${PORT}/\n`);
+  console.log(`  →  http://localhost:${actualPort}/\n`);
+  if (!portIsExplicit) {
+    console.log(`  Reserved local port: ${path.relative(ROOT, LOCAL_ENV_PATH)}\n`);
+  }
   if (CAN_EDIT_DEFAULT) {
     console.log("  Default-project editing enabled for this local session.\n");
   }
 });
+
+listen(requestedPort);
