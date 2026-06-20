@@ -39,20 +39,32 @@ const OCTAVE_KEY_DELTAS = new Map([
   ["arrowup", 1]
 ]);
 
+const clampComputerOctave = (value, fallback = DEFAULT_COMPUTER_OCTAVE) =>
+  Math.max(COMPUTER_OCTAVE_MIN, Math.min(COMPUTER_OCTAVE_MAX, Math.round(Number(value) || fallback)));
+
 export function computerOctaveFromKey(key, fallback = DEFAULT_COMPUTER_OCTAVE) {
   const value = OCTAVE_KEY_TO_VALUE.get(String(key || ""));
   if (value) return value;
-  return Math.max(COMPUTER_OCTAVE_MIN, Math.min(COMPUTER_OCTAVE_MAX, Math.round(Number(fallback) || DEFAULT_COMPUTER_OCTAVE)));
+  return clampComputerOctave(fallback);
 }
 
 export function computerOctaveDeltaForKey(key) {
   return OCTAVE_KEY_DELTAS.get(String(key || "").toLowerCase()) || 0;
 }
 
+export function computerOctaveFromPianoOctave(octave, fallback = DEFAULT_COMPUTER_OCTAVE) {
+  if (!Number.isFinite(Number(octave))) return clampComputerOctave(fallback);
+  return clampComputerOctave(Math.round(Number(octave)) + 2, fallback);
+}
+
+export function pianoOctaveFromComputerOctave(octave) {
+  return clampComputerOctave(octave) - 2;
+}
+
 export function pitchForComputerKey(key, octave = DEFAULT_COMPUTER_OCTAVE) {
   const note = KEY_TO_NOTE.get(String(key || "").toLowerCase());
   if (!note) return null;
-  const slot = Math.max(COMPUTER_OCTAVE_MIN, Math.min(COMPUTER_OCTAVE_MAX, Math.round(Number(octave) || DEFAULT_COMPUTER_OCTAVE)));
+  const slot = clampComputerOctave(octave);
   return (slot - 1) * 12 + note.semitone - PITCH_ZERO_MIDI_NOTE;
 }
 
@@ -114,7 +126,9 @@ const roundStep = (value) => Number(clampNumber(value, 0, 15, 0).toFixed(4));
 /**
  * Virtual MIDI input for users without a physical controller.
  *
- * The computer keyboard only takes over when explicitly armed. Recording is
+ * The computer keyboard only takes over when explicitly armed. Web MIDI stays
+ * available after permission is granted so hardware notes can audition the
+ * current target without using the laptop-keyboard arm state. Recording is
  * separate from previewing: armed keys can be used to practice over playback,
  * and record mode writes quantized notes to the active piano-roll instrument.
  */
@@ -141,6 +155,7 @@ export function createFakeMidiKeyboard({
   noteNameForPitch,
   formatPitch,
   midiMapPanel = null,
+  defaultNoteState = null,
   trackName = (id) => id,
   showContextMenu = null,
   onTrackEditorModeChange = () => {}
@@ -160,15 +175,30 @@ export function createFakeMidiKeyboard({
   const activeComputerKeys = new Map();
   const recordingTake = new Map();
   let pianoRollRebuildRaf = 0;
+  let gridRebuildRaf = 0;
   let liveNoteSerial = 0;
+  let midiAccessGestureRequested = false;
 
-  const totalBars = () => Math.max(1, state.config?.patterns?.jazz?.bars?.length || 1);
-  const valueOf = (input, min, max, fallback) => clampNumber(input?.value, min, max, fallback);
-  const computerKeyboardOctave = () => {
-    const value = Math.round(clampNumber(state.computerKeyboardOctave, COMPUTER_OCTAVE_MIN, COMPUTER_OCTAVE_MAX, DEFAULT_COMPUTER_OCTAVE));
-    state.computerKeyboardOctave = value;
-    return value;
-  };
+	  const totalBars = () => Math.max(1, state.config?.patterns?.jazz?.bars?.length || 1);
+	  const valueOf = (input, min, max, fallback) => clampNumber(input?.value, min, max, fallback);
+	  const selectedPianoOctave = () => {
+	    const octave = Number(state.selectedPianoOctave);
+	    return Number.isFinite(octave) ? Math.round(octave) : null;
+	  };
+	  const syncComputerOctaveFromPiano = () => {
+	    const octave = selectedPianoOctave();
+	    if (octave === null) return false;
+	    const next = computerOctaveFromPianoOctave(octave, state.computerKeyboardOctave);
+	    if (next === state.computerKeyboardOctave) return false;
+	    state.computerKeyboardOctave = next;
+	    return true;
+	  };
+	  const computerKeyboardOctave = () => {
+	    syncComputerOctaveFromPiano();
+	    const value = clampComputerOctave(state.computerKeyboardOctave);
+	    state.computerKeyboardOctave = value;
+	    return value;
+	  };
   const computerKeyboardChord = () => {
     const chord = COMPUTER_KEY_CHORDS.find((item) => item.id === state.computerKeyboardChordId) || COMPUTER_KEY_CHORDS[0];
     state.computerKeyboardChordId = chord.id;
@@ -262,28 +292,58 @@ export function createFakeMidiKeyboard({
       refresh();
       return;
     }
-    if (pianoRollRebuildRaf) window.cancelAnimationFrame?.(pianoRollRebuildRaf);
+    if (pianoRollRebuildRaf) return;
     pianoRollRebuildRaf = window.requestAnimationFrame(() => {
       pianoRollRebuildRaf = 0;
       refresh();
+    });
+  };
+  const scheduleGridRefresh = ({ immediate = false } = {}) => {
+    if (typeof renderStepGrid !== "function") return;
+    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+      renderStepGrid();
+      return;
+    }
+    if (immediate) {
+      if (gridRebuildRaf) {
+        window.cancelAnimationFrame?.(gridRebuildRaf);
+        gridRebuildRaf = 0;
+      }
+      renderStepGrid();
+      return;
+    }
+    if (gridRebuildRaf) return;
+    gridRebuildRaf = window.requestAnimationFrame(() => {
+      gridRebuildRaf = 0;
+      renderStepGrid();
     });
   };
   const liveNoteEntries = () => {
     if (!Array.isArray(state.livePianoRollNotes)) state.livePianoRollNotes = [];
     return state.livePianoRollNotes;
   };
+  const isTrackedLiveSourceActive = (sourceId) => {
+    if (!sourceId || !/^(computer|midi):/.test(String(sourceId))) return true;
+    for (const active of activeComputerKeys.values()) {
+      if (active?.liveId === sourceId) return true;
+    }
+    for (const active of activeMidiNotes.values()) {
+      if (active?.liveId === sourceId) return true;
+    }
+    return false;
+  };
   const removeLivePianoRollNote = (id, { refresh = true } = {}) => {
     if (!id || !Array.isArray(state.livePianoRollNotes) || !state.livePianoRollNotes.length) return false;
     const before = state.livePianoRollNotes.length;
     state.livePianoRollNotes = state.livePianoRollNotes.filter((entry) => entry?.id !== id);
     const changed = state.livePianoRollNotes.length !== before;
-    if (changed && refresh) schedulePianoRollRefresh({ immediate: true });
+    if (changed && refresh) schedulePianoRollRefresh();
     return changed;
   };
   const clearLivePianoRollNotes = ({ refresh = true } = {}) => {
     if (!Array.isArray(state.livePianoRollNotes) || !state.livePianoRollNotes.length) return false;
     state.livePianoRollNotes = [];
-    if (refresh) schedulePianoRollRefresh({ immediate: true });
+    if (refresh) schedulePianoRollRefresh();
     return true;
   };
   const addLivePianoRollNote = ({
@@ -292,7 +352,8 @@ export function createFakeMidiKeyboard({
     pitch,
     velocity = velocityValue(),
     pressure = pressureValue(),
-    chordIntervals = computerKeyboardChordIntervals()
+    chordIntervals = computerKeyboardChordIntervals(),
+    position = null
   } = {}) => {
     const open = openPianoRollTracks();
     const targetId = track && open.includes(track)
@@ -302,7 +363,7 @@ export function createFakeMidiKeyboard({
     const target = ensureRecordedPianoRollTarget(targetId);
     if (!target) return null;
     const liveId = id || `preview:${target}:${pitch}:${++liveNoteSerial}`;
-    const { barIndex, step } = recordPosition();
+    const { barIndex, step } = position || recordPosition();
     removeLivePianoRollNote(liveId, { refresh: false });
     liveNoteEntries().push({
       id: liveId,
@@ -318,7 +379,7 @@ export function createFakeMidiKeyboard({
         pianoRoll: 1
       })
     });
-    schedulePianoRollRefresh({ immediate: true });
+    schedulePianoRollRefresh();
     return { id: liveId, track: target, barIndex, step };
   };
   const selectedPerformanceTrack = () => resolvePerformanceTrack({
@@ -329,14 +390,22 @@ export function createFakeMidiKeyboard({
     openPianoRollTracks: openPianoRollTracks(),
     gridTrackIds: gridHitTracks()
   });
+  const defaultPerformanceTrack = () => {
+    const defaults = typeof defaultNoteState === "function" ? defaultNoteState() : null;
+    return typeof defaults?.instrument === "string" && defaults.instrument ? defaults.instrument : null;
+  };
   const inputTarget = () => {
     const selectedTrack = selectedPerformanceTrack();
     if (selectedTrack) return { mode: "track", track: selectedTrack };
     if (isPianoRollMode()) return { mode: "none" };
     const tracks = gridHitTracks();
     if (tracks.length) return { mode: "grid", tracks };
+    const fallbackTrack = defaultPerformanceTrack();
+    if (fallbackTrack) return { mode: "track", track: fallbackTrack };
     return { mode: "none" };
   };
+  const shouldListenToMidi = () =>
+    inputTarget().mode !== "none" || Boolean(defaultPerformanceTrack()) || Boolean(state.midiLearnTarget || state.midiControlLearnTarget);
   const inputTargetSummary = (target = inputTarget()) => {
     if (target.mode === "track") return `${trackName(target.track)} keys`;
     if (target.mode === "grid") {
@@ -375,7 +444,7 @@ export function createFakeMidiKeyboard({
   };
   const midiInput = createWebMidiInput({
     setStatus,
-    isEnabled: isKeyboardArmed,
+    isEnabled: shouldListenToMidi,
     onNoteOn: ({ noteNumber, velocity, pressure = 0, inputName, channel }) => {
       if (midiMapPanel?.learnFromNote?.(noteNumber, { channel })) return;
       if (midiMapPanel?.applyNote?.({ noteNumber, velocity, pressure, channel })) return;
@@ -384,19 +453,34 @@ export function createFakeMidiKeyboard({
         const hit = midiNoteToGridTrack(noteNumber, target.tracks, {
           trackNoteMap: state.config?.midiNoteMap || {}
         });
-        if (!hit) {
-          setStatus(`MIDI note ${noteNumber} has no grid row`);
+        if (hit) {
+          activeMidiNotes.set(noteNumber, { mode: "grid", hit });
+          rememberPerformanceMidi({
+            lastInput: inputName,
+            lastNote: noteNumber,
+            lastVelocity: velocity,
+            lastTrack: hit,
+            lastAt: Date.now()
+          });
+          void triggerGridHit(hit, { record: isRecording(), velocity, pressure });
           return;
         }
-        activeMidiNotes.set(noteNumber, { mode: "grid", hit });
-        rememberPerformanceMidi({
-          lastInput: inputName,
-          lastNote: noteNumber,
-          lastVelocity: velocity,
-          lastTrack: hit,
-          lastAt: Date.now()
-        });
-        void triggerGridHit(hit, { record: isRecording(), velocity, pressure });
+        const fallbackTrack = defaultPerformanceTrack();
+        const pitch = midiNoteToPitch(noteNumber);
+        if (fallbackTrack && pitch != null) {
+          const liveId = `midi:${channel ?? 0}:${noteNumber}`;
+          activeMidiNotes.set(noteNumber, { mode: "piano", pitch, track: fallbackTrack, liveId });
+          rememberPerformanceMidi({
+            lastInput: inputName,
+            lastNote: noteNumber,
+            lastVelocity: velocity,
+            lastTrack: fallbackTrack,
+            lastAt: Date.now()
+          });
+          void triggerNote({ pitch }, { record: isRecording(), velocity, pressure, track: fallbackTrack, sourceId: liveId, hold: true });
+          return;
+        }
+        setStatus(`MIDI note ${noteNumber} has no grid row`);
         return;
       }
       if (target.mode === "track") {
@@ -540,7 +624,6 @@ export function createFakeMidiKeyboard({
     if (target.mode === "none" && state.midiKeyboardArmed) {
       state.midiKeyboardArmed = false;
       clearActiveKeys();
-      midiInput.setEnabled(false, { announce: false });
     }
     if (!state.midiKeyboardArmed) state.midiRecording = false;
     const armed = isKeyboardArmed();
@@ -595,13 +678,34 @@ export function createFakeMidiKeyboard({
           : "Arm Keyboard to play A W S E D F T G Y H U J K"
         : "Select or add a track, then arm Keyboard.";
     }
+    midiInput.setEnabled(shouldListenToMidi(), { announce: false });
   }
 
-  function setComputerKeyboardOctave(octave, { announce = true } = {}) {
-    state.computerKeyboardOctave = Math.round(clampNumber(octave, COMPUTER_OCTAVE_MIN, COMPUTER_OCTAVE_MAX, DEFAULT_COMPUTER_OCTAVE));
-    updateKeyboardMap();
+  async function requestMidiAccess({ announce = true, force = false } = {}) {
+    if (!force && !shouldListenToMidi()) return false;
+    const midiStatus = midiInput.status();
+    if (midiStatus === "ready") {
+      midiInput.setEnabled(true, { announce });
+      return true;
+    }
+    if (midiStatus === "pending") return false;
+    if (midiStatus === "unsupported") {
+      if (announce) setStatus(midiInput.summary());
+      return false;
+    }
+    if (midiStatus === "denied" && !force) return false;
+    const ok = await midiInput.requestAccess({ announce });
     updateTarget();
-    if (announce) setStatus(`Computer keyboard octave ${state.computerKeyboardOctave}`);
+    return ok;
+  }
+
+	  function setComputerKeyboardOctave(octave, { announce = true } = {}) {
+	    state.computerKeyboardOctave = clampComputerOctave(octave);
+	    state.selectedPianoOctave = pianoOctaveFromComputerOctave(state.computerKeyboardOctave);
+	    state.selectedPianoFollowPitch = false;
+	    updateKeyboardMap();
+	    updateTarget();
+	    if (announce) setStatus(`Computer keyboard octave ${state.computerKeyboardOctave}`);
   }
 
   function setComputerKeyboardChord(chordId, { announce = true } = {}) {
@@ -680,7 +784,7 @@ export function createFakeMidiKeyboard({
     } else {
       state.midiRecording = false;
       clearActiveKeys();
-      midiInput.setEnabled(false, { announce: false });
+      midiInput.setEnabled(shouldListenToMidi(), { announce: false });
     }
     updateTarget();
     if (announce) {
@@ -746,7 +850,7 @@ export function createFakeMidiKeyboard({
       setStatus("Open the localhost version for audio");
       return;
     }
-    const targetTrack = track || selectedPerformanceTrack();
+    const targetTrack = track || selectedPerformanceTrack() || defaultPerformanceTrack();
     if (!targetTrack) {
       setStatus("Select a track first");
       return;
@@ -767,14 +871,20 @@ export function createFakeMidiKeyboard({
     await state.engine.auditionTrack(hit, { gain: Math.max(0.08, velocity) });
   }
 
-  function recordGridHit(hit, { velocity = velocityValue(), pressure = pressureValue() } = {}) {
+  function recordGridHit(hit, {
+    velocity = velocityValue(),
+    pressure = pressureValue(),
+    position = null,
+    deferRender = false,
+    announce = true
+  } = {}) {
     if (!hit) return;
     if (!state.gridTrackIds.includes(hit)) {
       addGridTrack?.(hit);
       renderTrackExplorer?.();
     }
     if (state.config) state.config.generatedRowsEditable = 1;
-    const { barIndex, step } = recordPosition();
+    const { barIndex, step } = position || recordPosition();
     const nextVelocity = Math.max(0.01, velocity);
     const options = pressure > 0 ? { pressure } : undefined;
     const bar = state.config?.patterns?.jazz?.bars?.[barIndex];
@@ -785,8 +895,9 @@ export function createFakeMidiKeyboard({
       previewVelocity: nextVelocity,
       deferTrackPanels: true
     });
-    renderStepGrid();
-    setStatus(`Recorded ${trackName(hit)} · vel ${nextVelocity.toFixed(2)}`);
+    if (deferRender) scheduleGridRefresh();
+    else renderStepGrid();
+    if (announce) setStatus(`Recorded ${trackName(hit)} · vel ${nextVelocity.toFixed(2)}`);
     updateTarget();
   }
 
@@ -805,7 +916,9 @@ export function createFakeMidiKeyboard({
     pressure = pressureValue(),
     track = selectedPerformanceTrack(),
     chordIntervals = computerKeyboardChordIntervals(),
-    position = null
+    position = null,
+    deferRefresh = false,
+    announce = true
   } = {}) {
     const target = track ? ensureRecordedPianoRollTarget(track) : ensurePianoRollTrack();
     if (!target) return;
@@ -845,9 +958,11 @@ export function createFakeMidiKeyboard({
     rememberTakeEdit(target, barIndex, step, current);
     setHitData(target, step, { velocity: nextVelocity, options }, barIndex);
     selectStep(target, step, "step", barIndex, state.intensity, undefined, { previewVelocity: velocity });
-    schedulePianoRollRefresh({ immediate: true });
+    schedulePianoRollRefresh({ immediate: !deferRefresh });
     const chordSize = options.chordIntervals?.length || 1;
-    setStatus(`${chordSize > 1 ? "Recorded chord" : `Recorded ${noteNameForPitch(pitch)} ${formatPitch(pitch)}`} · vel ${nextVelocity.toFixed(2)} to ${trackName(target)}`);
+    if (announce) {
+      setStatus(`${chordSize > 1 ? "Recorded chord" : `Recorded ${noteNameForPitch(pitch)} ${formatPitch(pitch)}`} · vel ${nextVelocity.toFixed(2)} to ${trackName(target)}`);
+    }
     updateTarget();
   }
 
@@ -863,6 +978,13 @@ export function createFakeMidiKeyboard({
     if (!note) return;
     const targetTrack = track || selectedPerformanceTrack();
     const intervals = normalizeKeyboardChordIntervals(note.chordIntervals || chordIntervals);
+    const position = recordPosition();
+    try {
+      await previewNote(note.pitch, { velocity, pressure, track: targetTrack, chordIntervals: intervals });
+    } catch (error) {
+      console.warn("MIDI preview failed", error);
+    }
+    if (hold && sourceId && !isTrackedLiveSourceActive(sourceId)) return;
     state.pianoRollLastVelocity = velocity;
     setChordActive(note.pitch, intervals, true);
     const live = addLivePianoRollNote({
@@ -871,7 +993,8 @@ export function createFakeMidiKeyboard({
       pitch: note.pitch,
       velocity,
       pressure,
-      chordIntervals: intervals
+      chordIntervals: intervals,
+      position
     });
     if (record) {
       recordNote(note.pitch, {
@@ -879,7 +1002,9 @@ export function createFakeMidiKeyboard({
         pressure,
         track: targetTrack,
         chordIntervals: intervals,
-        position: live ? { barIndex: live.barIndex, step: live.step } : null
+        position: live ? { barIndex: live.barIndex, step: live.step } : position,
+        deferRefresh: true,
+        announce: false
       });
     }
     else {
@@ -890,25 +1015,29 @@ export function createFakeMidiKeyboard({
     }
     if (!hold && live?.id) window.setTimeout(() => removeLivePianoRollNote(live.id), 180);
     window.setTimeout(() => setChordActive(note.pitch, intervals, false), 180);
-    try {
-      await previewNote(note.pitch, { velocity, pressure, track: targetTrack, chordIntervals: intervals });
-    } catch (error) {
-      console.warn("MIDI preview failed", error);
-    }
   }
 
   async function triggerGridHit(hit, { record = isRecording(), velocity = velocityValue(), pressure = pressureValue() } = {}) {
     if (!hit) return;
-    state.pianoRollLastVelocity = velocity;
-    setGridActive(hit, true);
-    if (record) recordGridHit(hit, { velocity, pressure });
-    else setStatus(`Preview ${trackName(hit)}`);
-    window.setTimeout(() => setGridActive(hit, false), 140);
+    const position = recordPosition();
     try {
       await previewGridHit(hit, { velocity, pressure });
     } catch (error) {
       console.warn("MIDI grid preview failed", error);
     }
+    state.pianoRollLastVelocity = velocity;
+    setGridActive(hit, true);
+    if (record) {
+      recordGridHit(hit, {
+        velocity,
+        pressure,
+        position,
+        deferRender: true,
+        announce: false
+      });
+    }
+    else setStatus(`Preview ${trackName(hit)}`);
+    window.setTimeout(() => setGridActive(hit, false), 140);
   }
 
   function setActive(pitch, active) {
@@ -1026,9 +1155,16 @@ export function createFakeMidiKeyboard({
     window.setTimeout(() => document.addEventListener("click", closeKeyboardLayout, { once: true }), 0);
   }
 
-  function wireBottomPiano() {
-    selectedPiano?.addEventListener("click", (event) => {
-      if (!selectedPerformanceTrack() && !isPianoRollMode() && !isKeyboardArmed()) return;
+	  function wireBottomPiano() {
+	    selectedPiano?.addEventListener("selectedpianooctavechange", () => {
+	      const changed = syncComputerOctaveFromPiano();
+	      if (!changed) return;
+	      updateKeyboardMap();
+	      updateTarget();
+	    });
+	    selectedPiano?.addEventListener("click", (event) => {
+	      const performanceTrack = selectedPerformanceTrack() || defaultPerformanceTrack();
+      if (!performanceTrack && !isPianoRollMode() && !isKeyboardArmed()) return;
       const key = event.target?.closest?.(".selected-piano-key[data-pitch]");
       if (!key) return;
       const pitch = Number(key.dataset.pitch);
@@ -1036,7 +1172,12 @@ export function createFakeMidiKeyboard({
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation?.();
-      void triggerNote({ pitch }, { record: isRecording(), velocity: velocityFromKeyEvent(event), pressure: pressureValue() });
+      void triggerNote({ pitch }, {
+        record: isRecording(),
+        velocity: velocityFromKeyEvent(event),
+        pressure: pressureValue(),
+        track: performanceTrack
+      });
     }, true);
   }
 
@@ -1100,6 +1241,18 @@ export function createFakeMidiKeyboard({
     });
   }
 
+  function wireMidiAccessRequest() {
+    const requestFromGesture = (event) => {
+      if (event?.type === "keydown" && (event.metaKey || event.ctrlKey || event.altKey || isTypingTarget(event.target))) return;
+      if (midiAccessGestureRequested) return;
+      midiAccessGestureRequested = true;
+      void requestMidiAccess({ announce: true });
+    };
+    ["pointerdown", "mousedown", "touchstart", "keydown"].forEach((type) => {
+      document.addEventListener(type, requestFromGesture, { capture: true, passive: true });
+    });
+  }
+
   function wire() {
     buildKeyboard();
     updateOutputs();
@@ -1129,6 +1282,7 @@ export function createFakeMidiKeyboard({
     midiInput.sync();
     wireBottomPiano();
     wireComputerKeyboard();
+    wireMidiAccessRequest();
   }
 
   return {
@@ -1140,6 +1294,7 @@ export function createFakeMidiKeyboard({
     clearRecordingTake,
     setComputerKeyboardOctave,
     setComputerKeyboardChord,
+    requestMidiAccess,
     triggerNote,
     recordNote
   };

@@ -37,13 +37,30 @@ test("normalizeRhythmConfig preserves opened piano roll instruments", () => {
     pianoRollTracks: ["bass", "pad", "missing", "bass"],
     pianoRollLaneHeights: {
       bass: 58,
-      pad: 180,
+      pad: 999,
       missing: 120,
-      kick: 999
+      kick: 9999
     }
   });
   assert.deepEqual(config.pianoRollTracks, ["bass", "pad"]);
-  assert.deepEqual(config.pianoRollLaneHeights, { bass: 58, pad: 180 });
+  assert.deepEqual(config.pianoRollLaneHeights, { bass: 58, pad: 999 });
+});
+
+test("normalizeRhythmConfig preserves lane automation parameter choices", () => {
+  const config = normalizeRhythmConfig({
+    trackAutomationParams: {
+      "grid:kick": "velocity",
+      "piano:bass": "reverbSend",
+      "wave:loop_a": "dubEcho",
+      "grid:bad": "missing",
+      "bad:kick": "velocity"
+    }
+  });
+  assert.deepEqual(config.trackAutomationParams, {
+    "grid:kick": "velocity",
+    "piano:bass": "reverbSend",
+    "wave:loop_a": "dubEcho"
+  });
 });
 
 test("normalizeRhythmConfig preserves mixed editor lane order", () => {

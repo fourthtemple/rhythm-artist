@@ -138,10 +138,49 @@ const PITCH_SLIDER_MAX = PITCH_OFFSET_MAX;
 const SAVED_RHYTHM_URL = "./assets/projects/default-project.rhythm-project.json";
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const $ = (selector) => document.querySelector(selector);
+const THEME_STORAGE_KEY = "rhythm-artist-theme";
 const clamp = (value, min, max, fallback = 0) => {
   const number = Number(value);
   return Math.max(min, Math.min(max, Number.isFinite(number) ? number : fallback));
 };
+
+function currentTheme() {
+  return document.documentElement.dataset.theme === "dark" ? "dark" : "morning";
+}
+
+function applyTheme(theme, { persist = true, redraw = false } = {}) {
+  const next = theme === "dark" ? "dark" : "morning";
+  document.documentElement.dataset.theme = next;
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, next);
+    } catch {
+      // Theme still switches even if the browser refuses local storage.
+    }
+  }
+
+  const button = $("#theme-toggle");
+  if (button) {
+    const morning = next === "morning";
+    button.textContent = morning ? "Morning" : "Dark";
+    button.setAttribute("aria-pressed", String(morning));
+    button.title = morning ? "Switch to dark mode" : "Switch to morning mode";
+  }
+
+  if (redraw) {
+    window.requestAnimationFrame(() => {
+      renderStepGrid();
+      loopPanel?.renderAllLanes?.();
+    });
+  }
+}
+
+function initThemeToggle() {
+  applyTheme(currentTheme(), { persist: false });
+  $("#theme-toggle")?.addEventListener("click", () => {
+    applyTheme(currentTheme() === "morning" ? "dark" : "morning", { redraw: true });
+  });
+}
 
 const state = {
   config: normalizeEditorConfig(DEFAULT_RHYTHM_CONFIG),
@@ -191,7 +230,7 @@ const state = {
   uiTimer: null,
   segmentsCount: 2,
   cameraMode: true,
-  cameraFollow: false,
+  cameraFollow: true,
   timeSig: DEFAULT_RHYTHM_CONFIG.timeSignature,
   // Registry-driven list of track ids shown in the grid (order = render order).
   gridTrackIds: [...DEFAULT_GRID_TRACK_IDS],
@@ -1812,6 +1851,7 @@ window.rhythmEditorSetTrackPan = setTrackPan;
 // the step grid, chopped into resizable regions) lives in its own controller.
 let sampleBrowser = null;
 loopPanel = createLoopTrackPanel({
+  state,
   stepGrid,
   $,
   getBarsLength: () => bars().length,
@@ -2225,6 +2265,7 @@ fakeMidiKeyboard = createFakeMidiKeyboard({
   noteNameForPitch,
   formatPitch,
   midiMapPanel,
+  defaultNoteState,
   trackName: (id) => trackPanels?.instanceLabel?.(id) || id,
   showContextMenu,
   onTrackEditorModeChange: syncContextPanels
@@ -2322,6 +2363,7 @@ sampleBrowser = createSampleBrowser({
 buildLoopTabs();
 buildBarTabs();
 fakeMidiKeyboard.wire();
+initThemeToggle();
 buildStepGrid();
 wireEvents();
 wireTrackPaletteButtons();

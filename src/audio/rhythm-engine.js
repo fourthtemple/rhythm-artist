@@ -129,15 +129,21 @@ export class RhythmEngine {
   /** Unsubscribe. */
   off(event, handler) { this.events.off(event, handler); }
 
-  async resumeContext(timeoutMs = 180) {
-    if (!this.context || this.context.state === "running") return;
+  async resumeContext(timeoutMs = 1500) {
+    if (!this.context || this.context.state === "running") return true;
+    const deadline = Date.now() + timeoutMs;
     const resume = this.context.resume().catch((error) => {
       console.warn("Audio context resume failed", error);
+      return false;
     });
     await Promise.race([
       resume,
       new Promise((resolve) => globalThis.setTimeout(resolve, timeoutMs))
     ]);
+    while (this.context?.state !== "running" && Date.now() < deadline) {
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 16));
+    }
+    return this.context?.state === "running";
   }
 
   async start({
@@ -148,8 +154,11 @@ export class RhythmEngine {
   } = {}) {
     this.setStyle(style);
     this.volume = volume;
-    await this.ensureContext();
-    await this.resumeContext();
+    this.ensureContext();
+    const contextUnlocked = await this.resumeContext();
+    if (!contextUnlocked) {
+      throw new Error("AudioContext did not resume from the user gesture");
+    }
     await this.loadKit();
     if (this.playing) {
       this.setVolume(volume);

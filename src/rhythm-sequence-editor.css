@@ -13,6 +13,21 @@
   --danger: #e28c78;
 }
 
+:root[data-theme="morning"] {
+  color-scheme: light;
+  --bg: #e8ebef;
+  --panel: #f7f8fa;
+  --panel-soft: #eef2f6;
+  --line: #b8c2cb;
+  --text: #232a32;
+  --muted: #657280;
+  --accent: #a27e2c;
+  --accent-2: #427b76;
+  --numeric: #4c5c67;
+  --numeric-active: #2f6f69;
+  --danger: #b85e51;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -22,7 +37,8 @@ body {
   height: 100vh;
   overflow: hidden;
   min-height: 100vh;
-  background: var(--bg);
+  background:
+    linear-gradient(180deg, #f6f7f9 0%, var(--bg) 100%);
   color: var(--text);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -221,6 +237,15 @@ button.is-active {
   min-height: 22px;
   padding: 0 6px;
   font-size: 11px;
+}
+
+.theme-toggle {
+  min-width: 58px;
+  font-weight: 720;
+}
+
+:root[data-theme="morning"] .theme-toggle {
+  color: #1f5b55;
 }
 
 .transport label,
@@ -836,11 +861,26 @@ button.is-active {
   left: 0;
   top: 0;
   bottom: 0;
-  border-inline: 1px solid rgba(245, 215, 110, 0.22);
+  width: 8px;
   background:
-    linear-gradient(90deg, rgba(245, 215, 110, 0.035), rgba(139, 216, 189, 0.07), rgba(245, 215, 110, 0.035));
-  box-shadow: inset 0 0 10px rgba(139, 216, 189, 0.065);
+    linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(26, 44, 50, 0.28), rgba(139, 216, 189, 0.24), rgba(255, 255, 255, 0));
+  box-shadow:
+    0 0 7px rgba(139, 216, 189, 0.18);
+  opacity: 0.92;
+  mix-blend-mode: screen;
+  contain: strict;
   will-change: transform;
+}
+
+.camera-grid-playback-beat::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: rgba(139, 216, 189, 0.34);
+  box-shadow: 0 0 5px rgba(139, 216, 189, 0.22);
 }
 
 .camera-grid-playback-hits {
@@ -859,6 +899,13 @@ button.is-active {
 
 .camera-grid-canvas-wrap.is-hovering-cell {
   cursor: pointer;
+}
+
+.camera-grid-automation-row {
+  position: relative;
+  z-index: 8;
+  min-height: 32px;
+  pointer-events: auto;
 }
 
 .camera-grid-ruler-wrap.is-ruler-hovering,
@@ -1046,23 +1093,33 @@ button.is-active {
   display: grid;
   min-width: 0;
   align-items: stretch;
+  position: relative;
+}
+
+.step-row.is-automation-active .step-button {
+  opacity: 0.58;
 }
 
 .track-state-buttons {
   display: grid;
-  grid-template-rows: repeat(2, 1fr);
-  gap: 2px;
+  grid-template-rows: repeat(3, 1fr);
+  gap: 0;
   align-self: stretch;
-  width: 20px;
-  padding: 3px 0;
+  width: 18px;
+  padding: 0;
 }
 
 .solo-button,
-.mute-button {
+.mute-button,
+.automation-button {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 100%;
   min-height: 0;
   min-width: 18px;
   padding: 0;
-  border-radius: 3px;
+  border-radius: 2px;
   font-size: 8px;
   font-weight: 800;
   letter-spacing: 0;
@@ -1080,6 +1137,13 @@ button.is-active {
   border-color: #e28c78;
   background: #3b2020;
   color: #ffd2ca;
+}
+
+.automation-button.is-active {
+  border-color: var(--accent);
+  background: #26331d;
+  color: #f3ffc7;
+  box-shadow: inset 0 0 0 1px rgba(245, 215, 110, 0.2);
 }
 
 .step-button {
@@ -2886,13 +2950,13 @@ input[type="range"] {
 
 .piano-roll-lane-label {
   align-self: stretch;
-  min-height: 132px;
+  min-height: 58px;
   place-items: stretch;
   align-content: stretch;
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 4px;
-  padding: 6px 4px 14px 5px;
+  gap: 2px;
+  padding: 3px 4px 8px 5px;
   position: relative;
 }
 
@@ -2915,7 +2979,7 @@ input[type="range"] {
 .piano-roll-lane {
   position: relative;
   z-index: 2;
-  height: var(--lane-height, 132px);
+  height: var(--lane-height, 58px);
   min-width: 0;
   overflow: hidden;
   border: 1px solid #203043;
@@ -2928,7 +2992,7 @@ input[type="range"] {
 .piano-roll-lane::before {
   content: "";
   position: absolute;
-  inset: 0 0 var(--automation-height, 42px) 0;
+  inset: 0;
   border: 1px solid rgba(255, 255, 255, 0.035);
   border-radius: 0 0 5px 0;
   pointer-events: none;
@@ -2966,7 +3030,7 @@ input[type="range"] {
 
 .piano-roll-note-area {
   position: absolute;
-  inset: 0 0 var(--automation-height, 42px) 0;
+  inset: 0;
 }
 
 .piano-roll-pitch-overlay {
@@ -3006,7 +3070,7 @@ input[type="range"] {
   min-height: 5px;
   padding: 0;
   border-radius: 4px;
-  border: 1px solid color-mix(in srgb, var(--track-accent, #c4b5fd) 74%, #ffffff 8%);
+  border: 0;
   background:
     linear-gradient(
       180deg,
@@ -3082,7 +3146,6 @@ input[type="range"] {
 .piano-roll-note.is-live {
   z-index: 3;
   pointer-events: none;
-  border-color: color-mix(in srgb, var(--track-accent, #c4b5fd) 55%, #d8fff5 45%);
   background:
     linear-gradient(
       180deg,
@@ -3121,21 +3184,61 @@ input[type="range"] {
 
 .piano-roll-automation {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: var(--automation-height, 42px);
-  border-top: 1px solid rgba(255, 255, 255, 0.055);
+  inset: 0;
+  z-index: 8;
+  border: 1px solid color-mix(in srgb, var(--track-accent, #8bd8bd) 35%, transparent);
+  border-radius: inherit;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
-    #0a1019;
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(10, 16, 25, 0.04)),
+    color-mix(in srgb, var(--track-accent, #8bd8bd) 9%, transparent);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.045),
+    inset 0 0 28px color-mix(in srgb, var(--track-accent, #8bd8bd) 10%, transparent);
   overflow: hidden;
+}
+
+.piano-roll-lane.is-automation-active .piano-roll-note-area,
+.sample-lane.is-automation-active .sample-region,
+.step-row.is-automation-active .step-button {
+  filter: saturate(0.72);
+}
+
+.piano-roll-automation-param-label {
+  position: absolute;
+  top: 3px;
+  right: 5px;
+  z-index: 6;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 16, 25, 0.62);
+  color: #d9f8ef;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.sample-lane-automation {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  border: 1px solid color-mix(in srgb, var(--track-accent, #8bd8bd) 34%, transparent);
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(10, 16, 25, 0.04)),
+    color-mix(in srgb, var(--track-accent, #8bd8bd) 8%, transparent);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.045),
+    inset 0 0 24px color-mix(in srgb, var(--track-accent, #8bd8bd) 9%, transparent);
+  pointer-events: auto;
 }
 
 .piano-roll-automation-select {
   position: absolute;
   right: 6px;
-  top: 4px;
+  top: 3px;
   z-index: 5;
   min-width: 82px;
   max-width: 130px;
@@ -3150,7 +3253,8 @@ input[type="range"] {
 }
 
 .piano-roll-automation-lane {
-  position: relative;
+  position: absolute;
+  inset: 0;
   cursor: crosshair;
   overflow: hidden;
   touch-action: none;
@@ -3186,10 +3290,10 @@ input[type="range"] {
 .piano-roll-automation-anchor {
   position: absolute;
   z-index: 3;
-  width: 7px;
-  height: 7px;
-  min-width: 7px;
-  min-height: 7px;
+  width: 6px;
+  height: 6px;
+  min-width: 6px;
+  min-height: 6px;
   padding: 0;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--track-accent, #8bd8bd) 76%, #ffffff 14%);
@@ -3226,7 +3330,7 @@ input[type="range"] {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: calc(var(--automation-height, 42px) - 4px);
+  bottom: calc(var(--automation-height, 22px) - 4px);
   height: 8px;
   cursor: ns-resize;
   z-index: 7;
@@ -3323,7 +3427,7 @@ input[type="range"] {
   position: relative;
   z-index: 2;
   grid-column: 2 / -1;
-  height: 64px;
+  height: 40px;
   background: #080e18;
   border-radius: 6px;
   overflow: hidden;
@@ -5760,6 +5864,831 @@ input[type="range"] {
   color: var(--muted);
   font-size: 11px;
   font-style: italic;
+}
+
+/* ── Morning mode skin ───────────────────────────────────────────────────── */
+html[data-theme="morning"] body
+{
+  background:
+    linear-gradient(180deg, #fafbfc 0%, #e9edf1 45%, #dde3e8 100%);
+}
+
+html[data-theme="morning"] button
+{
+  border-color: #b8c2cc;
+  background:
+    linear-gradient(180deg, #ffffff 0%, #eef2f5 100%);
+  color: var(--text);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 1px 1px rgba(66, 81, 96, 0.08);
+}
+
+html[data-theme="morning"] button:hover,
+html[data-theme="morning"] button.is-active
+{
+  border-color: var(--accent-2);
+  background:
+    linear-gradient(180deg, #ffffff 0%, #e3eeee 100%);
+  color: #173f3b;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 0 0 1px rgba(50, 120, 113, 0.22),
+    0 1px 2px rgba(66, 81, 96, 0.12);
+}
+
+html[data-theme="morning"] input,
+html[data-theme="morning"] select,
+html[data-theme="morning"] textarea
+{
+  border-color: #b6c1cc;
+  background: #fbfcfd;
+  color: var(--text);
+}
+
+html[data-theme="morning"] .topbar,
+html[data-theme="morning"] .transport,
+html[data-theme="morning"] .sequencer-panel,
+html[data-theme="morning"] .control-panel,
+html[data-theme="morning"] .json-panel,
+html[data-theme="morning"] .selected-step,
+html[data-theme="morning"] .track-inspector-section,
+html[data-theme="morning"] .sample-browser-section,
+html[data-theme="morning"] .loop-region-panel,
+html[data-theme="morning"] .track-add-section
+{
+  border-color: var(--line);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(238, 242, 246, 0.92)),
+    var(--panel);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    0 1px 2px rgba(67, 82, 98, 0.08);
+}
+
+html[data-theme="morning"] .transport
+{
+  border-width: 0 0 1px;
+  background:
+    linear-gradient(180deg, #fdfefe 0%, #e9eef3 100%);
+}
+
+html[data-theme="morning"] .transport-wordmark
+{
+  color: #3b716d;
+  opacity: 0.86;
+}
+
+html[data-theme="morning"] .transport-divider,
+html[data-theme="morning"] .selected-step-resize-handle,
+html[data-theme="morning"] .sample-browser-divider::before,
+html[data-theme="morning"] .sample-browser-divider::after
+{
+  background: #c3cbd3;
+}
+
+html[data-theme="morning"] .panel-label,
+html[data-theme="morning"] .track-actions span,
+html[data-theme="morning"] .step-header__bar-label,
+html[data-theme="morning"] .loop-analysis-row strong
+{
+  color: var(--accent-2);
+}
+
+html[data-theme="morning"] .panel-hint,
+html[data-theme="morning"] .ruler-row-label,
+html[data-theme="morning"] .sample-browser-summary,
+html[data-theme="morning"] .track-add-section summary,
+html[data-theme="morning"] .sample-browser-empty,
+html[data-theme="morning"] .loop-analysis-label,
+html[data-theme="morning"] .loop-analysis-muted
+{
+  color: var(--muted);
+}
+
+html[data-theme="morning"] .time-sig-control,
+html[data-theme="morning"] .time-sig-menu,
+html[data-theme="morning"] .transport-position,
+html[data-theme="morning"] .transport input[type="number"],
+html[data-theme="morning"] .transport select,
+html[data-theme="morning"] .loop-toolbar select,
+html[data-theme="morning"] .track-grid-density-row select,
+html[data-theme="morning"] .loop-toolbar input,
+html[data-theme="morning"] .selected-grid-steps,
+html[data-theme="morning"] .selected-midi-octave,
+html[data-theme="morning"] .selected-bottom-tabs,
+html[data-theme="morning"] .json-panel textarea,
+html[data-theme="morning"] .context-menu,
+html[data-theme="morning"] .modal,
+html[data-theme="morning"] .add-track-dialog,
+html[data-theme="morning"] .project-manager-modal,
+html[data-theme="morning"] .track-inspector-body,
+html[data-theme="morning"] .track-inspector-sample,
+html[data-theme="morning"] .track-inspector-layout,
+html[data-theme="morning"] .track-inspector-shape,
+html[data-theme="morning"] .track-add-palette button,
+html[data-theme="morning"] .midi-map-row,
+html[data-theme="morning"] .sample-browser-list,
+html[data-theme="morning"] .sample-row,
+html[data-theme="morning"] .sample-browser-breadcrumb
+{
+  border-color: #b8c3ce;
+  background:
+    linear-gradient(180deg, #ffffff 0%, #eef2f6 100%);
+  color: var(--text);
+}
+
+html[data-theme="morning"] .time-sig-number,
+html[data-theme="morning"] .transport .time-sig-control .time-sig-number,
+html[data-theme="morning"] .selected-grid-steps input,
+html[data-theme="morning"] .midi-map-note-input,
+html[data-theme="morning"] .loop-region-controls input[type="number"]
+{
+  background: #fbfcfd;
+  color: var(--text);
+}
+
+html[data-theme="morning"] .time-sig-number:hover,
+html[data-theme="morning"] .time-sig-number:focus,
+html[data-theme="morning"] .transport .time-sig-control .time-sig-number:hover,
+html[data-theme="morning"] .transport .time-sig-control .time-sig-number:focus
+{
+  background: #e7eeee;
+}
+
+html[data-theme="morning"] .time-sig-slash,
+html[data-theme="morning"] .time-sig-menu-option span:nth-child(2),
+html[data-theme="morning"] .selected-grid-steps span,
+html[data-theme="morning"] .selected-controls label > span,
+html[data-theme="morning"] .selected-bottom-tab,
+html[data-theme="morning"] .track-shape-row .track-shape-name,
+html[data-theme="morning"] .midi-map-note-label,
+html[data-theme="morning"] .midi-map-control-source,
+html[data-theme="morning"] .track-add-count,
+html[data-theme="morning"] .track-inspector-sublabel,
+html[data-theme="morning"] .track-inspector-body > label > span,
+html[data-theme="morning"] .track-inspector-extra-config label span
+{
+  color: #697681;
+}
+
+html[data-theme="morning"] .time-sig-menu-option:hover,
+html[data-theme="morning"] .time-sig-menu-option.is-active,
+html[data-theme="morning"] .selected-bottom-tab.is-active,
+html[data-theme="morning"] .track-add-palette button.is-added,
+html[data-theme="morning"] .midi-map-row.is-learning
+{
+  border-color: #79aaa5;
+  background:
+    linear-gradient(180deg, rgba(117, 169, 164, 0.24), rgba(117, 169, 164, 0.1)),
+    #f8fbfb;
+  color: #1f5b55;
+}
+
+html[data-theme="morning"] .workspace
+{
+  background:
+    linear-gradient(180deg, #eef2f5 0%, #dfe5ea 100%);
+}
+
+html[data-theme="morning"] .step-grid > .step-header--corner,
+html[data-theme="morning"] .step-grid > .track-label,
+html[data-theme="morning"] .step-grid > .sample-lane-label,
+html[data-theme="morning"] .step-grid > .piano-roll-lane-label
+{
+  background:
+    linear-gradient(180deg, #f8fafb 0%, #e8edf2 100%);
+}
+
+html[data-theme="morning"] .step-grid > .step-header--corner
+{
+  background:
+    linear-gradient(180deg, #eef3f7 0%, #dce4eb 100%);
+}
+
+html[data-theme="morning"] .camera-grid-ruler-wrap
+{
+  background:
+    linear-gradient(180deg, #eef3f7 0%, #d8e0e7 100%);
+}
+
+html[data-theme="morning"] .camera-grid-hover
+{
+  border-color: rgba(0, 122, 170, 0.92);
+  background: rgba(0, 122, 170, 0.1);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.7),
+    0 0 0 1px rgba(0, 93, 132, 0.18);
+}
+
+html[data-theme="morning"] .camera-grid-playback-beat
+{
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(42, 58, 66, 0.2), rgba(45, 118, 116, 0.18), rgba(255, 255, 255, 0));
+  box-shadow: 0 0 8px rgba(45, 118, 116, 0.16);
+  mix-blend-mode: multiply;
+}
+
+html[data-theme="morning"] .camera-grid-playback-beat::after
+{
+  background: rgba(38, 54, 62, 0.34);
+  box-shadow: 0 0 6px rgba(45, 118, 116, 0.18);
+}
+
+html[data-theme="morning"] .camera-grid-playback-hit
+{
+  border-color: rgba(13, 86, 91, 0.94);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.74),
+    0 0 0 1px rgba(13, 86, 91, 0.22);
+}
+
+html[data-theme="morning"] .track-label
+{
+  color: #25303a;
+}
+
+html[data-theme="morning"] .track-label:hover,
+html[data-theme="morning"] .bar-tabs button:hover
+{
+  border-color: #6aa09a;
+  background:
+    linear-gradient(180deg, #fbffff 0%, #dcebea 100%);
+  color: #163f3b;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.7),
+    0 0 0 1px rgba(50, 120, 113, 0.18);
+}
+
+html[data-theme="morning"] .track-label.is-selected-row,
+html[data-theme="morning"] .loop-tabs button.is-active,
+html[data-theme="morning"] .solo-button.is-active,
+html[data-theme="morning"] .automation-button.is-active,
+html[data-theme="morning"] .solo-strip button.is-active,
+html[data-theme="morning"] .selected-midi-keyboard-button.is-active
+{
+  border-color: var(--accent-2);
+  background:
+    linear-gradient(180deg, #f9ffff 0%, #d7e9e7 100%);
+  color: #184943;
+  box-shadow: inset 0 0 0 1px rgba(66, 123, 118, 0.2);
+}
+
+html[data-theme="morning"] .mute-button.is-active,
+html[data-theme="morning"] .selected-midi-record-button.is-recording
+{
+  border-color: #c7867d;
+  background:
+    linear-gradient(180deg, #fff8f6 0%, #f0d9d5 100%);
+  color: #8d372e;
+}
+
+html[data-theme="morning"] .bar-tabs button.is-active:not(.is-multi-selected):not(.is-playing)
+{
+  background:
+    linear-gradient(180deg, #ffffff 0%, #ecf0f4 100%);
+  color: var(--text);
+}
+
+html[data-theme="morning"] .step-header--step.is-bar-selected,
+html[data-theme="morning"] .bar-tabs button.is-multi-selected
+{
+  border-color: #b4953d;
+  background:
+    linear-gradient(180deg, rgba(255, 244, 198, 0.86), rgba(235, 220, 151, 0.62)),
+    #f8f5e8;
+  color: #6b561b;
+  box-shadow: inset 0 0 0 1px rgba(164, 126, 44, 0.28);
+}
+
+html[data-theme="morning"] .step-button,
+html[data-theme="morning"] .step-button.is-generated-step
+{
+  border-color: #c4ccd4;
+  background:
+    linear-gradient(180deg, #e8edf2 0%, #d7dee5 100%);
+  box-shadow:
+    inset 0 1px 2px rgba(255, 255, 255, 0.62),
+    inset 0 -1px 0 rgba(108, 123, 138, 0.16);
+}
+
+html[data-theme="morning"] .step-button.is-on,
+html[data-theme="morning"] .step-button.is-generated-on
+{
+  background:
+    linear-gradient(180deg, #f7fafb 0%, #e4eaee 100%);
+}
+
+html[data-theme="morning"] .step-button::before,
+html[data-theme="morning"] .step-button.is-generated-step::before
+{
+  color: #6d5518;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+html[data-theme="morning"] .step-button.is-playhead
+{
+  box-shadow:
+    inset 0 0 0 2px #ffffff,
+    0 0 0 1px rgba(66, 123, 118, 0.34);
+}
+
+html[data-theme="morning"] .selected-controls label,
+html[data-theme="morning"] .control-panel label,
+html[data-theme="morning"] .selected-track-panel .track-inspector-body > label,
+html[data-theme="morning"] .selected-track-panel .track-inspector-extra-config label,
+html[data-theme="morning"] .selected-effects-default-controls label
+{
+  border-color: #c0c8d0;
+  background:
+    linear-gradient(180deg, #ffffff 0%, #eef2f5 100%);
+  color: var(--muted);
+}
+
+html[data-theme="morning"] .selected-track-panel .track-inspector-panel-head,
+html[data-theme="morning"] .selected-track-panel .track-inspector-sample,
+html[data-theme="morning"] .selected-track-panel .track-inspector-layout,
+html[data-theme="morning"] .selected-track-panel .track-inspector-sample-row,
+html[data-theme="morning"] .selected-track-panel .track-inspector-sample-row select,
+html[data-theme="morning"] .selected-track-panel .track-inspector-body select,
+html[data-theme="morning"] .selected-track-panel .track-inspector-extra-config select
+{
+  border-color: #b8c3ce;
+  background:
+    linear-gradient(180deg, #ffffff 0%, #edf2f6 100%);
+  color: #26313a;
+}
+
+html[data-theme="morning"] .selected-controls label > span,
+html[data-theme="morning"] .selected-track-panel .track-inspector-sublabel,
+html[data-theme="morning"] .selected-track-panel .track-inspector-body > label > span,
+html[data-theme="morning"] .selected-track-panel .track-inspector-extra-config label span,
+html[data-theme="morning"] .selected-effects-default-controls label > span
+{
+  color: #4f5d68;
+}
+
+html[data-theme="morning"] .selected-step strong,
+html[data-theme="morning"] .track-inspector-name,
+html[data-theme="morning"] .midi-map-track,
+html[data-theme="morning"] .track-shape-value,
+html[data-theme="morning"] .track-inspector-body output,
+html[data-theme="morning"] .track-inspector-extra-config output,
+html[data-theme="morning"] .selected-controls label.pitch-control .selected-number
+{
+  color: #26313a;
+}
+
+html[data-theme="morning"] .selected-grid-steps input,
+html[data-theme="morning"] .selected-number,
+html[data-theme="morning"] .control-panel output,
+html[data-theme="morning"] .selected-step output,
+html[data-theme="morning"] .track-inspector-extra-config output,
+html[data-theme="morning"] .transport output
+{
+  color: #14554f;
+  font-weight: 650;
+}
+
+html[data-theme="morning"] .rotary-control
+{
+  border-color: #93a2ae;
+  background:
+    radial-gradient(circle at 38% 28%, rgba(255, 255, 255, 0.76), transparent 0 19%, transparent 20%),
+    linear-gradient(145deg, #f7fafb 0%, #cfd9e1 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.9),
+    inset 0 -3px 7px rgba(97, 112, 126, 0.28),
+    0 1px 2px rgba(77, 92, 108, 0.18);
+}
+
+html[data-theme="morning"] .rotary-control::before
+{
+  background:
+    conic-gradient(from 225deg,
+      rgba(20, 151, 132, 0.96) 0deg var(--rotary-fill),
+      rgba(156, 170, 183, 0.52) var(--rotary-fill) 270deg,
+      transparent 270deg 360deg);
+  filter:
+    drop-shadow(0 0 2px rgba(20, 151, 132, 0.18))
+    drop-shadow(0 1px 1px rgba(255, 255, 255, 0.52));
+}
+
+html[data-theme="morning"] .rotary-control:hover,
+html[data-theme="morning"] .rotary-control.is-dragging
+{
+  border-color: #5f928e;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.95),
+    inset 0 -3px 7px rgba(88, 105, 120, 0.28),
+    0 0 0 1px rgba(45, 128, 119, 0.18),
+    0 1px 2px rgba(77, 92, 108, 0.18);
+}
+
+html[data-theme="morning"] .rotary-control__cap
+{
+  background:
+    radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.86), transparent 0 24%, transparent 25%),
+    linear-gradient(145deg, #ffffff 0%, #d8e1e8 72%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.9),
+    inset 0 -3px 5px rgba(100, 115, 129, 0.28),
+    0 1px 2px rgba(92, 106, 120, 0.22);
+}
+
+html[data-theme="morning"] .rotary-control__pointer
+{
+  background: #1b4f4b;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.72),
+    0 0 4px rgba(20, 151, 132, 0.24);
+}
+
+html[data-theme="morning"] .selected-controls label.pitch-control input[type="range"]::-webkit-slider-runnable-track
+{
+  border-color: #a7b4bf;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.2) 45%),
+    #cfd9e2;
+  box-shadow:
+    inset 0 1px 2px rgba(89, 104, 119, 0.24),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.62);
+}
+
+html[data-theme="morning"] .selected-controls label.pitch-control input[type="range"]::-webkit-slider-thumb
+{
+  border-color: rgba(45, 128, 119, 0.64);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.48), rgba(255, 255, 255, 0) 42%),
+    linear-gradient(180deg, #8dd7c5 0%, #2f8378 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(33, 70, 75, 0.22),
+    0 1px 2px rgba(73, 89, 104, 0.24);
+}
+
+html[data-theme="morning"] .selected-controls label.pitch-control input[type="range"]::-moz-range-track
+{
+  border-color: #a7b4bf;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.2) 45%),
+    #cfd9e2;
+  box-shadow:
+    inset 0 1px 2px rgba(89, 104, 119, 0.24),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.62);
+}
+
+html[data-theme="morning"] .selected-controls label.pitch-control input[type="range"]::-moz-range-thumb
+{
+  border-color: rgba(45, 128, 119, 0.64);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.48), rgba(255, 255, 255, 0) 42%),
+    linear-gradient(180deg, #8dd7c5 0%, #2f8378 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(33, 70, 75, 0.22),
+    0 1px 2px rgba(73, 89, 104, 0.24);
+}
+
+html[data-theme="morning"] .piano-roll-lane
+{
+  border-color: #bbc5ce;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(144, 158, 172, 0.08)),
+    #e4e9ee;
+}
+
+html[data-theme="morning"] .piano-roll-lane::before
+{
+  border-color: rgba(122, 136, 150, 0.22);
+  background:
+    repeating-linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.58) 0,
+      rgba(255, 255, 255, 0.58) calc(100% / var(--pitch-rows, 12) - 1px),
+      rgba(138, 151, 164, 0.24) calc(100% / var(--pitch-rows, 12) - 1px),
+      rgba(138, 151, 164, 0.24) calc(100% / var(--pitch-rows, 12))
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(99, 114, 130, 0.22) 0,
+      rgba(99, 114, 130, 0.22) 1px,
+      transparent 1px,
+      transparent calc(100% / var(--bar-count, 1))
+    ),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(194, 204, 214, 0.18)),
+    #e1e7ec;
+  box-shadow:
+    inset 0 1px 3px rgba(99, 113, 128, 0.28),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.52);
+}
+
+html[data-theme="morning"] .piano-roll-empty,
+html[data-theme="morning"] .piano-roll-pitch-label
+{
+  color: #647281;
+}
+
+html[data-theme="morning"] .piano-roll-pitch-label,
+html[data-theme="morning"] .piano-roll-note::after,
+html[data-theme="morning"] .piano-roll-automation-select
+{
+  border-color: rgba(151, 163, 176, 0.7);
+  background: rgba(248, 250, 252, 0.88);
+  color: #33414d;
+}
+
+html[data-theme="morning"] .piano-roll-note
+{
+  background:
+    linear-gradient(180deg, #315f70 0%, #173242 100%);
+  opacity: calc(0.72 + var(--level, 0.8) * 0.28);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.28),
+    0 1px 2px rgba(55, 72, 88, 0.24);
+}
+
+html[data-theme="morning"] .piano-roll-note.is-chord
+{
+  filter: none;
+  background:
+    linear-gradient(180deg, #4a4f7d 0%, #242943 100%);
+}
+
+html[data-theme="morning"] .piano-roll-note.is-live
+{
+  background:
+    linear-gradient(180deg, #397b72 0%, #18443d 100%);
+  opacity: 0.98;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3),
+    0 0 10px rgba(45, 128, 119, 0.24);
+}
+
+html[data-theme="morning"] .piano-roll-automation
+{
+  border-top-color: rgba(98, 113, 128, 0.24);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(207, 216, 224, 0.5)),
+    rgba(234, 238, 242, 0.76);
+}
+
+html[data-theme="morning"] .sample-lane-automation
+{
+  border-color: rgba(66, 123, 118, 0.32);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.56), rgba(207, 216, 224, 0.36)),
+    rgba(234, 238, 242, 0.58);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.54),
+    inset 0 0 20px rgba(66, 123, 118, 0.08);
+}
+
+html[data-theme="morning"] .piano-roll-automation-param-label
+{
+  border-color: rgba(145, 158, 172, 0.58);
+  background: rgba(249, 251, 252, 0.78);
+  color: #315f5a;
+}
+
+html[data-theme="morning"] .piano-roll-automation-curve-shadow
+{
+  stroke: rgba(255, 255, 255, 0.82);
+}
+
+html[data-theme="morning"] .sample-lane
+{
+  border-color: #bbc5ce;
+  background:
+    linear-gradient(180deg, #e9eef2 0%, #d9e1e8 100%);
+  box-shadow:
+    inset 0 1px 3px rgba(87, 101, 116, 0.24),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.52);
+}
+
+html[data-theme="morning"] .sample-lane-solo
+{
+  border-color: #b5c0ca;
+  background:
+    linear-gradient(180deg, #ffffff, #e8edf2);
+  color: #596a7b;
+}
+
+html[data-theme="morning"] .sample-lane-solo:hover
+{
+  border-color: #7fa8a4;
+  background: #f5fbfb;
+  color: #2f6761;
+}
+
+html[data-theme="morning"] .sample-lane-solo.is-active
+{
+  border-color: #a27e2c;
+  background:
+    linear-gradient(180deg, #fff5c7, #d7bd63);
+  color: #4d3a0d;
+}
+
+html[data-theme="morning"] .sample-region:hover
+{
+  border-color: rgba(66, 123, 118, 0.44);
+  background: rgba(66, 123, 118, 0.08);
+}
+
+html[data-theme="morning"] .sample-region-label,
+html[data-theme="morning"] .sample-region:hover .sample-region-label
+{
+  color: rgba(47, 57, 67, 0.76);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+html[data-theme="morning"] .song-property-number,
+html[data-theme="morning"] .selected-number,
+html[data-theme="morning"] .sample-folder-state,
+html[data-theme="morning"] .sample-open-btn,
+html[data-theme="morning"] .sample-browser-mode,
+html[data-theme="morning"] .selected-piano-scale-select,
+html[data-theme="morning"] .selected-piano-chord,
+html[data-theme="morning"] .selected-piano-octave-wheel,
+html[data-theme="morning"] .selected-piano-range-wheel
+{
+  border-color: #b8c3ce;
+  background:
+    linear-gradient(180deg, #ffffff 0%, #edf2f6 100%);
+  color: #31414d;
+}
+
+html[data-theme="morning"] .selected-number:disabled
+{
+  color: #7f8a94;
+}
+
+html[data-theme="morning"] .sample-open-btn:hover,
+html[data-theme="morning"] .sample-row-dir:hover,
+html[data-theme="morning"] .sample-row-file:hover,
+html[data-theme="morning"] .sample-row-action:hover
+{
+  border-color: #80aaa5;
+  background: #f5fbfb;
+  color: #245c57;
+}
+
+html[data-theme="morning"] .sample-folder-state[data-state="ready"],
+html[data-theme="morning"] .sample-row-load:not(:disabled)
+{
+  border-color: #5d9b75;
+  color: #2f7045;
+}
+
+html[data-theme="morning"] .sample-browser-mode
+{
+  background: #e7edf2;
+}
+
+html[data-theme="morning"] .sample-mode-btn
+{
+  color: #62707d;
+}
+
+html[data-theme="morning"] .sample-mode-btn.is-active
+{
+  background:
+    linear-gradient(180deg, #ffffff 0%, #dfe8ef 100%);
+  color: #263b4b;
+}
+
+html[data-theme="morning"] .sample-row
+{
+  color: #303b45;
+}
+
+html[data-theme="morning"] .sample-row-action
+{
+  border-color: #aebbc8;
+  background:
+    linear-gradient(180deg, #ffffff 0%, #e8eef4 100%);
+  color: #2f3e4c;
+}
+
+html[data-theme="morning"] .sample-crumb
+{
+  color: #3b75a4;
+}
+
+html[data-theme="morning"] .sample-crumb:hover
+{
+  color: #1e5d8e;
+}
+
+html[data-theme="morning"] .sample-crumb-sep,
+html[data-theme="morning"] .sample-browser-hint,
+html[data-theme="morning"] .sample-browser-divider
+{
+  color: #6f7c88;
+}
+
+html[data-theme="morning"] .selected-piano
+{
+  border-color: #b8c3ce;
+  background:
+    linear-gradient(180deg, #f9fbfc 0%, #e3e9ee 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -1px 0 rgba(113, 128, 143, 0.15);
+  color: #2b3640;
+}
+
+html[data-theme="morning"] .selected-piano-keys
+{
+  border-color: rgba(138, 151, 164, 0.38);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(210, 219, 227, 0.72)),
+    #dce4eb;
+  box-shadow:
+    inset 0 1px 2px rgba(105, 119, 133, 0.22),
+    0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+html[data-theme="morning"] .selected-piano-key
+{
+  border-color: #8d9aa5;
+  border-bottom-color: #66727d;
+  background: linear-gradient(180deg, #ffffff 0%, #dce4e9 58%, #b9c4cb 100%);
+  opacity: 0.9;
+}
+
+html[data-theme="morning"] .selected-piano-key.is-black
+{
+  border-color: #27313c;
+  border-bottom-color: #101820;
+  background: linear-gradient(180deg, #3b4651 0%, #17212b 48%, #071018 100%);
+}
+
+html[data-theme="morning"] .selected-piano-note,
+html[data-theme="morning"] .selected-piano-scale-select,
+html[data-theme="morning"] .selected-piano-chord
+{
+  color: #2f6f69;
+}
+
+html[data-theme="morning"] .selected-piano-chord.is-active
+{
+  border-color: #6da9a1;
+  background:
+    linear-gradient(180deg, #f7ffff 0%, #cae5e2 100%);
+  color: #1f5b55;
+}
+
+html[data-theme="morning"] .selected-midi-keyboard-icon
+{
+  border-color: #9cabb8;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(223, 231, 238, 0.72)),
+    #dce4eb;
+}
+
+html[data-theme="morning"] .selected-midi-keyboard-icon::before
+{
+  background:
+    linear-gradient(90deg,
+      #f5f8fa 0 12%,
+      #27313b 12% 17%,
+      #f5f8fa 17% 31%,
+      #27313b 31% 36%,
+      #f5f8fa 36% 51%,
+      #f5f8fa 51% 66%,
+      #27313b 66% 71%,
+      #f5f8fa 71% 84%,
+      #27313b 84% 89%,
+      #f5f8fa 89% 100%);
+}
+
+html[data-theme="morning"] .selected-midi-keyboard-icon::after
+{
+  background: #27313b;
+  box-shadow:
+    4px 0 0 #27313b,
+    8px 0 0 #27313b;
+}
+
+html[data-theme="morning"] .context-menu
+{
+  box-shadow: 0 16px 36px rgba(60, 75, 90, 0.18);
+}
+
+html[data-theme="morning"] .context-menu-item:hover:not(:disabled)
+{
+  background:
+    linear-gradient(180deg, #f9ffff 0%, #dceceb 100%);
+  color: #184943;
+}
+
+html[data-theme="morning"] .project-manager-modal-backdrop,
+html[data-theme="morning"] .modal-backdrop
+{
+  background: rgba(52, 63, 74, 0.34);
 }
 
 /* end of file */

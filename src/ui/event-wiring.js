@@ -72,8 +72,22 @@ export function createEventWiring(deps) {
   } = deps;
 
   // ── Transport ─────────────────────────────────────────────────────────────
+  function primeAudioContextFromGesture() {
+    state.engine.ensureContext?.();
+    void state.engine.resumeContext?.();
+  }
+
   function wireTransportEvents() {
-    $("#play-toggle")?.addEventListener("click", () => {
+    const playToggle = $("#play-toggle");
+    const startPlaybackFromGesture = (event) => {
+      if (event?.button != null && event.button !== 0) return;
+      primeAudioContextFromGesture();
+      void startPlayback();
+    };
+    playToggle?.addEventListener("pointerdown", startPlaybackFromGesture, { passive: true });
+    playToggle?.addEventListener("mousedown", startPlaybackFromGesture, { passive: true });
+    playToggle?.addEventListener("touchstart", startPlaybackFromGesture, { passive: true });
+    playToggle?.addEventListener("click", () => {
       void startPlayback();
     });
     $("#stop")?.addEventListener("click", stopPlayback);
@@ -107,6 +121,12 @@ export function createEventWiring(deps) {
       cameraFollowEnabled.checked = Boolean(state.cameraFollow);
       cameraFollowEnabled.addEventListener("change", () => applyCameraFollow(cameraFollowEnabled.checked));
     }
+  }
+
+  function wireAudioUnlockEvents() {
+    ["pointerdown", "mousedown", "touchstart", "keydown"].forEach((type) => {
+      document.addEventListener(type, primeAudioContextFromGesture, { capture: true, passive: true });
+    });
   }
 
   // ── Arrangement ───────────────────────────────────────────────────────────
@@ -540,6 +560,7 @@ export function createEventWiring(deps) {
 
   // ── Public: call once after DOM is ready ─────────────────────────────────
   function wireAll() {
+    wireAudioUnlockEvents();
     wireTransportEvents();
     wireArrangementEvents();
     wirePreviewEvents();

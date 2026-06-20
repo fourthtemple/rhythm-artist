@@ -10,8 +10,13 @@
 // existing call sites are unchanged.
 
 import { visualBeatKindForStep } from "../../audio/rhythm-config.js";
+import {
+  AUTOMATION_PARAMETERS,
+  automationParameterById
+} from "../automation/automation-parameters.js";
 import { syncStepGridLaneRows } from "./lane-grid-layout.js";
 import { appendPianoRollLanes } from "../piano-roll/piano-roll-lanes.js";
+import { createAutomationLane } from "../piano-roll/automation/automation-lane.js";
 
 /**
  * @param {object} deps
@@ -162,10 +167,32 @@ export function createStepGridBuilder(deps) {
   let lastCameraPaintAt = 0;
   let lastCameraInteractionAt = 0;
   let playbackTabsBar = null;
-  let renderedBarTabsLoop = null;
-  let skipNextBarClickIndex = null;
-  const queuedVelocityEdits = new Map();
-  const normalizeStepPosition = (value) => {
+	  let renderedBarTabsLoop = null;
+	  let skipNextBarClickIndex = null;
+	  const queuedVelocityEdits = new Map();
+	  const activeAutomationLaneKey = () => state.activeAutomationLaneKey || "";
+	  const automationParamMap = () => {
+	    state.config.trackAutomationParams = {
+	      ...(state.config.trackAutomationParams || {})
+	    };
+	    return state.config.trackAutomationParams;
+	  };
+	  const automationParamForLane = (laneKey) => automationParameterById(automationParamMap()[laneKey] || state.pianoRollAutomationParam);
+	  const isAutomationOpen = (laneKey) => activeAutomationLaneKey() === laneKey;
+  const setAutomationLane = (laneKey, paramId, label) => {
+    const param = automationParameterById(paramId);
+    automationParamMap()[laneKey] = param.id;
+    state.activeAutomationLaneKey = laneKey;
+    state.pianoRollAutomationParam = param.id;
+    status.textContent = `${label} automation: ${param.label}`;
+    buildStepGrid();
+  };
+  const closeAutomationLane = (laneKey, label) => {
+    if (isAutomationOpen(laneKey)) state.activeAutomationLaneKey = "";
+    status.textContent = `${label} automation off`;
+    buildStepGrid();
+  };
+	  const normalizeStepPosition = (value) => {
     const step = Number(value);
     if (!Number.isFinite(step) || step <= 0) return 0;
     if (step >= BASE_STEPS_PER_BAR) return BASE_STEPS_PER_BAR - 1;
@@ -178,16 +205,81 @@ export function createStepGridBuilder(deps) {
   const visualStepToPatternStep = (visualStep, stepsPerBar) =>
     normalizeStepPosition((visualStep * BASE_STEPS_PER_BAR) / stepsPerBar);
   const currentTimeSignature = () => state.config?.timeSignature || state.timeSig || "4/4";
-  const defaultVelocityForHit = (hit, fallback = 0.5) => {
-    const baseHit = String(hit || "").split("~")[0];
-    const value = state.config?.trackDefaultVelocities?.[hit]
-      ?? state.config?.trackDefaultVelocities?.[baseHit]
-      ?? DEFAULT_VELOCITY[hit]
+	  const defaultVelocityForHit = (hit, fallback = 0.5) => {
+	    const baseHit = String(hit || "").split("~")[0];
+	    const value = state.config?.trackDefaultVelocities?.[hit]
+	      ?? state.config?.trackDefaultVelocities?.[baseHit]
+	      ?? DEFAULT_VELOCITY[hit]
       ?? DEFAULT_VELOCITY[baseHit]
       ?? fallback;
-    const number = Number(value);
-    return Math.max(0, Math.min(0.9, Number.isFinite(number) ? number : fallback));
-  };
+	    const number = Number(value);
+	    return Math.max(0, Math.min(0.9, Number.isFinite(number) ? number : fallback));
+	  };
+	  function openAutomationMenu(event, { laneKey, label }) {
+	    event.preventDefault();
+	    event.stopPropagation();
+	    if (!showContextMenu) {
+	      setAutomationLane(laneKey, automationParamForLane(laneKey).id, label);
+	      return;
+	    }
+	    const current = automationParamForLane(laneKey);
+	    showContextMenu(event, [
+	      ...AUTOMATION_PARAMETERS.map((param) => ({
+	        label: `${param.id === current.id && isAutomationOpen(laneKey) ? "✓ " : ""}${param.label}`,
+	        action: () => setAutomationLane(laneKey, param.id, label)
+	      })),
+	      { separator: true },
+	      {
+	        label: "Hide automation",
+	        disabled: !isAutomationOpen(laneKey),
+	        action: () => closeAutomationLane(laneKey, label)
+	      }
+	    ]);
+	  }
+
+	  function makeAutomationButton({ laneKey, label }) {
+	    const automationButton = document.createElement("button");
+	    automationButton.type = "button";
+	    automationButton.className = "automation-button track-row-control";
+	    automationButton.dataset.automationLane = laneKey;
+	    automationButton.textContent = "A";
+	    automationButton.title = `Automation for ${label}`;
+	    automationButton.classList.toggle("is-active", isAutomationOpen(laneKey));
+	    automationButton.addEventListener("click", (event) => openAutomationMenu(event, { laneKey, label }));
+	    automationButton.addEventListener("contextmenu", (event) => openAutomationMenu(event, { laneKey, label }));
+	    return automationButton;
+	  }
+
+	  function notesForGridAutomation(hit, renderedSegmentsCount = renderedSegments()) {
+	    const bars = state.config?.patterns?.jazz?.bars || [];
+	    const notes = [];
+	    for (let seg = 0; seg < renderedSegmentsCount; seg += 1) {
+	      const bar = barIndexForSegment(seg);
+	      const entries = Array.isArray(bars[bar]?.[hit]) ? bars[bar][hit] : [];
+	      entries.forEach((entry, hitIndex) => {
+	        if (!Array.isArray(entry)) return;
+	        const step = normalizeStepPosition(entry[0]);
+	        const velocity = Number(entry[1]);
+	        if (!(velocity > 0.005)) return;
+	        const options = entry[2] && typeof entry[2] === "object" ? entry[2] : {};
+	        const rootPitch = Math.round(Number(options.pitch) || 0);
+	        notes.push({
+	          bar,
+	          viewBar: seg,
+	          step,
+	          rootStep: step,
+	          velocity,
+	          rootPitch,
+	          pitch: rootPitch,
+	          interval: 0,
+	          hitIndex,
+	          options,
+	          baseStepsPerBar: BASE_STEPS_PER_BAR
+	        });
+	      });
+	    }
+	    return notes;
+	  }
   const velocityEditKey = (hit, step, barIndex) => `${barIndex}::${hit}::${step}`;
   const cameraTargetKey = (target) => target ? velocityEditKey(target.hit, target.step, target.bar) : "";
   const queuedVelocityFor = (hit, step, barIndex) =>
@@ -391,11 +483,12 @@ export function createStepGridBuilder(deps) {
     resetSelectedPanel();
   };
 
-  function makeTrackLabel(hit, label, type, accent = "#7dd3fc") {
+  function makeTrackLabel(hit, label, type, accent = "#7dd3fc", laneKind = "grid") {
     const rowLabel = document.createElement("div");
+    const laneKey = `${laneKind}:${hit}`;
     rowLabel.className = `track-label ${type === "generated" ? "is-generated" : ""}`;
     rowLabel.dataset.hit = hit;
-    rowLabel.dataset.laneKey = `grid:${hit}`;
+    rowLabel.dataset.laneKey = laneKey;
     rowLabel.dataset.type = type;
     rowLabel.style.setProperty("--track-accent", accent);
     rowLabel.style.setProperty("--group-accent", accent);
@@ -426,7 +519,8 @@ export function createStepGridBuilder(deps) {
       event.stopPropagation();
       toggleMute(hit);
     });
-    trackStateButtons.append(soloButton, muteButton);
+    const automationButton = makeAutomationButton({ laneKey, label });
+    trackStateButtons.append(soloButton, muteButton, automationButton);
     const selectRowLabelNow = (event) => {
       const selectionEvent = {
         shiftKey: Boolean(event.shiftKey),
@@ -460,6 +554,7 @@ export function createStepGridBuilder(deps) {
       selectRowLabelNow(event);
     });
     rowLabel.append(rowText, trackStateButtons);
+    rowLabel.classList.toggle("is-automation-active", isAutomationOpen(laneKey));
     return rowLabel;
   }
 
@@ -545,6 +640,19 @@ export function createStepGridBuilder(deps) {
     return `rgba(${r},${g},${b},${alpha})`;
   }
 
+  function colorShade(color, amount = 0.25, fallback = "#7dd3fc") {
+    const { r, g, b } = colorToRgb(color, fallback);
+    const level = Math.max(0, Math.min(1, amount));
+    const hex = (value) => Math.max(0, Math.min(255, Math.round(value)))
+      .toString(16)
+      .padStart(2, "0");
+    return `#${hex(r * (1 - level))}${hex(g * (1 - level))}${hex(b * (1 - level))}`;
+  }
+
+  function isMorningTheme() {
+    return document.documentElement.dataset.theme === "morning";
+  }
+
   function drawCameraStepPad(ctx, {
     x,
     y,
@@ -564,18 +672,29 @@ export function createStepGridBuilder(deps) {
     const isOn = velocity > 0.005;
     const activeColor = trackColor || (generated ? "#86efac" : "#7dd3fc");
     const visualLevel = isOn ? Math.max(0.24, level) : level;
+    const morning = isMorningTheme();
+    const hitColor = morning ? colorShade(activeColor, generated ? 0.04 : 0.08) : activeColor;
+    const selectedColor = morning ? colorShade(activeColor, 0.24) : activeColor;
 
-    fillRoundedRect(ctx, x, y, width, height, radius, "rgba(3,8,13,0.28)");
+    if (morning) {
+      const padGradient = ctx.createLinearGradient(x, y, x, y + height);
+      padGradient.addColorStop(0, "#f4f7f9");
+      padGradient.addColorStop(0.56, "#dde5ec");
+      padGradient.addColorStop(1, "#cdd7e0");
+      fillRoundedRect(ctx, x, y, width, height, radius, padGradient);
+    } else {
+      fillRoundedRect(ctx, x, y, width, height, radius, "rgba(3,8,13,0.28)");
+    }
 
     if (width >= 4 && height >= 7) {
-      ctx.strokeStyle = "rgba(0,0,0,0.24)";
+      ctx.strokeStyle = morning ? "rgba(255,255,255,0.76)" : "rgba(0,0,0,0.24)";
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(x + radius, y + 0.5);
       ctx.lineTo(x + width - radius, y + 0.5);
       ctx.stroke();
 
-      ctx.strokeStyle = "rgba(255,255,255,0.012)";
+      ctx.strokeStyle = morning ? "rgba(96,110,124,0.24)" : "rgba(255,255,255,0.012)";
       ctx.beginPath();
       ctx.moveTo(x + radius, y + height - 0.5);
       ctx.lineTo(x + width - radius, y + height - 0.5);
@@ -589,7 +708,7 @@ export function createStepGridBuilder(deps) {
       Math.max(1, width - 1),
       Math.max(1, height - 1),
       radius,
-      "rgba(255,255,255,0.008)",
+      morning ? "rgba(92,108,124,0.2)" : "rgba(255,255,255,0.008)",
       1
     );
 
@@ -611,7 +730,7 @@ export function createStepGridBuilder(deps) {
           innerW,
           innerH,
           innerRadius,
-          colorAlpha(activeColor, 0.2)
+          colorAlpha(hitColor, morning ? 0.34 : 0.2)
         );
         strokeRoundedRect(
           ctx,
@@ -620,7 +739,7 @@ export function createStepGridBuilder(deps) {
           Math.max(1, innerW - 1),
           Math.max(1, innerH - 1),
           innerRadius,
-          colorAlpha(activeColor, 0.42),
+          colorAlpha(hitColor, morning ? 0.72 : 0.42),
           1
         );
         const meterH = Math.max(5, innerH * visualLevel);
@@ -633,13 +752,13 @@ export function createStepGridBuilder(deps) {
             Math.max(1, innerW - 1),
             meterH,
             Math.min(innerRadius, meterH / 2),
-            "rgba(0,0,0,0.32)"
+            morning ? "rgba(88,103,118,0.18)" : "rgba(0,0,0,0.32)"
           );
         }
         const hitGradient = ctx.createLinearGradient(innerX, meterY, innerX, innerY + innerH);
-        hitGradient.addColorStop(0, colorAlpha(activeColor, 0.96));
-        hitGradient.addColorStop(0.68, colorAlpha(activeColor, 0.82));
-        hitGradient.addColorStop(1, colorAlpha(activeColor, 0.68));
+        hitGradient.addColorStop(0, colorAlpha(hitColor, morning ? 1 : 0.96));
+        hitGradient.addColorStop(0.68, colorAlpha(hitColor, morning ? 0.96 : 0.82));
+        hitGradient.addColorStop(1, colorAlpha(hitColor, morning ? 0.86 : 0.68));
         fillRoundedRect(ctx, innerX, meterY, innerW, meterH, Math.min(innerRadius, meterH / 2), hitGradient);
 
         strokeRoundedRect(
@@ -662,7 +781,7 @@ export function createStepGridBuilder(deps) {
           ctx.lineTo(innerX + innerW - Math.min(2, innerW * 0.2), shineY);
           ctx.stroke();
 
-          ctx.strokeStyle = "rgba(0,0,0,0.26)";
+          ctx.strokeStyle = morning ? "rgba(66,80,94,0.18)" : "rgba(0,0,0,0.26)";
           ctx.beginPath();
           ctx.moveTo(innerX + Math.min(2, innerW * 0.2), meterY + meterH - 1.2);
           ctx.lineTo(innerX + innerW - Math.min(2, innerW * 0.2), meterY + meterH - 1.2);
@@ -678,17 +797,20 @@ export function createStepGridBuilder(deps) {
       const playW = Math.max(1, width - playInset * 2);
       const playH = Math.max(1, height - playInset * 2);
       const playRadius = Math.max(1, Math.min(radius - 0.5, playH / 2));
-      fillRoundedRect(ctx, playX, playY, playW, playH, playRadius, colorAlpha(activeColor, 0.16));
-      strokeRoundedRect(ctx, playX + 0.5, playY + 0.5, Math.max(1, playW - 1), Math.max(1, playH - 1), playRadius, colorAlpha(activeColor, 0.96), 1.5);
-      strokeRoundedRect(ctx, x + 1, y + 1, Math.max(1, width - 2), Math.max(1, height - 2), Math.max(1, radius - 1), colorAlpha(activeColor, 0.34), 1);
+      fillRoundedRect(ctx, playX, playY, playW, playH, playRadius, colorAlpha(hitColor, morning ? 0.24 : 0.16));
+      strokeRoundedRect(ctx, playX + 0.5, playY + 0.5, Math.max(1, playW - 1), Math.max(1, playH - 1), playRadius, colorAlpha(hitColor, 0.96), 1.5);
+      strokeRoundedRect(ctx, x + 1, y + 1, Math.max(1, width - 2), Math.max(1, height - 2), Math.max(1, radius - 1), colorAlpha(hitColor, morning ? 0.44 : 0.34), 1);
     }
 
     if (hovered && !selected) {
-      strokeRoundedRect(ctx, x - 1, y - 1, width + 2, height + 2, radius + 1, colorAlpha(activeColor, 0.92), 1.25);
+      strokeRoundedRect(ctx, x - 1, y - 1, width + 2, height + 2, radius + 1, colorAlpha(hitColor, 0.92), 1.25);
     }
 
     if (selected) {
-      strokeRoundedRect(ctx, x - 1, y - 1, width + 2, height + 2, radius + 1, colorAlpha(activeColor, 0.98), 2);
+      if (morning && isOn) {
+        fillRoundedRect(ctx, x + 1, y + 1, Math.max(1, width - 2), Math.max(1, height - 2), Math.max(1, radius - 1), colorAlpha(selectedColor, 0.24));
+      }
+      strokeRoundedRect(ctx, x - 1, y - 1, width + 2, height + 2, radius + 1, morning ? colorAlpha(selectedColor, 0.98) : colorAlpha(activeColor, 0.98), morning ? 2.25 : 2);
     } else if (isOn && width >= 4) {
       strokeRoundedRect(
         ctx,
@@ -697,7 +819,7 @@ export function createStepGridBuilder(deps) {
         Math.max(1, width - 1),
         Math.max(1, height - 1),
         radius,
-        colorAlpha(activeColor, 0.22),
+        colorAlpha(hitColor, morning ? 0.34 : 0.22),
         1
       );
     }
@@ -739,8 +861,9 @@ export function createStepGridBuilder(deps) {
 
     const muted = canvasCssColor("--muted", "#8f9bae");
     const accent2 = cameraCanvasColors.accent2 || canvasCssColor("--accent-2", "#f5d76e");
-    const line = canvasCssColor("--line", "#27313d");
-    ctx.fillStyle = "#151c28";
+    const line = canvasCssColor("--line", "#b8c2cb");
+    const morning = isMorningTheme();
+    ctx.fillStyle = morning ? "#edf2f6" : "#151c28";
     ctx.fillRect(0, 0, cssWidth, cssHeight);
 
     const selectedBars = new Set(Array.isArray(state.selectedBars) ? state.selectedBars : []);
@@ -768,7 +891,7 @@ export function createStepGridBuilder(deps) {
     }
     ctx.stroke();
 
-    ctx.strokeStyle = "rgba(255,255,255,0.08)";
+    ctx.strokeStyle = morning ? "rgba(96,110,124,0.2)" : "rgba(255,255,255,0.08)";
     ctx.beginPath();
     for (let bar = 0; bar < renderedSegmentCount(); bar += 1) {
       for (let beat = 1; beat < 4; beat += 1) {
@@ -820,13 +943,22 @@ export function createStepGridBuilder(deps) {
 
     const accent = canvasCssColor("--accent", "#8bd8bd");
     const accent2 = canvasCssColor("--accent-2", "#f5d76e");
-    const line = canvasCssColor("--line", "#27313d");
+    const line = canvasCssColor("--line", "#b8c2cb");
     const barWidth = cssWidth / Math.max(1, renderedSegmentCount());
     const rows = cameraRowMetrics();
     cameraCanvasColors = { accent, accent2 };
     cameraCanvasMetrics = { barWidth, rows, cssWidth, dpr };
 
-    ctx.fillStyle = "#101620";
+    const morning = isMorningTheme();
+    if (morning) {
+      const gridGradient = ctx.createLinearGradient(0, 0, 0, cssHeight);
+      gridGradient.addColorStop(0, "#eef3f6");
+      gridGradient.addColorStop(0.5, "#e1e7ed");
+      gridGradient.addColorStop(1, "#d7dfe7");
+      ctx.fillStyle = gridGradient;
+    } else {
+      ctx.fillStyle = "#101620";
+    }
     ctx.fillRect(0, 0, cssWidth, cssHeight);
 
     ctx.strokeStyle = line;
@@ -839,7 +971,7 @@ export function createStepGridBuilder(deps) {
     }
     ctx.stroke();
 
-    ctx.strokeStyle = "rgba(255,255,255,0.08)";
+    ctx.strokeStyle = morning ? "rgba(96,110,124,0.2)" : "rgba(255,255,255,0.08)";
     ctx.beginPath();
     for (let bar = 0; bar < renderedSegmentCount(); bar += 1) {
       for (let beat = 1; beat < 4; beat += 1) {
@@ -854,9 +986,9 @@ export function createStepGridBuilder(deps) {
     rows.forEach((row) => {
       const rowTop = row.top;
       const rowHeight = row.height;
-      ctx.fillStyle = colorAlpha(row.accent, row.type === "generated" ? 0.045 : 0.028);
+      ctx.fillStyle = colorAlpha(row.accent, row.type === "generated" ? (morning ? 0.075 : 0.045) : (morning ? 0.045 : 0.028));
       ctx.fillRect(0, rowTop, cssWidth, rowHeight);
-      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      ctx.strokeStyle = morning ? "rgba(98,112,126,0.2)" : "rgba(255,255,255,0.06)";
       ctx.beginPath();
       ctx.moveTo(0, Math.round(rowTop + rowHeight) + 0.5);
       ctx.lineTo(cssWidth, Math.round(rowTop + rowHeight) + 0.5);
@@ -894,7 +1026,6 @@ export function createStepGridBuilder(deps) {
         }
       }
     });
-
     redrawCameraPlaybackOverlay();
     updateCameraSelectionOverlay();
     updateCameraHoverOverlay();
@@ -1019,6 +1150,7 @@ export function createStepGridBuilder(deps) {
 
   function drawCameraPlaybackTargets(targets) {
     if (!cameraPlaybackHitsLayer || !cameraCanvasMetrics) return;
+    const morning = isMorningTheme();
     const children = cameraPlaybackHitsLayer.children;
     while (children.length < targets.length) {
       const item = document.createElement("div");
@@ -1047,9 +1179,12 @@ export function createStepGridBuilder(deps) {
       item.style.width = `${Math.max(2, Math.round(width))}px`;
       item.style.height = `${Math.max(2, Math.round(height))}px`;
       item.style.borderRadius = `${Math.round(radius)}px`;
-      item.style.borderColor = colorAlpha(rect.accent, 0.98);
-      item.style.background = colorAlpha(rect.accent, 0.2);
-      item.style.boxShadow = `inset 0 0 0 1px ${colorAlpha(rect.accent, 0.36)}`;
+      const litColor = morning ? colorShade(rect.accent, 0.28) : rect.accent;
+      item.style.borderColor = colorAlpha(litColor, morning ? 0.92 : 0.98);
+      item.style.background = colorAlpha(litColor, morning ? 0.26 : 0.2);
+      item.style.boxShadow = morning
+        ? `inset 0 0 0 1px rgba(255,255,255,0.62), 0 0 0 1px ${colorAlpha(litColor, 0.28)}`
+        : `inset 0 0 0 1px ${colorAlpha(litColor, 0.36)}`;
     });
   }
 
@@ -1058,10 +1193,9 @@ export function createStepGridBuilder(deps) {
     const bar = Math.max(0, Math.min(renderedSegmentCount() - 1, Math.round(Number(barIndex) || 0)));
     const step = Math.max(0, Math.min(BASE_STEPS_PER_BAR - 1, Math.floor(Number(stepIndex) || 0)));
     const stepWidth = cameraCanvasMetrics.barWidth / BASE_STEPS_PER_BAR;
-    const x = bar * cameraCanvasMetrics.barWidth + step * stepWidth;
+    const x = bar * cameraCanvasMetrics.barWidth + (step + 0.5) * stepWidth;
     cameraPlaybackBeat.hidden = false;
-    cameraPlaybackBeat.style.transform = `translateX(${Math.round(x)}px)`;
-    cameraPlaybackBeat.style.width = `${Math.max(2, Math.round(stepWidth))}px`;
+    cameraPlaybackBeat.style.transform = `translate3d(${Math.round(x - 4)}px, 0, 0)`;
   }
 
   function hideCameraPlaybackBeat() {
@@ -1673,10 +1807,38 @@ export function createStepGridBuilder(deps) {
     stepGrid.appendChild(cameraCanvasWrap);
 
     rows.forEach(({ id: hit, label, type, accent }, index) => {
+      const gridRow = String(editorLaneGridRow?.("grid", hit, index, rows.length) ?? (index + 2));
       const rowLabel = makeTrackLabel(hit, label, type, accent);
       rowLabel.style.gridColumn = "1";
-      rowLabel.style.gridRow = String(editorLaneGridRow?.("grid", hit, index, rows.length) ?? (index + 2));
+      rowLabel.style.gridRow = gridRow;
       stepGrid.appendChild(rowLabel);
+      const laneKey = `grid:${hit}`;
+      if (isAutomationOpen(laneKey)) {
+        rowLabel.classList.add("is-automation-active");
+        const automationWrap = document.createElement("div");
+        automationWrap.className = "camera-grid-automation-row";
+        automationWrap.dataset.hit = hit;
+        automationWrap.style.gridColumn = "2 / -1";
+        automationWrap.style.gridRow = gridRow;
+        automationWrap.style.setProperty("--track-accent", accent || "#7dd3fc");
+        const automationLane = createAutomationLane({
+          notes: notesForGridAutomation(hit, renderedSegmentCount()),
+          row: { id: hit, label, type, accent },
+          state,
+          renderedSegmentCount: renderedSegmentCount(),
+          baseStepsPerBar: BASE_STEPS_PER_BAR,
+          viewStartBar: gridStartBar(),
+          normalizeStepPosition,
+          setHitData,
+          selectStep,
+          renderStepGrid,
+          setStatus: (message) => { status.textContent = message; },
+          parameterId: automationParamForLane(laneKey).id
+        });
+        automationLane.classList.add("grid-row-automation");
+        automationWrap.appendChild(automationLane);
+        stepGrid.appendChild(automationWrap);
+      }
     });
     const pianoRollLaneCount = appendCurrentPianoRollLanes(rows.length + 2);
     stepGrid.style.setProperty("--camera-grid-rows", String(Math.max(stackRowCount, rows.length + pianoRollLaneCount) + 1));
@@ -1835,8 +1997,8 @@ export function createStepGridBuilder(deps) {
       stepRow.style.gridRow = gridRow;
       stepRow.style.gridTemplateColumns = `repeat(${renderedSegments * stepsForTrack}, minmax(0, 1fr))`;
       stepRow.style.columnGap = `${Math.max(0.5, Math.min(5, 80 / Math.max(1, stepsForTrack * segments)))}px`;
-      for (let seg = 0; seg < renderedSegments; seg += 1) {
-        for (let visualStep = 0; visualStep < stepsForTrack; visualStep += 1) {
+	      for (let seg = 0; seg < renderedSegments; seg += 1) {
+	        for (let visualStep = 0; visualStep < stepsForTrack; visualStep += 1) {
           const step = visualStepToPatternStep(visualStep, stepsForTrack);
           const baseStep = Math.floor(step);
           const button = document.createElement("button");
@@ -1903,11 +2065,31 @@ export function createStepGridBuilder(deps) {
             });
             scheduleDeferredDrawRender(scrollLeft, scrollTop);
           });
-          stepRow.appendChild(button);
-        }
-      }
-      stepGrid.appendChild(stepRow);
-    });
+	          stepRow.appendChild(button);
+	        }
+	      }
+	      const laneKey = `grid:${hit}`;
+	      if (isAutomationOpen(laneKey)) {
+	        stepRow.classList.add("is-automation-active");
+	        const automationLane = createAutomationLane({
+	          notes: notesForGridAutomation(hit, renderedSegments),
+	          row: { id: hit, label, type, accent },
+	          state,
+	          renderedSegmentCount: renderedSegments,
+	          baseStepsPerBar: BASE_STEPS_PER_BAR,
+	          viewStartBar: gridStartBar(),
+	          normalizeStepPosition,
+	          setHitData,
+	          selectStep,
+	          renderStepGrid,
+	          setStatus: (message) => { status.textContent = message; },
+	          parameterId: automationParamForLane(laneKey).id
+	        });
+	        automationLane.classList.add("grid-row-automation");
+	        stepRow.appendChild(automationLane);
+	      }
+	      stepGrid.appendChild(stepRow);
+	    });
     appendCurrentPianoRollLanes(rows.length + 2);
     renderStepGrid();
     onAfterBuild();

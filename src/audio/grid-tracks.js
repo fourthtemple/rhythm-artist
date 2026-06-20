@@ -128,6 +128,20 @@ export function removeTrackFromConfigMaps(config, trackId) {
       next[mapKey] = map;
     }
   });
+  if (next?.trackAutomationParams && typeof next.trackAutomationParams === "object") {
+    const map = { ...next.trackAutomationParams };
+    delete map[`grid:${trackId}`];
+    delete map[`piano:${trackId}`];
+    delete map[`wave:${trackId}`];
+    next.trackAutomationParams = map;
+  }
+  if (next?.trackAutomationCurves && typeof next.trackAutomationCurves === "object") {
+    const map = { ...next.trackAutomationCurves };
+    delete map[`grid:${trackId}`];
+    delete map[`piano:${trackId}`];
+    delete map[`wave:${trackId}`];
+    next.trackAutomationCurves = map;
+  }
   return next;
 }
 
@@ -160,9 +174,23 @@ const replaceKeyInMap = (value, oldId, newId) => {
 const replaceLaneKeyTrackId = (key, oldId, newId) => {
   const oldGrid = `grid:${oldId}`;
   const oldPiano = `piano:${oldId}`;
+  const oldWave = `wave:${oldId}`;
   if (key === oldGrid) return `grid:${newId}`;
   if (key === oldPiano) return `piano:${newId}`;
+  if (key === oldWave) return `wave:${newId}`;
   return key;
+};
+
+const replaceLaneKeysInMap = (value, oldId, newId) => {
+  if (!value || typeof value !== "object") return value;
+  let changed = false;
+  const next = {};
+  Object.entries(value).forEach(([key, mapValue]) => {
+    const nextKey = replaceLaneKeyTrackId(key, oldId, newId);
+    if (nextKey !== key) changed = true;
+    next[nextKey] = mapValue;
+  });
+  return changed ? next : value;
 };
 
 const replaceMidiControlTrackId = (map, oldId, newId) => {
@@ -226,6 +254,8 @@ export function replaceTrackIdInConfig(config, oldId, newId) {
 
   next.pianoRollLaneHeights = replaceKeyInMap(next.pianoRollLaneHeights, oldId, newId);
   next.pianoRollAutomationHeights = replaceKeyInMap(next.pianoRollAutomationHeights, oldId, newId);
+  next.trackAutomationParams = replaceLaneKeysInMap(next.trackAutomationParams, oldId, newId);
+  next.trackAutomationCurves = replaceLaneKeysInMap(next.trackAutomationCurves, oldId, newId);
   next.midiNoteMap = replaceKeyInMap(next.midiNoteMap, oldId, newId);
   next.midiControlMap = replaceMidiControlTrackId(next.midiControlMap, oldId, newId);
 

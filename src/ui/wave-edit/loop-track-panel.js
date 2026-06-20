@@ -18,6 +18,12 @@ import {
   storeFileHandle,
   supportsPersistentFileHandles
 } from "../sample-assets.js";
+import {
+  AUTOMATION_PARAMETERS,
+  automationLevel,
+  automationParameterById,
+  clampAutomationValue
+} from "../automation/automation-parameters.js";
 import { positionContextMenu } from "../context-menu.js";
 import { syncStepGridLaneRows } from "../grid/lane-grid-layout.js";
 
@@ -29,9 +35,10 @@ import { syncStepGridLaneRows } from "../grid/lane-grid-layout.js";
  * @typedef {{ id: string, name: string, barsInFile: number, audioUrl: string|null, source?: string, url?: string|null, root?: string|null, path?: string|null, fileName?: string|null, handleId?: string|null, relinkRequired?: boolean, missing?: boolean, buffer: AudioBuffer|null, regions: LoopRegion[], selected: boolean }} LoopTrack
  */
 
-const LANE_H = 64; // px – must match CSS .sample-lane height
+const LANE_H = 40; // px - must match CSS .sample-lane height
 const BAR_EPSILON = 1e-6;
 const MIN_REGION_BARS = 1 / 64;
+const SVG_NS = "http://www.w3.org/2000/svg";
 
 const clampNumber = (value, min, max) => Math.max(min, Math.min(max, value));
 const finiteNumber = (value, fallback = 0) => {
@@ -376,6 +383,7 @@ function drawRuler(canvas, rulerBars, beatsPerBar = 4, clear = true) {
 }
 
 export function createLoopTrackPanel({
+  state = null,
   stepGrid,
   $ = (sel) => document.querySelector(sel),
   getBarsLength = () => 1,
@@ -417,7 +425,208 @@ export function createLoopTrackPanel({
   /** @type {Function|null} Unsubscribe from engine stop events */
   let _stopUnsub = null;
   /** @type {Set<AudioBufferSourceNode>} currently running sources (for stop) */
-  const activeSources = new Set();
+	  const activeSources = new Set();
+	  const activeAutomationLaneKey = () => state?.activeAutomationLaneKey || "";
+	  const automationParamMap = () => {
+	    if (!state?.config) return {};
+	    state.config.trackAutomationParams = {
+	      ...(state.config.trackAutomationParams || {})
+	    };
+	    return state.config.trackAutomationParams;
+	  };
+  const automationParamForLane = (laneKey) => automationParameterById(automationParamMap()[laneKey] || state?.pianoRollAutomationParam);
+  const isAutomationOpen = (laneKey) => activeAutomationLaneKey() === laneKey;
+  const automationCurveMap = () => {
+    if (!state?.config) return {};
+    state.config.trackAutomationCurves = {
+      ...(state.config.trackAutomationCurves || {})
+    };
+    return state.config.trackAutomationCurves;
+  };
+  const waveAutomationPoints = (laneKey, param) => {
+    const source = automationCurveMap()[laneKey]?.[param.id];
+    if (!Array.isArray(source)) return [];
+    return source
+      .map((point) => ({
+        bar: clampNumber(point?.bar, 0, Math.max(1, getBarsLength()), 0),
+        value: clampAutomationValue(param, point?.value)
+      }))
+      .sort((a, b) => a.bar - b.bar);
+  };
+  const storeWaveAutomationPoints = (laneKey, param, points) => {
+    const curves = automationCurveMap();
+    const laneCurves = { ...(curves[laneKey] || {}) };
+    laneCurves[param.id] = points
+      .map((point) => ({
+        bar: Number(clampNumber(point.bar, 0, Math.max(1, getBarsLength()), 0).toFixed(4)),
+        value: Number(clampAutomationValue(param, point.value).toFixed(4))
+      }))
+      .sort((a, b) => a.bar - b.bar);
+    curves[laneKey] = laneCurves;
+  };
+  const automationXPercent = (point, totalBars) =>
+    Math.max(0, Math.min(100, (point.bar / Math.max(1, totalBars)) * 100));
+  const automationYPercent = (param, value) =>
+    Math.max(9, Math.min(91, 100 - automationLevel(param, value) * 100));
+  function createWaveAutomationOverlay(track, laneKey, param) {
+    const totalBars = Math.max(1, getBarsLength());
+    const points = waveAutomationPoints(laneKey, param);
+    const overlay = document.createElement("div");
+    overlay.className = "sample-lane-automation";
+    overlay.dataset.automationParam = param.id;
+    overlay.title = `${track.name} ${param.label} automation`;
+
+    const paramLabel = document.createElement("div");
+    paramLabel.className = "piano-roll-automation-param-label";
+    paramLabel.textContent = param.label;
+
+    const lane = document.createElement("div");
+    lane.className = "piano-roll-automation-lane";
+    lane.title = `${param.label} automation: double-click to add, drag anchors to edit, Option-click or Delete to remove`;
+    const curve = document.createElementNS(SVG_NS, "svg");
+    curve.classList.add("piano-roll-automation-curve");
+    curve.setAttribute("viewBox", "0 0 100 100");
+    curve.setAttribute("preserveAspectRatio", "none");
+    curve.setAttribute("aria-hidden", "true");
+    const shadowLine = document.createElementNS(SVG_NS, "polyline");
+    shadowLine.classList.add("piano-roll-automation-curve-shadow");
+    const line = document.createElementNS(SVG_NS, "polyline");
+    line.classList.add("piano-roll-automation-curve-line");
+    const updateCurve = () => {
+      const drawn = points.length
+        ? [{ bar: 0, value: points[0].value }, ...points, { bar: totalBars, value: points[points.length - 1].value }]
+        : [{ bar: 0, value: param.fallback }, { bar: totalBars, value: param.fallback }];
+      const text = drawn
+        .map((point) => `${automationXPercent(point, totalBars).toFixed(3)},${automationYPercent(param, point.value).toFixed(3)}`)
+        .join(" ");
+      shadowLine.setAttribute("points", text);
+      line.setAttribute("points", text);
+    };
+    curve.append(shadowLine, line);
+    lane.appendChild(curve);
+
+    const setAnchorVisual = (anchor, point) => {
+      anchor.style.left = `${automationXPercent(point, totalBars)}%`;
+      anchor.style.top = `${automationYPercent(param, point.value)}%`;
+      anchor.style.setProperty("--level", String(automationLevel(param, point.value)));
+      anchor.title = `${track.name} ${param.label} ${param.display(point.value)} at bar ${Number(point.bar + 1).toFixed(2)}`;
+      anchor.setAttribute("aria-label", `${anchor.title}. Drag to edit automation.`);
+    };
+    const pointerToPoint = (event) => {
+      const rect = lane.getBoundingClientRect();
+      const x = clampNumber((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1, 0);
+      const y = clampNumber((event.clientY - rect.top) / Math.max(1, rect.height), 0, 1, 0);
+      return {
+        bar: x * totalBars,
+        value: clampAutomationValue(param, param.min + (1 - y) * (param.max - param.min))
+      };
+    };
+    const removePoint = (index) => {
+      points.splice(index, 1);
+      storeWaveAutomationPoints(laneKey, param, points);
+      setStatus(`${track.name} ${param.label} anchor removed`);
+      rebuildStepGridRows();
+    };
+    const commitPoints = () => {
+      storeWaveAutomationPoints(laneKey, param, points);
+      setStatus(`${track.name} ${param.label} automation updated`);
+    };
+    const addAnchor = (point, index) => {
+      const anchor = document.createElement("button");
+      anchor.type = "button";
+      anchor.className = "piano-roll-automation-anchor";
+      setAnchorVisual(anchor, point);
+      let drag = null;
+      anchor.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.altKey) {
+          removePoint(index);
+          return;
+        }
+        drag = { pointerId: event.pointerId };
+        anchor.setPointerCapture?.(event.pointerId);
+        anchor.classList.add("is-dragging");
+      });
+      anchor.addEventListener("pointermove", (event) => {
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        const next = pointerToPoint(event);
+        point.bar = next.bar;
+        point.value = next.value;
+        setAnchorVisual(anchor, point);
+        updateCurve();
+      });
+      const finishDrag = (event) => {
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        anchor.releasePointerCapture?.(event.pointerId);
+        anchor.classList.remove("is-dragging");
+        drag = null;
+        commitPoints();
+        rebuildStepGridRows();
+      };
+      anchor.addEventListener("pointerup", finishDrag);
+      anchor.addEventListener("pointercancel", finishDrag);
+      anchor.addEventListener("keydown", (event) => {
+        if (event.key !== "Backspace" && event.key !== "Delete") return;
+        event.preventDefault();
+        event.stopPropagation();
+        removePoint(index);
+      });
+      lane.appendChild(anchor);
+    };
+
+    points.forEach(addAnchor);
+    updateCurve();
+    lane.addEventListener("dblclick", (event) => {
+      if (event.target?.closest?.(".piano-roll-automation-anchor")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      points.push(pointerToPoint(event));
+      storeWaveAutomationPoints(laneKey, param, points);
+      setStatus(`${track.name} ${param.label} anchor added`);
+      rebuildStepGridRows();
+    });
+    overlay.append(paramLabel, lane);
+    return overlay;
+  }
+  function openWaveAutomationMenu(event, track) {
+    event.preventDefault();
+    event.stopPropagation();
+	    if (!state) return;
+	    const laneKey = `wave:${track.id}`;
+	    const current = automationParamForLane(laneKey);
+	    const open = (paramId) => {
+	      const param = automationParameterById(paramId);
+	      automationParamMap()[laneKey] = param.id;
+	      state.activeAutomationLaneKey = laneKey;
+	      state.pianoRollAutomationParam = param.id;
+	      setStatus(`${track.name} automation: ${param.label}`);
+	      rebuildStepGridRows();
+	    };
+	    if (!showContextMenu) {
+	      open(current.id);
+	      return;
+	    }
+	    showContextMenu(event, [
+	      ...AUTOMATION_PARAMETERS.map((param) => ({
+	        label: `${param.id === current.id && isAutomationOpen(laneKey) ? "✓ " : ""}${param.label}`,
+	        action: () => open(param.id)
+	      })),
+	      { separator: true },
+	      {
+	        label: "Hide automation",
+	        disabled: !isAutomationOpen(laneKey),
+	        action: () => {
+	          if (isAutomationOpen(laneKey)) state.activeAutomationLaneKey = "";
+	          setStatus(`${track.name} automation off`);
+	          rebuildStepGridRows();
+	        }
+	      }
+	    ]);
+	  }
   /** Playhead: which bar the engine is currently on (local, wrapped) */
   let _playheadBar = -1;
   /** Scheduled audio time of that bar's downbeat (for smooth interpolation) */
@@ -2451,28 +2660,40 @@ export function createLoopTrackPanel({
         setStatus(active ? `Solo loop: ${track.name}` : "Loop solo cleared");
       });
 
-      const muteBtn = document.createElement("button");
-      muteBtn.type = "button";
-      muteBtn.className = `mute-button track-row-control${isTrackMuted(track.id) ? " is-active" : ""}`;
+	      const muteBtn = document.createElement("button");
+	      muteBtn.type = "button";
+	      muteBtn.className = `mute-button track-row-control${isTrackMuted(track.id) ? " is-active" : ""}`;
       muteBtn.dataset.muteTrack = track.id;
       muteBtn.textContent = "M";
       muteBtn.title = `Mute "${track.name}"`;
       muteBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        toggleMute?.(track.id);
-      });
-
-      trackStateButtons.append(soloBtn, muteBtn);
-      label.append(span, trackStateButtons);
+	        toggleMute?.(track.id);
+	      });
+	
+	      const laneKey = `wave:${track.id}`;
+	      const automationBtn = document.createElement("button");
+	      automationBtn.type = "button";
+	      automationBtn.className = `automation-button track-row-control${isAutomationOpen(laneKey) ? " is-active" : ""}`;
+	      automationBtn.dataset.automationLane = laneKey;
+	      automationBtn.textContent = "A";
+	      automationBtn.title = `Automation for "${track.name}"`;
+	      automationBtn.addEventListener("click", (event) => openWaveAutomationMenu(event, track));
+	      automationBtn.addEventListener("contextmenu", (event) => openWaveAutomationMenu(event, track));
+	
+	      trackStateButtons.append(soloBtn, muteBtn, automationBtn);
+	      label.classList.toggle("is-automation-active", isAutomationOpen(laneKey));
+	      label.append(span, trackStateButtons);
 
       // The timeline lane (spans all step columns)
       const lane = document.createElement("div");
-      lane.className = "sample-lane";
-      lane.dataset.loopTrack = track.id;
-      lane.style.gridColumn = "2 / -1";
-      lane.style.gridRow = gridRow;
-      lane.style.height = `${LANE_H}px`;
-      lane.style.minHeight = `${LANE_H}px`;
+	      lane.className = "sample-lane";
+	      lane.dataset.loopTrack = track.id;
+	      lane.style.gridColumn = "2 / -1";
+	      lane.style.gridRow = gridRow;
+	      lane.style.height = `${LANE_H}px`;
+	      lane.style.minHeight = `${LANE_H}px`;
+	      lane.classList.toggle("is-automation-active", isAutomationOpen(laneKey));
 
       // Ruler canvas sits behind everything
       const rulerCanvas = document.createElement("canvas");
@@ -2480,10 +2701,15 @@ export function createLoopTrackPanel({
       lane.appendChild(rulerCanvas);
 
       // Playhead line
-      const playhead = document.createElement("div");
-      playhead.className = "sample-lane-playhead";
-      playhead.style.display = "none";
-      lane.appendChild(playhead);
+	      const playhead = document.createElement("div");
+	      playhead.className = "sample-lane-playhead";
+	      playhead.style.display = "none";
+	      lane.appendChild(playhead);
+	
+	      if (isAutomationOpen(laneKey)) {
+	        const param = automationParamForLane(laneKey);
+	        lane.appendChild(createWaveAutomationOverlay(track, laneKey, param));
+	      }
 
       // ── Left-click anywhere in the lane (including on regions) → draw marquee
       lane.addEventListener("mousedown", (e) => {

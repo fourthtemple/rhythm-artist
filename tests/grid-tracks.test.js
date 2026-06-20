@@ -150,6 +150,8 @@ test("replaceTrackIdInConfig moves track data and editor references", () => {
     editorLaneOrder: ["grid:kick", "piano:kick", "wave:loop_a"],
     pianoRollLaneHeights: { kick: 144 },
     pianoRollAutomationHeights: { kick: 48 },
+    trackAutomationParams: { "grid:kick": "velocity", "piano:kick": "dubEcho", "wave:loop_a": "reverbSend" },
+    trackAutomationCurves: { "grid:kick": { velocity: [{ bar: 0, value: 0.5 }] }, "piano:kick": { dubEcho: [{ bar: 1, value: 0.4 }] } },
     midiNoteMap: { kick: 36 },
     midiControlMap: {
       "track.kick.level": { kind: "cc", controller: 7 },
@@ -176,6 +178,15 @@ test("replaceTrackIdInConfig moves track data and editor references", () => {
   assert.deepEqual(next.editorLaneOrder, ["grid:clap~a1", "piano:clap~a1", "wave:loop_a"]);
   assert.equal(next.pianoRollLaneHeights["clap~a1"], 144);
   assert.equal(next.pianoRollAutomationHeights["clap~a1"], 48);
+  assert.deepEqual(next.trackAutomationParams, {
+    "grid:clap~a1": "velocity",
+    "piano:clap~a1": "dubEcho",
+    "wave:loop_a": "reverbSend"
+  });
+  assert.deepEqual(next.trackAutomationCurves, {
+    "grid:clap~a1": { velocity: [{ bar: 0, value: 0.5 }] },
+    "piano:clap~a1": { dubEcho: [{ bar: 1, value: 0.4 }] }
+  });
   assert.equal(next.midiNoteMap["clap~a1"], 36);
   assert.equal(next.midiControlMap["track.clap~a1.level"].controller, 7);
   assert.equal(next.midiControlMap["selected.velocity"].controller, 74);

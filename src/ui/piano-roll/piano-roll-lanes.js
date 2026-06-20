@@ -8,12 +8,9 @@ import { createAutomationLane } from "./automation/automation-lane.js";
 import { PITCH_OFFSET_MAX, PITCH_OFFSET_MIN } from "../../audio/rhythm-config.js";
 
 const DEFAULT_ACCENT = "#c4b5fd";
-const DEFAULT_LANE_HEIGHT = 132;
-const MIN_LANE_HEIGHT = 54;
-const MAX_LANE_HEIGHT = 240;
-const DEFAULT_AUTOMATION_HEIGHT = 42;
-const MIN_AUTOMATION_HEIGHT = 28;
-const MAX_AUTOMATION_HEIGHT = 180;
+const DEFAULT_LANE_HEIGHT = 58;
+const MIN_LANE_HEIGHT = 40;
+const MAX_LANE_HEIGHT = 1600;
 let editSerial = 0;
 
 function openPianoRollTrackIds(state) {
@@ -188,20 +185,6 @@ function setLaneHeight(state, trackId, height) {
   };
 }
 
-function automationHeightForTrack(state, trackId, laneHeight = DEFAULT_LANE_HEIGHT) {
-  const height = state.config?.pianoRollAutomationHeights?.[trackId];
-  const max = Math.min(MAX_AUTOMATION_HEIGHT, Math.max(MIN_AUTOMATION_HEIGHT, laneHeight - 32));
-  return clampNumber(height, MIN_AUTOMATION_HEIGHT, max, Math.min(DEFAULT_AUTOMATION_HEIGHT, max));
-}
-
-function setAutomationHeight(state, trackId, height, laneHeight = DEFAULT_LANE_HEIGHT) {
-  const max = Math.min(MAX_AUTOMATION_HEIGHT, Math.max(MIN_AUTOMATION_HEIGHT, laneHeight - 32));
-  state.config.pianoRollAutomationHeights = {
-    ...(state.config.pianoRollAutomationHeights || {}),
-    [trackId]: clampNumber(height, MIN_AUTOMATION_HEIGHT, max, Math.min(DEFAULT_AUTOMATION_HEIGHT, max))
-  };
-}
-
 function positionForPointer({ event, noteArea, min, max, renderedSegmentCount, baseStepsPerBar, normalizeStepPosition, state, viewStartBar = 0 }) {
   const rect = noteArea.getBoundingClientRect();
   const x = clampNumber((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1, 0);
@@ -296,11 +279,13 @@ export function appendPianoRollLanes({
   const rowsById = new Map(rows.map((row) => [row.id, row]));
   const ids = openPianoRollTrackIds(state).filter((id) => rowsById.has(id));
 
-  ids.forEach((trackId, index) => {
-    const row = rowInfoForTrack(trackId, rowsById);
-    const laneHeight = laneHeightForTrack(state, row.id);
-    const automationHeight = automationHeightForTrack(state, row.id, laneHeight);
-    const notes = notesForTrack({
+	ids.forEach((trackId, index) => {
+	    const row = rowInfoForTrack(trackId, rowsById);
+	    const laneHeight = laneHeightForTrack(state, row.id);
+	    const laneKey = `piano:${row.id}`;
+	    const automationActive = state.activeAutomationLaneKey === laneKey;
+	    const automationParam = state.config?.trackAutomationParams?.[laneKey] || state.pianoRollAutomationParam;
+	    const notes = notesForTrack({
       state,
       trackId: row.id,
       renderedSegmentCount,
@@ -311,8 +296,9 @@ export function appendPianoRollLanes({
     const { min, max } = pitchRange(notes);
     const pitchRows = Math.max(1, max - min + 1);
     const gridRow = String(editorLaneGridRow?.("piano", row.id, index) ?? (startRow + index));
-    const label = makeTrackLabel(row.id, row.label, row.type, row.accent);
-    label.classList.add("piano-roll-lane-label");
+	    const label = makeTrackLabel(row.id, row.label, row.type, row.accent, "piano");
+	    label.classList.add("piano-roll-lane-label");
+	    label.classList.toggle("is-automation-active", automationActive);
     label.dataset.laneKey = `piano:${row.id}`;
     label.style.gridColumn = "1";
     label.style.gridRow = gridRow;
@@ -328,10 +314,10 @@ export function appendPianoRollLanes({
     lane.style.gridRow = gridRow;
     lane.style.height = `${laneHeight}px`;
     lane.style.setProperty("--track-accent", row.accent || DEFAULT_ACCENT);
-    lane.style.setProperty("--pitch-rows", String(pitchRows));
-    lane.style.setProperty("--bar-count", String(renderedSegmentCount));
-    lane.style.setProperty("--lane-height", `${laneHeight}px`);
-    lane.style.setProperty("--automation-height", `${automationHeight}px`);
+	    lane.style.setProperty("--pitch-rows", String(pitchRows));
+	    lane.style.setProperty("--bar-count", String(renderedSegmentCount));
+	    lane.style.setProperty("--lane-height", `${laneHeight}px`);
+	    lane.classList.toggle("is-automation-active", automationActive);
 
     const noteArea = document.createElement("div");
     noteArea.className = "piano-roll-note-area";
@@ -348,7 +334,6 @@ export function appendPianoRollLanes({
     if (!notes.length) {
       const empty = document.createElement("div");
       empty.className = "piano-roll-empty";
-      empty.textContent = "No notes";
       lane.appendChild(empty);
     }
 
@@ -554,54 +539,23 @@ export function appendPianoRollLanes({
       noteArea.appendChild(noteEl);
     });
 
-    const automationLane = createAutomationLane({
-      notes,
-      row,
-      state,
-      renderedSegmentCount,
-      baseStepsPerBar,
-      viewStartBar,
-      normalizeStepPosition,
-      setHitData,
-      selectStep,
-      renderStepGrid,
-      setStatus
-    });
-    lane.appendChild(automationLane);
-
-    const automationResizeHandle = document.createElement("div");
-    automationResizeHandle.className = "piano-roll-automation-resize-handle";
-    automationResizeHandle.title = "Drag to resize automation pane";
-    automationResizeHandle.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const startY = event.clientY;
-      const startHeight = automationHeightForTrack(state, row.id, laneHeightForTrack(state, row.id));
-      automationResizeHandle.setPointerCapture?.(event.pointerId);
-      const onMove = (moveEvent) => {
-        const currentLaneHeight = laneHeightForTrack(state, row.id);
-        const nextHeight = clampNumber(startHeight + startY - moveEvent.clientY, MIN_AUTOMATION_HEIGHT, Math.min(MAX_AUTOMATION_HEIGHT, currentLaneHeight - 32), startHeight);
-        lane.style.setProperty("--automation-height", `${nextHeight}px`);
-        moveEvent.preventDefault();
-      };
-      const onUp = (upEvent) => {
-        const currentLaneHeight = laneHeightForTrack(state, row.id);
-        const nextHeight = clampNumber(startHeight + startY - upEvent.clientY, MIN_AUTOMATION_HEIGHT, Math.min(MAX_AUTOMATION_HEIGHT, currentLaneHeight - 32), startHeight);
-        automationResizeHandle.releasePointerCapture?.(event.pointerId);
-        automationResizeHandle.removeEventListener("pointermove", onMove);
-        automationResizeHandle.removeEventListener("pointerup", onUp);
-        automationResizeHandle.removeEventListener("pointercancel", onUp);
-        setAutomationHeight(state, row.id, nextHeight, currentLaneHeight);
-        setStatus?.(`${row.label} automation height ${Math.round(nextHeight)}px`);
-        renderStepGrid();
-        upEvent.preventDefault();
-      };
-      automationResizeHandle.addEventListener("pointermove", onMove);
-      automationResizeHandle.addEventListener("pointerup", onUp);
-      automationResizeHandle.addEventListener("pointercancel", onUp);
-    });
-    lane.appendChild(automationResizeHandle);
+	    if (automationActive) {
+	      const automationLane = createAutomationLane({
+	        notes,
+	        row,
+	        state,
+	        renderedSegmentCount,
+	        baseStepsPerBar,
+	        viewStartBar,
+	        normalizeStepPosition,
+	        setHitData,
+	        selectStep,
+	        renderStepGrid,
+	        setStatus,
+	        parameterId: automationParam
+	      });
+	      lane.appendChild(automationLane);
+	    }
 
     const resizeHandle = document.createElement("div");
     resizeHandle.className = "piano-roll-resize-handle";
@@ -615,10 +569,8 @@ export function appendPianoRollLanes({
       resizeHandle.setPointerCapture?.(event.pointerId);
       const onMove = (moveEvent) => {
         const nextHeight = clampNumber(startHeight + moveEvent.clientY - startY, MIN_LANE_HEIGHT, MAX_LANE_HEIGHT, startHeight);
-        const nextAutomationHeight = automationHeightForTrack(state, row.id, nextHeight);
         lane.style.height = `${nextHeight}px`;
         lane.style.setProperty("--lane-height", `${nextHeight}px`);
-        lane.style.setProperty("--automation-height", `${nextAutomationHeight}px`);
         label.style.minHeight = `${nextHeight}px`;
         label.style.height = `${nextHeight}px`;
         label.style.setProperty("--lane-height", `${nextHeight}px`);

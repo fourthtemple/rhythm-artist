@@ -133,7 +133,7 @@ export function createWebMidiInput({
 
   function summary() {
     if (status === MIDI_STATUS.PENDING) return "MIDI permission...";
-    if (status === MIDI_STATUS.UNSUPPORTED) return "Web MIDI unavailable";
+    if (status === MIDI_STATUS.UNSUPPORTED) return "Hardware MIDI needs Chrome or Edge; Safari does not support Web MIDI";
     if (status === MIDI_STATUS.DENIED) return lastError || "MIDI blocked";
     if (status === MIDI_STATUS.READY) {
       const names = inputNames();
@@ -142,7 +142,7 @@ export function createWebMidiInput({
     return "MIDI not requested";
   }
 
-  function emitStatus(prefix = "Keyboard armed") {
+  function emitStatus(prefix = "MIDI") {
     setStatus(`${prefix} · ${summary()}`);
   }
 
@@ -201,7 +201,7 @@ export function createWebMidiInput({
   async function requestAccess({ announce = true } = {}) {
     if (!isSupported()) {
       status = MIDI_STATUS.UNSUPPORTED;
-      lastError = "Web MIDI unavailable";
+      lastError = "Hardware MIDI needs Chrome or Edge; Safari does not support Web MIDI";
       if (announce && isEnabled()) emitStatus();
       return false;
     }

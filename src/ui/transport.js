@@ -139,7 +139,6 @@ export function createTransport(deps) {
     syncSelectedPitchDisplay
   } = deps;
   let beatUnsubscribe = null;
-  let playheadTimers = new Set();
   let cameraBeatQueue = [];
   let lastPlayheadKey = "";
   let activePlayheadButtons = [];
@@ -147,37 +146,15 @@ export function createTransport(deps) {
   let lastCameraPanTarget = -1;
   let lastCameraPanAt = 0;
   let lastCameraFollowGeometryKey = "";
+  let playheadRaf = 0;
+  let playbackStartPromise = null;
 
   const visibleSegments = () => Math.max(1, Math.round(Number(state.segmentsCount) || 1));
   const renderedSegments = () => Math.max(visibleSegments(), Math.round(Number(state.renderedSegmentsCount) || visibleSegments()));
   const totalSongBars = () => Math.max(1, state.config.patterns.jazz.bars.length);
 
-  function clearScheduledPlayheadUpdates() {
-    if (typeof window !== "undefined") {
-      playheadTimers.forEach((timer) => window.clearTimeout(timer));
-    }
-    playheadTimers.clear();
-  }
-
-  function schedulePlayheadUpdate(scheduledTime) {
-    if (typeof window === "undefined") return;
-    const contextTime = finiteNumber(state.engine?.context?.currentTime, 0);
-    const delayMs = Math.max(0, Math.round((finiteNumber(scheduledTime, contextTime) - contextTime) * 1000));
-    const timer = window.setTimeout(() => {
-      playheadTimers.delete(timer);
-      updatePlayhead();
-    }, delayMs);
-    playheadTimers.add(timer);
-    if (playheadTimers.size > 128) {
-      const [oldest] = playheadTimers;
-      window.clearTimeout(oldest);
-      playheadTimers.delete(oldest);
-    }
-  }
-
   function attachBeatTracker() {
     if (beatUnsubscribe) beatUnsubscribe();
-    clearScheduledPlayheadUpdates();
     cameraBeatQueue = [];
     lastCameraBeat = null;
     beatUnsubscribe = state.engine.on("beat", (payload) => {
@@ -194,7 +171,6 @@ export function createTransport(deps) {
       });
       cameraBeatQueue.sort((a, b) => a.scheduledTime - b.scheduledTime);
       if (cameraBeatQueue.length > 96) cameraBeatQueue.splice(0, cameraBeatQueue.length - 96);
-      schedulePlayheadUpdate(scheduledTime);
     });
   }
 
@@ -203,7 +179,6 @@ export function createTransport(deps) {
       beatUnsubscribe();
       beatUnsubscribe = null;
     }
-    clearScheduledPlayheadUpdates();
     cameraBeatQueue = [];
     lastCameraBeat = null;
   }
@@ -332,11 +307,26 @@ export function createTransport(deps) {
 
   function startPlayheadLoop() {
     if (!state.playing) return;
+    if (playheadRaf) return;
     updatePlayhead();
+    const tick = () => {
+      playheadRaf = 0;
+      if (!state.playing) return;
+      updatePlayhead();
+      if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+        playheadRaf = window.requestAnimationFrame(tick);
+      }
+    };
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      playheadRaf = window.requestAnimationFrame(tick);
+    }
   }
 
   function stopPlayheadLoop() {
-    clearScheduledPlayheadUpdates();
+    if (playheadRaf && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(playheadRaf);
+    }
+    playheadRaf = 0;
   }
 
   async function startPlayback() {
@@ -344,8 +334,10 @@ export function createTransport(deps) {
       setStatus("Open the localhost version for audio");
       return;
     }
+    if (state.playing) return;
+    if (playbackStartPromise) return playbackStartPromise;
     setStatus("Starting audio");
-    try {
+    playbackStartPromise = (async () => {
       const resumeBeat = state.pausedPlayback
         ? {
           bar: Math.max(0, Math.round(Number(state.pausedPlayback.bar) || 0)),
@@ -379,11 +371,16 @@ export function createTransport(deps) {
       resetPlayheadCache();
       startUiTimer();
       startPlayheadLoop();
+    })();
+    try {
+      await playbackStartPromise;
     } catch (error) {
       console.error("Rhythm sequencer audio failed to start", error);
       detachBeatTracker();
       state.playing = false;
       setStatus("Audio failed to start");
+    } finally {
+      playbackStartPromise = null;
     }
   }
 

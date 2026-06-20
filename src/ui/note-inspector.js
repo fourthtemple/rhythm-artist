@@ -351,6 +351,15 @@ export function createNoteInspector(deps) {
     }
     const visibleOctave = Math.round(clamp(state.selectedPianoOctave, minOctave, maxOctave, pitchOctave));
     state.selectedPianoOctave = visibleOctave;
+    if (typeof CustomEvent === "function") {
+      selectedPiano.dispatchEvent(new CustomEvent("selectedpianooctavechange", {
+        bubbles: true,
+        detail: {
+          octave: visibleOctave,
+          rangeKeys: visibleKeyCount
+        }
+      }));
+    }
     const octaveTooltip = octaveRangeTooltip(visibleOctave, visibleKeyCount, roundedPitch);
     const sizeTooltip = keyboardSizeTooltip(visibleKeyCount);
     const pianoControlTooltip = `${octaveTooltip}\n${sizeTooltip}`;

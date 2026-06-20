@@ -9,6 +9,15 @@ export const MAX_SECTION_BARS = 32;
 export const DEFAULT_TRACK_STEPS_PER_BAR = 16;
 export const DEFAULT_TIME_SIGNATURE = "4/4";
 export const TIME_SIGNATURE_OPTIONS = ["4/4", "3/4", "6/8", "5/4", "7/8"];
+const AUTOMATION_PARAMETER_IDS = new Set([
+  "velocity",
+  "offsetMs",
+  "attackMs",
+  "wobble",
+  "dubEcho",
+  "delaySend",
+  "reverbSend"
+]);
 // Pitch offsets map from A1 (MIDI 33), so MIDI 0..127 is -33..+94.
 export const PITCH_OFFSET_MIN = -33;
 export const PITCH_OFFSET_MAX = 94;
@@ -357,6 +366,8 @@ export const DEFAULT_RHYTHM_CONFIG = {
   editorLaneOrder: [],
   pianoRollLaneHeights: {},
   pianoRollAutomationHeights: {},
+  trackAutomationParams: {},
+  trackAutomationCurves: {},
   generatedRowsEditable: 0,
   soloTracks: [],
   mutedTracks: [],
@@ -556,6 +567,19 @@ const collectExtraTrackIds = (config = {}) => {
   return [...found];
 };
 
+const normalizeTrackAutomationParams = (value) => {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([laneKey, paramId]) => (
+        typeof laneKey === "string"
+        && /^(grid|piano|wave):/.test(laneKey)
+        && AUTOMATION_PARAMETER_IDS.has(String(paramId))
+      ))
+      .map(([laneKey, paramId]) => [laneKey, String(paramId)])
+  );
+};
+
 export const normalizeRhythmConfig = (config = {}) => {
   const merged = {
     ...cloneRhythmConfig(DEFAULT_RHYTHM_CONFIG),
@@ -717,23 +741,24 @@ export const normalizeRhythmConfig = (config = {}) => {
     : {};
   merged.pianoRollLaneHeights = Object.fromEntries(
     Object.entries(sourcePianoRollLaneHeights)
-      .map(([track, height]) => [track, Math.round(finiteNumber(height, 132))])
+      .map(([track, height]) => [track, Math.round(finiteNumber(height, 58))])
       .filter(([track, height]) => typeof track === "string"
         && ALL_TRACK_IDS.includes(baseTrackId(track))
-        && height >= 54
-        && height <= 240)
+        && height >= 40
+        && height <= 1600)
   );
   const sourcePianoRollAutomationHeights = merged.pianoRollAutomationHeights && typeof merged.pianoRollAutomationHeights === "object"
     ? merged.pianoRollAutomationHeights
     : {};
   merged.pianoRollAutomationHeights = Object.fromEntries(
     Object.entries(sourcePianoRollAutomationHeights)
-      .map(([track, height]) => [track, Math.round(finiteNumber(height, 42))])
+      .map(([track, height]) => [track, Math.round(finiteNumber(height, 22))])
       .filter(([track, height]) => typeof track === "string"
         && ALL_TRACK_IDS.includes(baseTrackId(track))
-        && height >= 28
+        && height >= 16
         && height <= 180)
   );
+  merged.trackAutomationParams = normalizeTrackAutomationParams(merged.trackAutomationParams);
   // Per-track 808 voice shape overrides: { trackId: { drive, punch, ... } }.
   // Keep only entries that carry at least one in-range field after clamping.
   const sourceShapes = merged.trackShapes && typeof merged.trackShapes === "object" ? merged.trackShapes : {};

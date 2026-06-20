@@ -4,6 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Rhythm Artist</title>
+    <script>
+      (() => {
+        let savedTheme = null;
+        try {
+          savedTheme = localStorage.getItem("rhythm-artist-theme");
+        } catch {
+          savedTheme = null;
+        }
+        document.documentElement.dataset.theme = savedTheme === "dark" ? "dark" : "morning";
+      })();
+    </script>
     <link rel="stylesheet" href="./src/rhythm-sequence-editor.css" />
   </head>
   <body>
@@ -36,6 +47,7 @@
             </label>
           </div>
           <div class="transport-cluster transport-view-cluster">
+            <button id="theme-toggle" type="button" class="theme-toggle" aria-pressed="true" title="Switch to dark mode">Morning</button>
             <button id="open-global-mix" type="button" class="topbar-view-btn">Mixer</button>
             <button id="open-project-manager" type="button" class="topbar-view-btn">Projects</button>
           </div>

@@ -1,5 +1,4 @@
 import {
-  AUTOMATION_PARAMETERS,
   automationLevel,
   automationParameterById,
   clampAutomationValue,
@@ -105,35 +104,25 @@ export function createAutomationLane({
   setHitData,
   selectStep,
   renderStepGrid,
-  setStatus
+  setStatus,
+  parameterId = null
 }) {
   const rootNotes = rootAutomationNotes(notes);
-  const param = automationParameterById(state.pianoRollAutomationParam);
+  const param = automationParameterById(parameterId || state.pianoRollAutomationParam);
   state.pianoRollAutomationParam = param.id;
 
   const wrap = document.createElement("div");
   wrap.className = "piano-roll-automation";
+  wrap.dataset.automationParam = param.id;
 
-  const select = document.createElement("select");
-  select.className = "piano-roll-automation-select";
-  select.setAttribute("aria-label", "Automation parameter");
-  AUTOMATION_PARAMETERS.forEach((item) => {
-    const option = document.createElement("option");
-    option.value = item.id;
-    option.textContent = item.label;
-    option.selected = item.id === param.id;
-    select.appendChild(option);
-  });
-  select.addEventListener("pointerdown", (event) => event.stopPropagation());
-  select.addEventListener("change", () => {
-    state.pianoRollAutomationParam = select.value;
-    setStatus?.(`Automation: ${automationParameterById(select.value).label}`);
-    renderStepGrid();
-  });
+  const paramLabel = document.createElement("div");
+  paramLabel.className = "piano-roll-automation-param-label";
+  paramLabel.textContent = param.label;
+  paramLabel.title = `Automation: ${param.label}`;
 
   const lane = document.createElement("div");
   lane.className = "piano-roll-automation-lane";
-  lane.title = "Automation curve: drag anchors, double-click to add, Option-click or Delete to remove";
+  lane.title = `${param.label} automation: drag anchors, double-click to add, Option-click or Delete to remove`;
   const curve = document.createElementNS(SVG_NS, "svg");
   curve.classList.add("piano-roll-automation-curve");
   curve.setAttribute("viewBox", "0 0 100 100");
@@ -265,7 +254,6 @@ export function createAutomationLane({
     renderStepGrid();
   });
 
-  lane.appendChild(select);
-  wrap.appendChild(lane);
+  wrap.append(paramLabel, lane);
   return wrap;
 }
