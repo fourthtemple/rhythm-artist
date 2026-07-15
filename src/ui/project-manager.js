@@ -78,6 +78,7 @@ function triggerDownload(blob, filename) {
 // ── Main export ───────────────────────────────────────────────────────────────
 export function createProjectManager({
   getConfig,
+  createNewConfig = null,
   applyLoadedConfig,
   getEngine,
   startPlayback,
@@ -99,8 +100,8 @@ export function createProjectManager({
   }
   async function saveSlots(slots) { await idbSet(SLOTS_KEY, slots); }
 
-  async function saveProject(name) {
-    const config = JSON.parse(JSON.stringify(getConfig()));
+  async function saveProject(name, sourceConfig = getConfig()) {
+    const config = JSON.parse(JSON.stringify(sourceConfig));
     const now = new Date().toISOString();
     if (name === "Default Project") {
       const result = await saveDefaultProject(config, name);
@@ -367,9 +368,13 @@ export function createProjectManager({
   async function doNew() {
     const name = await promptName(`Project ${new Date().toLocaleString()}`);
     if (!name) return;
-    const saved = await saveProject(name);
+    const nextConfig = typeof createNewConfig === "function"
+      ? createNewConfig()
+      : {};
+    const saved = await saveProject(name, nextConfig);
     selectedName = name;
-    setStatus(saveStatus(name, saved));
+    applyLoadedConfig(configFromProject(saved?.config || nextConfig));
+    setStatus(`Created "${name}"`);
     await renderList();
   }
 

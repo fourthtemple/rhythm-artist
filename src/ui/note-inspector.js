@@ -81,7 +81,6 @@ const SELECTED_PIANO_RANGE_OPTIONS = [
  * @param {Record<string, any>} deps.selectedOptionControls
  * @param {number} deps.PITCH_SLIDER_MIN
  * @param {number} deps.PITCH_SLIDER_MAX
- * @param {number} deps.SYNTH_ROOT_HZ
  * @param {readonly number[]} deps.SYNTH_SCALE
  * @param {number} deps.A1_MIDI_NOTE
  * @param {Set<number>} deps.BLACK_NOTE_PITCH_CLASSES
@@ -127,7 +126,6 @@ export function createNoteInspector(deps) {
     selectedOptionControls,
     PITCH_SLIDER_MIN,
     PITCH_SLIDER_MAX,
-    SYNTH_ROOT_HZ,
     SYNTH_SCALE,
     A1_MIDI_NOTE,
     BLACK_NOTE_PITCH_CLASSES,
@@ -152,7 +150,8 @@ export function createNoteInspector(deps) {
     defaultNoteState = () => ({ instrument: "eightOhEightKick", velocity: 0.32, options: normalizeStepOptions() }),
     setDefaultNoteVelocity = () => {},
     setDefaultNoteOption = () => {},
-    trackName
+    trackName,
+    onPitchFocus = () => {}
   } = deps;
   let deferredStepGridTimer = 0;
   let selectedPitchScaleId = "major";
@@ -533,6 +532,20 @@ export function createNoteInspector(deps) {
     return normalizeStepOptions(getHitData(state.selected.hit, state.selected.step, selectedBarIndex()).options);
   }
 
+  function selectedPreviewTrack() {
+    if (state.selected?.hit) return state.selected.hit;
+    if (Array.isArray(state.selectedTracks) && state.selectedTracks[0]) return state.selectedTracks[0];
+    return defaultNoteState()?.instrument || "eightOhEightKick";
+  }
+
+  function selectedPreviewVelocity() {
+    if (state.selected?.hit && Number.isFinite(Number(state.selected.step))) {
+      const hitData = getHitData(state.selected.hit, state.selected.step, selectedBarIndex());
+      if (hitData?.velocity > 0.005) return hitData.velocity;
+    }
+    return clamp(defaultNoteState()?.velocity, 0.02, 0.9, 0.32);
+  }
+
   async function previewPianoPitch(displayedPitch, effectOptions = selectedPreviewOptions()) {
     if (runningFromFile) {
       setStatus("Open the localhost version for audio");
@@ -541,24 +554,14 @@ export function createNoteInspector(deps) {
     const pitch = Number(displayedPitch);
     if (!Number.isFinite(pitch)) return;
     const options = normalizeStepOptions(effectOptions);
-    await state.engine.ensureContext();
-    await state.engine.context.resume();
-    state.engine.setVolume(0.62, { immediate: true });
-    const now = state.engine.context.currentTime + 0.015 + Math.max(0, options.offsetMs / 1000);
-    const intervals = selectedChordIntervals(options);
-    const voiceGain = 0.12 / Math.sqrt(Math.max(1, intervals.length));
-    intervals.forEach((interval, index) => {
-      const frequency = SYNTH_ROOT_HZ * 2 ** ((pitch + interval) / 12);
-      state.engine.playBassSynth(now + index * 0.006, frequency, {
-        gain: voiceGain,
-        duration: 0.42,
-        style: "jazz",
-        attackMs: options.attackMs,
-        delayMs: options.delayMs,
-        delaySend: options.delaySend,
-        reverbSend: options.reverbSend,
-        dubEcho: options.dubEcho
-      });
+    await state.engine.auditionPitchedTrack(selectedPreviewTrack(), pitch, {
+      gain: selectedPreviewVelocity(),
+      pressure: options.pressure,
+      chordIntervals: selectedChordIntervals(options),
+      step: Number.isFinite(Number(state.selected?.step)) ? Number(state.selected.step) : (state.playheadStep ?? 0),
+      phraseBar: selectedBarIndex(),
+      durationSteps: options.durationSteps,
+      optionsRaw: options
     });
   }
 
@@ -738,6 +741,7 @@ export function createNoteInspector(deps) {
     const barIndex = selectedBarIndex();
     if (field === "pitch" && state.selected) {
       const displayedPitch = paintSelectedPitchControl(number);
+      onPitchFocus(displayedPitch, { track: state.selected.hit });
       number = storedPitchForDisplay(state.selected.hit, state.selected.step, displayedPitch, barIndex);
       renderSelectedPiano(
         displayedPitch,
@@ -753,6 +757,7 @@ export function createNoteInspector(deps) {
     if (!state.selected && !ensureSelectedFromDom()) {
       if (field === "pitch") {
         number = paintSelectedPitchControl(number);
+        onPitchFocus(number);
         renderSelectedPiano(number, null);
       }
       setDefaultNoteOption(field, number);

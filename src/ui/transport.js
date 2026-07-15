@@ -32,7 +32,7 @@
  * @param {(barIndex?: number, stepIndex?: number) => void} [deps.renderCameraPlayheadHits]
  * @param {() => void} [deps.clearCameraPlayheadHits]
  * @param {(barIndex?: number) => void} [deps.updatePlaybackTabHighlights]
- * @param {(hit: string, step: number, mode?: string, barIndex?: number, pressure?: number) => void} deps.selectStep
+ * @param {(hit: string, step: number, mode?: string, barIndex?: number, pressure?: number, generated?: boolean, options?: object) => void} deps.selectStep
  * @param {(hit: string, playheadStep: number, barIndex?: number) => number} deps.soundingStepForRow
  * @param {(hit: string, step: number, barIndex?: number) => any} deps.getHitData
  * @param {(barIndex?: number) => void} deps.syncSelectedPitchDisplay
@@ -92,6 +92,32 @@ export function cameraFollowScrollLeftForStart(followStartBars, barWidthPx = 1, 
   return Math.round(clampNumber(followStart * barWidth - startInset, 0, maxScrollLeft));
 }
 
+export function queuedBeatForDisplay(queue = [], previousBeat = null, now = 0, tolerance = 0.002) {
+  if (!Array.isArray(queue) || !queue.length) {
+    return { beat: null, previousBeat, dropCount: 0 };
+  }
+  const displayTime = finiteNumber(now, 0);
+  const lookahead = displayTime + Math.max(0, finiteNumber(tolerance, 0.002));
+  let dropCount = 0;
+  while (dropCount < queue.length - 1 && finiteNumber(queue[dropCount + 1]?.scheduledTime, 0) <= lookahead) {
+    dropCount += 1;
+  }
+  const nextBeat = queue[dropCount];
+  if (!nextBeat) return { beat: null, previousBeat, dropCount };
+  if (finiteNumber(nextBeat.scheduledTime, 0) > lookahead) {
+    return {
+      beat: previousBeat || nextBeat,
+      previousBeat,
+      dropCount
+    };
+  }
+  return {
+    beat: nextBeat,
+    previousBeat: nextBeat,
+    dropCount
+  };
+}
+
 export function clearRestartBarSelectionState(state) {
   if (!state || typeof state !== "object") return false;
   let changed = false;
@@ -141,6 +167,7 @@ export function createTransport(deps) {
   let beatUnsubscribe = null;
   let cameraBeatQueue = [];
   let lastPlayheadKey = "";
+  let lastPlaybackHighlightBar = null;
   let activePlayheadButtons = [];
   let lastCameraBeat = null;
   let lastCameraPanTarget = -1;
@@ -148,6 +175,7 @@ export function createTransport(deps) {
   let lastCameraFollowGeometryKey = "";
   let playheadRaf = 0;
   let playbackStartPromise = null;
+  let playbackStartGeneration = 0;
 
   const visibleSegments = () => Math.max(1, Math.round(Number(state.segmentsCount) || 1));
   const renderedSegments = () => Math.max(visibleSegments(), Math.round(Number(state.renderedSegmentsCount) || visibleSegments()));
@@ -193,6 +221,18 @@ export function createTransport(deps) {
 
   function resetPlayheadCache() {
     lastPlayheadKey = "";
+    lastPlaybackHighlightBar = null;
+  }
+
+  function resetBeatQueue() {
+    cameraBeatQueue = [];
+    lastCameraBeat = null;
+    resetPlayheadCache();
+  }
+
+  function seekEngineToPhraseBar(barIndex, stepIndex = 0) {
+    resetBeatQueue();
+    state.engine.seekToPhraseBar(barIndex, stepIndex);
   }
 
   function cameraLabelWidth() {
@@ -265,14 +305,10 @@ export function createTransport(deps) {
   }
 
   function queuedBeatAtTime(now) {
-    if (!cameraBeatQueue.length) return null;
-    const tolerance = 0.002;
-    while (cameraBeatQueue.length > 1 && cameraBeatQueue[1].scheduledTime <= now + tolerance) {
-      cameraBeatQueue.shift();
-    }
-    if (cameraBeatQueue[0].scheduledTime > now + tolerance) return lastCameraBeat;
-    lastCameraBeat = cameraBeatQueue[0];
-    return lastCameraBeat;
+    const result = queuedBeatForDisplay(cameraBeatQueue, lastCameraBeat, now);
+    if (result.dropCount > 0) cameraBeatQueue.splice(0, result.dropCount);
+    lastCameraBeat = result.previousBeat;
+    return result.beat;
   }
 
   function currentDisplayedBeat() {
@@ -329,6 +365,14 @@ export function createTransport(deps) {
     playheadRaf = 0;
   }
 
+  function setPlayButtonActive(active) {
+    const playButton = $("#play-toggle");
+    if (!playButton) return;
+    playButton.textContent = "Play";
+    playButton.classList.toggle("is-active", Boolean(active));
+    playButton.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+
   async function startPlayback() {
     if (runningFromFile) {
       setStatus("Open the localhost version for audio");
@@ -336,8 +380,10 @@ export function createTransport(deps) {
     }
     if (state.playing) return;
     if (playbackStartPromise) return playbackStartPromise;
+    const startGeneration = ++playbackStartGeneration;
+    const startEngine = state.engine;
     setStatus("Starting audio");
-    playbackStartPromise = (async () => {
+    const startPromise = (async () => {
       const resumeBeat = state.pausedPlayback
         ? {
           bar: Math.max(0, Math.round(Number(state.pausedPlayback.bar) || 0)),
@@ -349,22 +395,22 @@ export function createTransport(deps) {
       state.playheadStep = startStep;
       state.cameraPlayheadBar = startBar;
       state.cameraPlayheadStep = startStep;
-      state.engine.setConfig(previewConfig());
+      startEngine.setConfig(previewConfig());
       attachBeatTracker();
-      await state.engine.start({
+      await startEngine.start({
         style: "jazz",
         volume: 0.62,
         phraseBar: startBar,
         step: startStep
       });
+      if (startGeneration !== playbackStartGeneration || state.engine !== startEngine) {
+        startEngine.stop?.();
+        if (state.engine === startEngine) detachBeatTracker();
+        return;
+      }
       state.playing = true;
       state.pausedPlayback = null;
-      const playButton = $("#play-toggle");
-      if (playButton) {
-        playButton.textContent = "Play";
-        playButton.classList.add("is-active");
-        playButton.setAttribute("aria-pressed", "true");
-      }
+      setPlayButtonActive(true);
       setStatus(`Playing from ${barLabel(startBar)}`);
       updatePositionDisplay(startBar, startStep);
       updatePlaybackTabHighlights?.(startBar);
@@ -372,19 +418,21 @@ export function createTransport(deps) {
       startUiTimer();
       startPlayheadLoop();
     })();
+    playbackStartPromise = startPromise;
     try {
-      await playbackStartPromise;
+      await startPromise;
     } catch (error) {
       console.error("Rhythm sequencer audio failed to start", error);
       detachBeatTracker();
       state.playing = false;
       setStatus("Audio failed to start");
     } finally {
-      playbackStartPromise = null;
+      if (playbackStartPromise === startPromise) playbackStartPromise = null;
     }
   }
 
   function stopPlayback() {
+    playbackStartGeneration += 1;
     const pauseBeat = state.playing ? currentDisplayedBeat() : {
       bar: Math.max(0, Math.round(Number(state.cameraPlayheadBar ?? state.activeBar) || 0)),
       step: Math.max(0, Math.min(15, Math.round(Number(state.cameraPlayheadStep ?? state.playheadStep) || 0)))
@@ -399,12 +447,7 @@ export function createTransport(deps) {
     state.playheadStep = pauseBeat.step;
     state.cameraPlayheadBar = pauseBeat.bar;
     state.cameraPlayheadStep = pauseBeat.step;
-    const playButton = $("#play-toggle");
-    if (playButton) {
-      playButton.textContent = "Play";
-      playButton.classList.remove("is-active");
-      playButton.setAttribute("aria-pressed", "false");
-    }
+    setPlayButtonActive(false);
     setStatus(`Paused at ${barLabel(pauseBeat.bar)}`);
     stopPlayheadLoop();
     updatePositionDisplay(pauseBeat.bar, pauseBeat.step);
@@ -424,8 +467,9 @@ export function createTransport(deps) {
       state.loopBarIndex = start ?? clampLoopStart(state.activeBar, length);
     }
     state.engine.setConfig(previewConfig());
+    if (state.playing) resetBeatQueue();
     if (wasLooping && !state.loopBar && preserveBeat && state.engine.getPlaybackState().playing) {
-      state.engine.seekToPhraseBar(preserveBeat.bar, preserveBeat.step);
+      seekEngineToPhraseBar(preserveBeat.bar, preserveBeat.step);
       state.playheadStep = preserveBeat.step;
       updatePositionDisplay(preserveBeat.bar, preserveBeat.step);
     }
@@ -461,7 +505,7 @@ export function createTransport(deps) {
     state.pausedPlayback = null;
     state.activeBar = range.startBar;
     state.playheadStep = range.startStep;
-    state.engine.seekToPhraseBar(range.startBar, range.startStep);
+    seekEngineToPhraseBar(range.startBar, range.startStep);
     updatePositionDisplay(range.startBar, range.startStep);
   }
 
@@ -472,10 +516,19 @@ export function createTransport(deps) {
     state.loopBarLength = 0;
     state.loopBarIndex = nextRange.startBar;
     state.engine.setConfig(previewConfig());
-    seekToBeatRangeStart(nextRange);
     refreshLoopBarButton();
-    await ensurePreviewPlayback();
-    seekToBeatRangeStart(nextRange);
+    if (state.playing) {
+      seekToBeatRangeStart(nextRange);
+    } else {
+      state.pausedPlayback = { bar: nextRange.startBar, step: nextRange.startStep };
+      state.activeBar = nextRange.startBar;
+      state.playheadStep = nextRange.startStep;
+      state.cameraPlayheadBar = nextRange.startBar;
+      state.cameraPlayheadStep = nextRange.startStep;
+      resetBeatQueue();
+      updatePositionDisplay(nextRange.startBar, nextRange.startStep);
+      await startPlayback();
+    }
     setStatus(`Looping beats ${beatRangeLabel(nextRange)}`);
   }
 
@@ -486,8 +539,18 @@ export function createTransport(deps) {
     state.loopBarLength = 0;
     state.engine.setConfig(previewConfig());
     refreshLoopBarButton();
-    await ensurePreviewPlayback();
-    seekToBeatRangeStart(nextRange);
+    if (state.playing) {
+      seekToBeatRangeStart(nextRange);
+    } else {
+      state.pausedPlayback = { bar: nextRange.startBar, step: nextRange.startStep };
+      state.activeBar = nextRange.startBar;
+      state.playheadStep = nextRange.startStep;
+      state.cameraPlayheadBar = nextRange.startBar;
+      state.cameraPlayheadStep = nextRange.startStep;
+      resetBeatQueue();
+      updatePositionDisplay(nextRange.startBar, nextRange.startStep);
+      await startPlayback();
+    }
     setStatus(`Playing from beat ${nextRange.startBar + 1}.${String(nextRange.startStep + 1).padStart(2, "0")}`);
   }
 
@@ -496,8 +559,9 @@ export function createTransport(deps) {
     const preserveBeat = state.playing ? currentDisplayedBeat() : null;
     state.loopBeatRange = null;
     state.engine.setConfig(previewConfig());
+    if (state.playing) resetBeatQueue();
     if (preserveBeat && state.engine.getPlaybackState().playing) {
-      state.engine.seekToPhraseBar(preserveBeat.bar, preserveBeat.step);
+      seekEngineToPhraseBar(preserveBeat.bar, preserveBeat.step);
       state.playheadStep = preserveBeat.step;
       state.cameraPlayheadBar = preserveBeat.bar;
       state.cameraPlayheadStep = preserveBeat.step;
@@ -520,10 +584,18 @@ export function createTransport(deps) {
       : [state.activeBar];
     const start = bars[0];
     const length = bars[bars.length - 1] - start + 1;
+    const wasPlaying = state.playing;
     setLoopPlayback(start, length);
-    // Seek the engine to the loop start so playback immediately jumps there
-    state.engine.seekToPhraseBar(start, 0);
     state.playheadStep = 0;
+    state.cameraPlayheadBar = start;
+    state.cameraPlayheadStep = 0;
+    updatePositionDisplay(start, 0);
+    if (wasPlaying) {
+      seekEngineToPhraseBar(start, 0);
+    } else {
+      state.pausedPlayback = { bar: start, step: 0 };
+      resetBeatQueue();
+    }
     setStatus(length === 1
       ? `Looping bar ${start + 1}`
       : `Looping bars ${start + 1}–${start + length}`);
@@ -534,7 +606,7 @@ export function createTransport(deps) {
   function toggleTwoBarLoop() { toggleSelectedLoop(); }
 
   function playFullSong() {
-    setLoopPlayback(0);
+    setLoopPlayback(null, 0);
     setStatus(`Playing full ${state.config.patterns.jazz.bars.length}-bar track`);
   }
 
@@ -545,14 +617,21 @@ export function createTransport(deps) {
     state.loopBarLength = 0;
     state.loopBarIndex = targetBar;
     state.pausedPlayback = null;
+    const wasPlaying = state.playing;
     state.engine.setConfig(previewConfig());
+    if (wasPlaying) resetBeatQueue();
     refreshLoopBarButton();
-    if (!state.playing) await startPlayback();
-    state.engine.seekToPhraseBar(targetBar, 0);
     state.playheadStep = 0;
     state.cameraPlayheadBar = targetBar;
     state.cameraPlayheadStep = 0;
     updatePositionDisplay(targetBar, 0);
+    if (wasPlaying) {
+      seekEngineToPhraseBar(targetBar, 0);
+    } else {
+      state.pausedPlayback = { bar: targetBar, step: 0 };
+      resetBeatQueue();
+      await startPlayback();
+    }
     clearPlayhead();
     updatePlayhead();
     setStatus(`Playing from ${barLabel(targetBar)}`);
@@ -561,14 +640,20 @@ export function createTransport(deps) {
   async function loopFromBar(barIndex = state.activeBar, length = 1) {
     const targetBar = clampNumber(Math.round(finiteNumber(barIndex, state.activeBar)), 0, totalSongBars() - 1);
     const loopLength = clampNumber(Math.round(finiteNumber(length, 1)), 1, totalSongBars() - targetBar);
+    const wasPlaying = state.playing;
     setLoopPlayback(targetBar, loopLength);
     state.pausedPlayback = null;
-    state.engine.seekToPhraseBar(targetBar, 0);
     state.playheadStep = 0;
     state.cameraPlayheadBar = targetBar;
     state.cameraPlayheadStep = 0;
     updatePositionDisplay(targetBar, 0);
-    if (!state.playing) await startPlayback();
+    if (wasPlaying) {
+      seekEngineToPhraseBar(targetBar, 0);
+    } else {
+      state.pausedPlayback = { bar: targetBar, step: 0 };
+      resetBeatQueue();
+      await startPlayback();
+    }
     clearPlayhead();
     updatePlayhead();
     setStatus(loopLength === 1
@@ -584,14 +669,31 @@ export function createTransport(deps) {
   }
 
   function restartPlayback() {
-    state.pausedPlayback = null;
+    playbackStartGeneration += 1;
+    playbackStartPromise = null;
+    const wasActuallyPlaying = Boolean(state.playing && state.engine.getPlaybackState?.().playing);
+    state.pausedPlayback = { bar: 0, step: 0 };
     clearRestartBarSelections();
+    stopPlayheadLoop();
+    if (state.uiTimer) {
+      window.clearInterval(state.uiTimer);
+      state.uiTimer = null;
+    }
+    detachBeatTracker();
+    resetBeatQueue();
     state.engine.stop();
+    state.playing = false;
+    state.playheadStep = 0;
+    state.cameraPlayheadBar = 0;
+    state.cameraPlayheadStep = 0;
+    setPlayButtonActive(false);
+    updatePositionDisplay(0, 0);
+    clearPlayhead();
     state.engine = new RhythmEngine({ config: previewConfig(), style: "jazz", volume: 0.58 });
     // Re-subscribe loop track scheduler to the new engine instance
     state.engine.on("play", () => deps.onEngineRestart?.());
     void reapplyTrackSamples();
-    if (state.playing) void startPlayback();
+    if (wasActuallyPlaying) void startPlayback();
     else setStatus("Restarted");
   }
 
@@ -742,8 +844,11 @@ export function createTransport(deps) {
     lastPlayheadKey = playheadKey;
     updatePositionDisplay(displayBar, displayStep);
     clearPlayheadMarks();
-    updatePlaybackTabHighlights?.(displayBar);
-    revealBarButton(displayBar);
+    if (displayBar !== lastPlaybackHighlightBar) {
+      lastPlaybackHighlightBar = displayBar;
+      updatePlaybackTabHighlights?.(displayBar);
+      revealBarButton(displayBar);
+    }
     if (state.cameraMode) {
       renderCameraPlayheadHits?.(displayBar, displayStep);
       followCameraPlayback(displayBar + (displayStep / 16));
@@ -761,8 +866,9 @@ export function createTransport(deps) {
     }
     if (!state.cameraMode && state.selected?.mode === "row") {
       const selectedStep = soundingStepForRow(state.selected.hit, displayStep, displayBar);
-      selectStep(state.selected.hit, selectedStep, "row", displayBar, playback.activeBarIntensity);
-      renderStepGrid();
+      selectStep(state.selected.hit, selectedStep, "row", displayBar, playback.activeBarIntensity, undefined, {
+        deferTrackPanels: true
+      });
     }
     if (state.selected?.hit === "bass") {
       syncSelectedPitchDisplay(displayBar);

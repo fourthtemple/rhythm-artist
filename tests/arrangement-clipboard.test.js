@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createArrangementClipboard } from "../src/ui/arrangement-clipboard.js";
 
-function makeArrangement({ selectedBars = [], midi = {} } = {}) {
+function makeArrangement({ selectedBars = [], midi = {}, statePatch = {}, barsData = null, waveTracks = [] } = {}) {
   const menu = { items: [] };
   const loopCalls = [];
   const removedTracks = [];
@@ -15,8 +15,12 @@ function makeArrangement({ selectedBars = [], midi = {} } = {}) {
     selectedTracks: [],
     activeBar: 0,
     activeLoopIndex: 0,
-    barClipboard: null
+    barClipboard: null,
+    trackEditorMode: "grid",
+    config: { pianoRollTracks: [] },
+    ...statePatch
   };
+  const barStore = barsData || Array.from({ length: 16 }, () => ({}));
   const arrangement = createArrangementClipboard({
     $: () => null,
     state,
@@ -24,7 +28,7 @@ function makeArrangement({ selectedBars = [], midi = {} } = {}) {
     setStatus: () => {},
     loopBarCount: () => 8,
     maxLoopCount: () => 8,
-    bars: () => Array.from({ length: 16 }, () => ({})),
+    bars: () => barStore,
     clampLoopStart: (start = 0) => start,
     activeLoopLength: () => 0,
     loopRangeLabel: () => "",
@@ -55,7 +59,8 @@ function makeArrangement({ selectedBars = [], midi = {} } = {}) {
     startTrackMidiLearn: midi.learn === false ? null : (hit) => midiCalls.push({ type: "learn", hit }),
     resetTrackMidiTrigger: midi.reset === false ? null : (hit) => midiCalls.push({ type: "reset", hit }),
     midiTriggerLabel: midi.label ? () => midi.label : () => "36 C1",
-    hasCustomMidiTrigger: midi.custom ? () => true : () => false
+    hasCustomMidiTrigger: midi.custom ? () => true : () => false,
+    getWaveTracks: () => waveTracks
   });
   return { arrangement, loopCalls, menu, midiCalls, removedTracks, state, getRenderCalls: () => renderCalls };
 }
@@ -94,6 +99,19 @@ test("bar selection click toggles individual bars", () => {
   assert.deepEqual(state.selectedBars, []);
   assert.equal(state.barAnchor, 0);
   assert.equal(getRenderCalls(), 2);
+});
+
+test("bar selection clears partial beat selection state", () => {
+  const { arrangement, state } = makeArrangement({
+    statePatch: {
+      cameraBeatSelection: { startStepAbs: 4, endStepAbs: 8, lengthSteps: 4 }
+    }
+  });
+
+  arrangement.toggleBarMultiSelect(1, {});
+
+  assert.deepEqual(state.selectedBars, [1]);
+  assert.equal(state.cameraBeatSelection, null);
 });
 
 test("bar selection shift-click toggles a range on and off", () => {
@@ -157,5 +175,92 @@ test("track context can start and reset MIDI trigger mapping", () => {
   assert.deepEqual(midiCalls, [
     { type: "learn", hit: "kick" },
     { type: "reset", hit: "kick" }
+  ]);
+});
+
+test("beat selection copy for a grid track excludes piano-roll notes", () => {
+  const barsData = [
+    {
+      kick: [[2, 0.8], [9, 0.4]],
+      bass: [[3, 0.7, { pianoRoll: 1, pitch: 12 }]]
+    }
+  ];
+  const { arrangement, state } = makeArrangement({
+    barsData,
+    statePatch: {
+      selectedTracks: ["kick"],
+      selected: { hit: "kick", mode: "row" },
+      config: { pianoRollTracks: ["bass"] }
+    }
+  });
+
+  arrangement.copyBeatSelection({ startStepAbs: 0, lengthSteps: 8 });
+
+  assert.equal(state.beatClipboard.bars.length, 1);
+  assert.deepEqual(state.beatClipboard.bars[0].grid, { kick: [[2, 0.8]] });
+  assert.deepEqual(state.beatClipboard.bars[0].piano, {});
+});
+
+test("beat selection copy for piano roll copies only piano-roll notes", () => {
+  const barsData = [
+    {
+      bass: [
+        [2, 0.5],
+        [3, 0.7, { pianoRoll: 1, pitch: 12 }],
+        [10, 0.9, { pianoRoll: 1, pitch: 16 }]
+      ]
+    }
+  ];
+  const { arrangement, state } = makeArrangement({
+    barsData,
+    statePatch: {
+      trackEditorMode: "pianoRoll",
+      pianoRollTargetTrack: "bass",
+      config: { pianoRollTracks: ["bass"] }
+    }
+  });
+
+  arrangement.copyBeatSelection({ startStepAbs: 0, lengthSteps: 8 });
+
+  assert.equal(state.beatClipboard.bars.length, 1);
+  assert.deepEqual(state.beatClipboard.bars[0].grid, {});
+  assert.deepEqual(state.beatClipboard.bars[0].piano, {
+    bass: [[3, 0.7, { pianoRoll: 1, pitch: 12 }]]
+  });
+});
+
+test("beat selection copy includes selected wave-edit regions only", () => {
+  const waveTracks = [
+    {
+      id: "wave-a",
+      name: "Wave A",
+      selected: true,
+      regions: [
+        { bar: 0.25, len: 0.5, sourceStart: 1 },
+        { bar: 2, len: 1, sourceStart: 3 }
+      ]
+    },
+    {
+      id: "wave-b",
+      name: "Wave B",
+      selected: false,
+      regions: [{ bar: 0.25, len: 0.5, sourceStart: 4 }]
+    }
+  ];
+  const { arrangement, state } = makeArrangement({
+    waveTracks,
+    statePatch: {
+      trackEditorMode: "wave",
+      selected: { hit: "wave-a", mode: "row" },
+      config: { pianoRollTracks: [] }
+    }
+  });
+
+  arrangement.copyBeatSelection({ startStepAbs: 0, lengthSteps: 16 });
+
+  assert.equal(state.beatClipboard.waveTracks.length, 1);
+  assert.equal(state.beatClipboard.waveTracks[0].id, "wave-a");
+  assert.deepEqual(state.beatClipboard.waveTracks[0].regions, [
+    { bar: 0.25, len: 0.5, sourceStart: 1 }
   ]);
 });

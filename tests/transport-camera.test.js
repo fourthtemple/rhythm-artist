@@ -6,8 +6,12 @@ import {
   cameraFollowScrollLeftForStart,
   cameraPageFollowStartForPosition,
   cameraViewStartForPosition,
-  clearRestartBarSelectionState
+  clearRestartBarSelectionState,
+  queuedBeatForDisplay
 } from "../src/ui/transport.js";
+import {
+  selectedBarsCameraSpanRange
+} from "../src/ui/grid/step-grid-builder.js";
 
 test("cameraAnchorForBar centers the phrase bar when possible", () => {
   assert.equal(cameraAnchorForBar(10, 4, 32), 8);
@@ -68,4 +72,43 @@ test("clearRestartBarSelectionState clears bar and beat selections only", () => 
   assert.equal(state.cameraBeatSelection, null);
   assert.deepEqual(state.selected, { hit: "bass", step: 0, bar: 4 });
   assert.equal(clearRestartBarSelectionState(state), false);
+});
+
+test("selectedBarsCameraSpanRange maps selected bars into one ruler range", () => {
+  assert.deepEqual(selectedBarsCameraSpanRange([0], 0, 8, 16), {
+    source: "bar",
+    startBar: 0,
+    startStep: 0,
+    startStepAbs: 0,
+    endStepAbs: 16,
+    lengthSteps: 16
+  });
+  assert.deepEqual(selectedBarsCameraSpanRange([5, 6, 7], 4, 8, 16), {
+    source: "bar",
+    startBar: 1,
+    startStep: 0,
+    startStepAbs: 16,
+    endStepAbs: 64,
+    lengthSteps: 48
+  });
+  assert.equal(selectedBarsCameraSpanRange([12], 0, 8, 16), null);
+});
+
+test("queuedBeatForDisplay holds the first future beat instead of jumping ahead", () => {
+  const first = { phraseBar: 0, step: 0, scheduledTime: 10.08, stepDuration: 0.125 };
+  const second = { phraseBar: 0, step: 1, scheduledTime: 10.205, stepDuration: 0.125 };
+  const beforeStart = queuedBeatForDisplay([first, second], null, 10.02);
+  assert.equal(beforeStart.beat, first);
+  assert.equal(beforeStart.previousBeat, null);
+  assert.equal(beforeStart.dropCount, 0);
+
+  const afterFirst = queuedBeatForDisplay([first, second], null, 10.09);
+  assert.equal(afterFirst.beat, first);
+  assert.equal(afterFirst.previousBeat, first);
+  assert.equal(afterFirst.dropCount, 0);
+
+  const betweenBeats = queuedBeatForDisplay([second], first, 10.14);
+  assert.equal(betweenBeats.beat, first);
+  assert.equal(betweenBeats.previousBeat, first);
+  assert.equal(betweenBeats.dropCount, 0);
 });

@@ -17,6 +17,7 @@ export function createHitData(deps) {
     commitHitEntry,
     generatedSynthEventsForStep,
     applyConfig,
+    applyHitToEngine = null,
     pushEditHistory = null
   } = deps;
 
@@ -87,11 +88,17 @@ export function createHitData(deps) {
       options: normalizeStepOptions(merged.options)
     };
     if (JSON.stringify(currentComparable) === JSON.stringify(mergedComparable)) return;
-    pushEditHistory?.({
-      label: patch.historyLabel || `${hit} ${historyField}`,
-      groupKey: patch.historyGroupKey || `hit:${barIndex}:${hit}:${step}:${historyField}`
-    });
+    if (!patch.skipHistory) {
+      pushEditHistory?.({
+        label: patch.historyLabel || `${hit} ${historyField}`,
+        groupKey: patch.historyGroupKey || `hit:${barIndex}:${hit}:${step}:${historyField}`
+      });
+    }
     commitHitEntry(bar, hit, step, merged.velocity <= 0.005 ? null : merged);
+    if (patch.deferApply) {
+      applyHitToEngine?.({ hit, step, barIndex, entry: merged.velocity <= 0.005 ? null : merged });
+      return;
+    }
     applyConfig();
   }
 

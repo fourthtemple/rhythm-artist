@@ -8,6 +8,7 @@ export const MIN_SECTION_BARS = 1;
 export const MAX_SECTION_BARS = 32;
 export const DEFAULT_TRACK_STEPS_PER_BAR = 16;
 export const DEFAULT_TIME_SIGNATURE = "4/4";
+const PIANO_ROLL_PITCH_WINDOW_ROWS = 12;
 export const TIME_SIGNATURE_OPTIONS = ["4/4", "3/4", "6/8", "5/4", "7/8"];
 const AUTOMATION_PARAMETER_IDS = new Set([
   "velocity",
@@ -38,6 +39,7 @@ import {
   TRACK_REGISTRY,
   TRACK_DEFAULT_VELOCITY,
   TRACK_REVERB_SENDS,
+  getTrackDef,
   baseTrackId
 } from "./rhythm-track-registry.js";
 import { defaultMasterEq, normalizeMasterEq } from "./rhythm-mastering.js";
@@ -54,6 +56,8 @@ export {
   TRACK_DEFAULT_VELOCITY,
   tracksByGroup,
   isInstanceId,
+  isPluginTrackId,
+  pluginTrackIdFor,
   baseTrackId,
   makeInstanceId,
   voiceForTrack
@@ -78,6 +82,7 @@ export const finiteNumber = (value, fallback = 0) => {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 };
+const isKnownTrackId = (track) => typeof track === "string" && Boolean(getTrackDef(track));
 export const clamp01 = (value) => Math.max(0, Math.min(1, finiteNumber(value, 0)));
 export const clamp = (value, min, max, fallback = 0) => Math.max(min, Math.min(max, finiteNumber(value, fallback)));
 export const normalizeVerseBars = (value) => Math.max(MIN_VERSE_BARS, Math.min(MAX_VERSE_BARS, Math.round(finiteNumber(value, PHRASE_BARS))));
@@ -89,7 +94,7 @@ export const normalizeTimeSignature = (value) => {
   const numerator = Math.round(finiteNumber(match[1], 4));
   const denominator = Math.round(finiteNumber(match[2], 4));
   if (numerator < 1 || numerator > 16) return DEFAULT_TIME_SIGNATURE;
-  if (![2, 4, 8, 16].includes(denominator)) return DEFAULT_TIME_SIGNATURE;
+  if (denominator < 1 || denominator > 32) return DEFAULT_TIME_SIGNATURE;
   return `${numerator}/${denominator}`;
 };
 export const meterForTimeSignature = (timeSignature = DEFAULT_TIME_SIGNATURE) => {
@@ -131,8 +136,8 @@ export const visualBeatKindForStep = (visualStep, stepsPerBar = DEFAULT_TRACK_ST
   return "0";
 };
 export const normalizeTrackStepCount = (value) => {
-  const requested = Math.round(finiteNumber(value, DEFAULT_TRACK_STEPS_PER_BAR));
-  return Math.max(1, Math.min(128, requested));
+  const requested = finiteNumber(value, DEFAULT_TRACK_STEPS_PER_BAR);
+  return Number(Math.max(1, Math.min(128, requested)).toFixed(4));
 };
 export const normalizePatternStep = (value) => {
   const step = finiteNumber(value, 0);
@@ -357,6 +362,8 @@ export const DEFAULT_RHYTHM_CONFIG = {
   // what makes two "808 Clap" instances sound different.
   trackShapes: {},
   trackSamples: {},
+  trackPluginSources: {},
+  trackPluginParams: {},
   trackViewTrackIds: [],
   hiddenGridTrackIds: [],
   trackStepCounts: {},
@@ -365,6 +372,7 @@ export const DEFAULT_RHYTHM_CONFIG = {
   pianoRollTracks: [],
   editorLaneOrder: [],
   pianoRollLaneHeights: {},
+  pianoRollPitchMins: {},
   pianoRollAutomationHeights: {},
   trackAutomationParams: {},
   trackAutomationCurves: {},
@@ -396,6 +404,43 @@ export const DEFAULT_RHYTHM_CONFIG = {
 };
 
 export const cloneRhythmConfig = (config = DEFAULT_RHYTHM_CONFIG) => JSON.parse(JSON.stringify(config));
+
+export const createBlankRhythmConfig = ({ bars = PHRASE_BARS } = {}) => {
+  const base = cloneRhythmConfig(DEFAULT_RHYTHM_CONFIG);
+  const barCount = Math.max(
+    PHRASE_BARS,
+    Math.min(MAX_SEQUENCE_BARS, Math.round(finiteNumber(bars, PHRASE_BARS)))
+  );
+  return normalizeRhythmConfig({
+    ...base,
+    generatedRowsEditable: 1,
+    trackSamples: {},
+    trackViewTrackIds: [],
+    hiddenGridTrackIds: [],
+    trackStepCounts: {},
+    midiNoteMap: {},
+    midiControlMap: {},
+    pianoRollTracks: [],
+    editorLaneOrder: [],
+    pianoRollLaneHeights: {},
+    pianoRollPitchMins: {},
+    pianoRollAutomationHeights: {},
+    trackAutomationParams: {},
+    trackAutomationCurves: {},
+    soloTracks: [],
+    mutedTracks: [],
+    loopTracks: [],
+    loopPhraseBar: null,
+    loopPhraseBarLength: 0,
+    loopPhraseBarStart: null,
+    patterns: {
+      jazz: {
+        ...base.patterns.jazz,
+        bars: Array.from({ length: barCount }, () => ({}))
+      }
+    }
+  });
+};
 
 const normalizePatternHits = (hits) => Array.isArray(hits)
   ? hits
@@ -497,7 +542,7 @@ const normalizeMidiNoteMap = (map = {}) => {
       .map(([track, note]) => [track, Math.round(finiteNumber(note, -1))])
       .filter(([track, note]) =>
         typeof track === "string"
-        && ALL_TRACK_IDS.includes(baseTrackId(track))
+        && isKnownTrackId(track)
         && note >= 0
         && note <= 127)
   );
@@ -523,6 +568,47 @@ const normalizeMidiControlMap = (map = {}) => {
   );
 };
 
+const normalizePluginScalePoints = (scalePoints = []) => {
+  if (!Array.isArray(scalePoints)) return [];
+  return scalePoints
+    .filter((point) => point && typeof point === "object")
+    .map((point) => {
+      const value = finiteNumber(point.value, 0);
+      return {
+        label: typeof point.label === "string" && point.label.trim() ? point.label.trim() : String(value),
+        value
+      };
+    });
+};
+
+const normalizePluginParameters = (parameters = []) => {
+  if (!Array.isArray(parameters)) return [];
+  return parameters
+    .filter((parameter) => parameter && typeof parameter === "object")
+    .map((parameter, index) => {
+      const symbol = typeof parameter.symbol === "string" && parameter.symbol.trim()
+        ? parameter.symbol.trim()
+        : `param_${index + 1}`;
+      const min = finiteNumber(parameter.min, 0);
+      const max = finiteNumber(parameter.max, 1);
+      const lo = Math.min(min, max);
+      const hi = Math.max(min, max);
+      return {
+        index: Math.max(0, Math.round(finiteNumber(parameter.index, index))),
+        symbol,
+        name: typeof parameter.name === "string" && parameter.name.trim() ? parameter.name.trim() : symbol,
+        min: lo,
+        max: hi,
+        default: Math.max(lo, Math.min(hi, finiteNumber(parameter.default, lo))),
+        integer: Boolean(parameter.integer),
+        enumeration: Boolean(parameter.enumeration),
+        logarithmic: Boolean(parameter.logarithmic),
+        scalePoints: normalizePluginScalePoints(parameter.scalePoints)
+      };
+    })
+    .slice(0, 256);
+};
+
 /**
  * Gather every non-registry (instance) track id referenced anywhere in the
  * config: the per-track maps and the pattern bars. Used so per-instance
@@ -546,8 +632,15 @@ const collectExtraTrackIds = (config = {}) => {
   scan(config.trackDefaultVelocities);
   scan(config.trackShapes);
   scan(config.trackSamples);
+  scan(config.trackPluginSources);
+  scan(config.trackPluginParams);
   if (typeof config.defaultNote?.instrument === "string" && !known.has(baseTrackId(config.defaultNote.instrument))) {
     found.add(config.defaultNote.instrument);
+  }
+  if (Array.isArray(config.pianoRollTracks)) {
+    config.pianoRollTracks.forEach((id) => {
+      if (typeof id === "string" && !known.has(id)) found.add(id);
+    });
   }
   if (Array.isArray(config.trackViewTrackIds)) {
     config.trackViewTrackIds.forEach((id) => {
@@ -716,10 +809,56 @@ export const normalizeRhythmConfig = (config = {}) => {
       .map(([track, value]) => [track, normalizeTrackStepCount(value)])
       .filter(([track, value]) => typeof track === "string" && value !== DEFAULT_TRACK_STEPS_PER_BAR)
   );
+  const sourcePluginTracks = merged.trackPluginSources && typeof merged.trackPluginSources === "object"
+    ? merged.trackPluginSources
+    : {};
+  merged.trackPluginSources = Object.fromEntries(
+    Object.entries(sourcePluginTracks)
+      .filter(([track, plugin]) => isKnownTrackId(track) && plugin && typeof plugin === "object")
+      .map(([track, plugin]) => [track, {
+        id: typeof plugin.id === "string" ? plugin.id : track,
+        slug: typeof plugin.slug === "string" ? plugin.slug : track,
+        label: typeof plugin.label === "string" ? plugin.label : typeof plugin.slug === "string" ? plugin.slug : track,
+        name: typeof plugin.name === "string" && plugin.name.trim() ? plugin.name.trim() : getTrackDef(track)?.label || "Plugin",
+        kind: plugin.kind === "effect" ? "effect" : "instrument",
+        assetPath: typeof plugin.assetPath === "string" ? plugin.assetPath : `plugins/${typeof plugin.slug === "string" ? plugin.slug : track}`,
+        processorFile: typeof plugin.processorFile === "string" ? plugin.processorFile : "processor.js",
+        wasmFile: typeof plugin.wasmFile === "string" ? plugin.wasmFile : "",
+        controlInputs: Math.max(0, Math.round(finiteNumber(plugin.controlInputs, 0))),
+        audioInputs: Math.max(0, Math.round(finiteNumber(plugin.audioInputs, 0))),
+        audioOutputs: Math.max(0, Math.round(finiteNumber(plugin.audioOutputs, 0))),
+        midiInputs: Math.max(0, Math.round(finiteNumber(plugin.midiInputs, 0))),
+        parameters: normalizePluginParameters(plugin.parameters)
+      }])
+  );
+  const sourcePluginParams = merged.trackPluginParams && typeof merged.trackPluginParams === "object"
+    ? merged.trackPluginParams
+    : {};
+  merged.trackPluginParams = Object.fromEntries(
+    Object.entries(sourcePluginParams)
+      .filter(([track, params]) => isKnownTrackId(track) && params && typeof params === "object")
+      .map(([track, params]) => {
+        const parameterDefs = new Map((merged.trackPluginSources?.[track]?.parameters || []).map((parameter) => [parameter.symbol, parameter]));
+        const values = Object.fromEntries(
+          Object.entries(params)
+            .filter(([symbol]) => typeof symbol === "string" && symbol)
+            .map(([symbol, value]) => {
+              const parameter = parameterDefs.get(symbol);
+              const fallback = parameter?.default ?? 0;
+              const min = parameter?.min ?? -Infinity;
+              const max = parameter?.max ?? Infinity;
+              const number = finiteNumber(value, fallback);
+              return [symbol, Math.max(min, Math.min(max, number))];
+            })
+        );
+        return [track, values];
+      })
+      .filter(([, values]) => Object.keys(values).length > 0)
+  );
   merged.pianoRollTracks = Array.isArray(merged.pianoRollTracks)
     ? [...new Set(merged.pianoRollTracks
       .map((track) => typeof track === "string" ? track : "")
-      .filter((track) => ALL_TRACK_IDS.includes(baseTrackId(track))))]
+      .filter(isKnownTrackId))]
     : [];
   const sourceTrackViewTrackIds = Array.isArray(merged.trackViewTrackIds) ? merged.trackViewTrackIds : [];
   merged.trackViewTrackIds = [...new Set([
@@ -728,11 +867,11 @@ export const normalizeRhythmConfig = (config = {}) => {
     ...merged.pianoRollTracks
   ]
     .map((track) => typeof track === "string" ? track : "")
-    .filter((track) => ALL_TRACK_IDS.includes(baseTrackId(track))))];
+    .filter(isKnownTrackId))];
   merged.hiddenGridTrackIds = Array.isArray(merged.hiddenGridTrackIds)
     ? [...new Set(merged.hiddenGridTrackIds
       .map((track) => typeof track === "string" ? track : "")
-      .filter((track) => ALL_TRACK_IDS.includes(baseTrackId(track))))]
+      .filter(isKnownTrackId))]
     : [];
   merged.midiNoteMap = normalizeMidiNoteMap(merged.midiNoteMap);
   merged.midiControlMap = normalizeMidiControlMap(merged.midiControlMap);
@@ -743,9 +882,20 @@ export const normalizeRhythmConfig = (config = {}) => {
     Object.entries(sourcePianoRollLaneHeights)
       .map(([track, height]) => [track, Math.round(finiteNumber(height, 58))])
       .filter(([track, height]) => typeof track === "string"
-        && ALL_TRACK_IDS.includes(baseTrackId(track))
+        && isKnownTrackId(track)
         && height >= 40
         && height <= 1600)
+  );
+  const sourcePianoRollPitchMins = merged.pianoRollPitchMins && typeof merged.pianoRollPitchMins === "object"
+    ? merged.pianoRollPitchMins
+    : {};
+  merged.pianoRollPitchMins = Object.fromEntries(
+    Object.entries(sourcePianoRollPitchMins)
+      .map(([track, pitch]) => [track, Math.round(finiteNumber(pitch, -5))])
+      .filter(([track, pitch]) => typeof track === "string"
+        && isKnownTrackId(track)
+        && pitch >= PITCH_OFFSET_MIN
+        && pitch <= PITCH_OFFSET_MAX - PIANO_ROLL_PITCH_WINDOW_ROWS + 1)
   );
   const sourcePianoRollAutomationHeights = merged.pianoRollAutomationHeights && typeof merged.pianoRollAutomationHeights === "object"
     ? merged.pianoRollAutomationHeights
@@ -754,7 +904,7 @@ export const normalizeRhythmConfig = (config = {}) => {
     Object.entries(sourcePianoRollAutomationHeights)
       .map(([track, height]) => [track, Math.round(finiteNumber(height, 22))])
       .filter(([track, height]) => typeof track === "string"
-        && ALL_TRACK_IDS.includes(baseTrackId(track))
+        && isKnownTrackId(track)
         && height >= 16
         && height <= 180)
   );
@@ -804,7 +954,7 @@ export const normalizeRhythmConfig = (config = {}) => {
         .filter((key) => {
           if (validEditorLaneKeys.has(key)) return true;
           const [kind, id] = key.split(":");
-          return kind === "grid" && ALL_TRACK_IDS.includes(baseTrackId(id));
+          return kind === "grid" && isKnownTrackId(id);
         }))]
       : [];
   }

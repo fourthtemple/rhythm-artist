@@ -31,6 +31,7 @@ export const TRACK_GROUPS = [
   { id: "synth", label: "Synths", accent: "#c4b5fd" },
   { id: "eightOhEight", label: "808 Kit", accent: "#fca5a5" },
   { id: "sampler", label: "Samplers", accent: "#fcd34d" },
+  { id: "plugins", label: "Plugins", accent: "#5eead4" },
   { id: "spaceVoices", label: "Space Voices", accent: "#86efac" }
 ];
 
@@ -92,6 +93,46 @@ export const GROUP_BY_ID = Object.fromEntries(TRACK_GROUPS.map((g) => [g.id, g])
 // own shape/sends/level/pan, while still resolving back to a single base voice
 // for synthesis. The `~` separator never appears in a base id.
 export const INSTANCE_SEPARATOR = "~";
+export const PLUGIN_TRACK_PREFIX = "plugin__";
+
+const pluginSlug = (value = "") => String(value || "")
+  .replace(/^wadspa:/i, "")
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9_-]+/g, "-")
+  .replace(/^-+|-+$/g, "") || "plugin";
+
+const pluginLabelFromSlug = (slug = "") => pluginSlug(slug)
+  .split(/[-_]+/)
+  .filter(Boolean)
+  .map((part) => part.length <= 3 ? part.toUpperCase() : `${part[0].toUpperCase()}${part.slice(1)}`)
+  .join(" ") || "Plugin";
+
+export const isPluginTrackId = (id) =>
+  typeof id === "string" && id.startsWith(PLUGIN_TRACK_PREFIX);
+
+export const pluginTrackIdFor = (plugin = {}) =>
+  `${PLUGIN_TRACK_PREFIX}${pluginSlug(plugin.slug || plugin.id || plugin.name)}`;
+
+export const pluginTrackDef = (id, label = "") => {
+  if (!isPluginTrackId(id)) return null;
+  const slug = id.slice(PLUGIN_TRACK_PREFIX.length);
+  return {
+    id,
+    label: typeof label === "string" && label.trim() ? label.trim() : pluginLabelFromSlug(slug),
+    group: "plugins",
+    kind: "generated",
+    voice: "plugin",
+    defaultVelocity: 0.5,
+    busSend: 0.18,
+    reverbSend: 0.12,
+    level: 1,
+    pan: 0,
+    removable: true,
+    addByDefault: false,
+    plugin: true
+  };
+};
 
 /** Is this id an instance (e.g. "eightOhEightClap~ab12") rather than a base id? */
 export const isInstanceId = (id) =>
@@ -99,7 +140,7 @@ export const isInstanceId = (id) =>
 
 /** The base registry id for any id (instances strip their `~uid` suffix). */
 export const baseTrackId = (id) =>
-  isInstanceId(id) ? id.split(INSTANCE_SEPARATOR)[0] : id;
+  isPluginTrackId(id) ? id : isInstanceId(id) ? id.split(INSTANCE_SEPARATOR)[0] : id;
 
 /** Make a fresh unique instance id for a base track. */
 export const makeInstanceId = (baseId) =>
@@ -112,6 +153,7 @@ export const makeInstanceId = (baseId) =>
  */
 export const getTrackDef = (id) => {
   if (TRACK_BY_ID[id]) return TRACK_BY_ID[id];
+  if (isPluginTrackId(id)) return pluginTrackDef(id);
   if (isInstanceId(id)) {
     const base = TRACK_BY_ID[baseTrackId(id)];
     if (base) return { ...base, id, baseId: base.id, isInstance: true };

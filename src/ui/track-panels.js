@@ -154,8 +154,8 @@ export function createTrackPanels(deps) {
   const DEFAULT_TRACK_STEPS_PER_BAR = 16;
   const normalizeTrackStepCount = (value) => {
     const number = Number(value);
-    const requested = Math.round(Number.isFinite(number) ? number : DEFAULT_TRACK_STEPS_PER_BAR);
-    return Math.max(1, Math.min(128, requested));
+    const requested = Number.isFinite(number) ? number : DEFAULT_TRACK_STEPS_PER_BAR;
+    return Number(Math.max(1, Math.min(128, requested)).toFixed(4));
   };
 
   function afterNextPaint(callback) {
@@ -191,8 +191,7 @@ export function createTrackPanels(deps) {
 
   function trackExplorerIdsForMode() {
     if (state.trackEditorMode === "pianoRoll") {
-      return validTrackViewIds(pianoRollTrackIds())
-        .filter((id) => state.gridTrackIds.includes(id));
+      return validTrackViewIds(pianoRollTrackIds());
     }
     if (state.trackEditorMode === "wave") return [];
     const hidden = new Set(hiddenGridTrackIds());
@@ -309,6 +308,8 @@ export function createTrackPanels(deps) {
       const sampleLabel = assignedSampleLabel(hit);
       if (sampleLabel) return sampleLabel;
     }
+    const pluginLabel = state.config.trackPluginSources?.[hit]?.name;
+    if (typeof pluginLabel === "string" && pluginLabel.trim()) return pluginLabel.trim();
     const def = getTrackDef(hit);
     return isInstanceId(hit) ? instanceLabel(hit) : (def?.label || hit);
   }
@@ -356,6 +357,9 @@ export function createTrackPanels(deps) {
   function openTrackPianoRoll(trackId, options = {}) {
     const def = getTrackDef(trackId);
     if (!def) return;
+    if (state.trackEditorMode !== "pianoRoll") {
+      setTrackEditorMode("pianoRoll", { rebuild: false });
+    }
     setPianoRollTrackOpen({ ...def, id: trackId, label: trackLabelForId(trackId, def.label || trackId) }, 1, options);
   }
 
@@ -537,6 +541,7 @@ export function createTrackPanels(deps) {
   function instrumentIdForTrack(hit) {
     const def = getTrackDef(hit);
     const base = baseTrackId(hit);
+    if (def?.plugin) return hit;
     if (def?.voice === "sample" || base === "sampler") return "sampler";
     if (def?.group === "eightOhEight") return "eightOhEight";
     return base;
@@ -551,6 +556,10 @@ export function createTrackPanels(deps) {
         .map((track) => ({ id: track.id, label: track.label || track.id })),
       { id: "eightOhEight", label: "808" }
     ];
+    const def = getTrackDef(hit);
+    if (def?.plugin && !choices.some((choice) => choice.id === current)) {
+      choices.push({ id: current, label: trackDisplayLabel(hit) });
+    }
     const currentDef = TRACK_BY_ID[current];
     if (currentDef && !choices.some((choice) => choice.id === currentDef.id)) {
       choices.push({ id: currentDef.id, label: currentDef.label || currentDef.id });
@@ -592,6 +601,18 @@ export function createTrackPanels(deps) {
 
     state.gridTrackIds = replaceIdInUniqueList(state.gridTrackIds, hit, targetId);
     state.config = replaceTrackIdInConfig(state.config, hit, targetId);
+    if (state.config.trackPluginSources?.[hit] || state.config.trackPluginSources?.[targetId]) {
+      const pluginSources = { ...(state.config.trackPluginSources || {}) };
+      delete pluginSources[hit];
+      delete pluginSources[targetId];
+      state.config.trackPluginSources = pluginSources;
+    }
+    if (state.config.trackPluginParams?.[hit] || state.config.trackPluginParams?.[targetId]) {
+      const pluginParams = { ...(state.config.trackPluginParams || {}) };
+      delete pluginParams[hit];
+      delete pluginParams[targetId];
+      state.config.trackPluginParams = pluginParams;
+    }
     if (targetDef.kind === "generated" || targetDef.group === "synth") state.config.generatedRowsEditable = 1;
     ensureTrackColumn(targetId);
     onTrackIdReplaced();
@@ -695,6 +716,154 @@ export function createTrackPanels(deps) {
     });
     const sampleWrap = panel.querySelector(".track-inspector-sample");
     sampleWrap ? sampleWrap.after(wrap) : panel.querySelector("[data-track-panel]")?.appendChild(wrap);
+  }
+
+  function pluginSourceForTrack(hit) {
+    return state.config.trackPluginSources?.[hit] || null;
+  }
+
+  function pluginParamStep(parameter) {
+    if (parameter.integer || parameter.enumeration) return 1;
+    const span = Math.abs((Number(parameter.max) || 0) - (Number(parameter.min) || 0));
+    return span > 0 ? Number(Math.max(span / 100, 0.0001).toFixed(4)) : 0.01;
+  }
+
+  function pluginParamScalePoints(parameter) {
+    if (!Array.isArray(parameter?.scalePoints)) return [];
+    return parameter.scalePoints
+      .filter((point) => point && Number.isFinite(Number(point.value)))
+      .map((point) => ({
+        label: typeof point.label === "string" && point.label.trim() ? point.label.trim() : String(point.value),
+        value: Number(point.value)
+      }));
+  }
+
+  function normalizedPluginParamValue(parameter, value, fallback = parameter.default) {
+    const min = Number.isFinite(Number(parameter.min)) ? Number(parameter.min) : 0;
+    const max = Number.isFinite(Number(parameter.max)) ? Number(parameter.max) : min + 1;
+    let next = clamp(value, min, max, Number.isFinite(Number(fallback)) ? Number(fallback) : min);
+    if (parameter.integer || parameter.enumeration) next = Math.round(next);
+    return next;
+  }
+
+  function formatPluginParamValue(parameter, value) {
+    const number = normalizedPluginParamValue(parameter, value);
+    if (!Number.isFinite(number)) return "0";
+    const scalePoint = pluginParamScalePoints(parameter)
+      .find((point) => Math.round(point.value) === Math.round(number));
+    if (scalePoint) return `${scalePoint.label} (${Math.round(number)})`;
+    if (parameter.integer || parameter.enumeration) return String(Math.round(number));
+    const span = Math.abs((Number(parameter.max) || 0) - (Number(parameter.min) || 0));
+    return number.toFixed(span <= 2 ? 2 : 1);
+  }
+
+  function pluginParamValue(hit, parameter) {
+    const stored = state.config.trackPluginParams?.[hit]?.[parameter.symbol];
+    return normalizedPluginParamValue(parameter, stored);
+  }
+
+  function setPluginParamValue(hit, parameter, value) {
+    const nextValue = normalizedPluginParamValue(parameter, value, pluginParamValue(hit, parameter));
+    state.config.trackPluginParams = {
+      ...(state.config.trackPluginParams || {}),
+      [hit]: {
+        ...(state.config.trackPluginParams?.[hit] || {}),
+        [parameter.symbol]: nextValue
+      }
+    };
+    applyConfig();
+  }
+
+  function resetPluginParams(hit) {
+    if (!state.config.trackPluginParams?.[hit]) return;
+    const next = { ...(state.config.trackPluginParams || {}) };
+    delete next[hit];
+    state.config.trackPluginParams = next;
+    applyConfig();
+    syncJson();
+    renderTrackInspector();
+    setStatus(`${trackDisplayLabel(hit)} plugin parameters reset`);
+  }
+
+  function renderPluginParamControl(hit, parameter) {
+    if (!parameter?.symbol) return null;
+    const current = pluginParamValue(hit, parameter);
+    const lbl = document.createElement("label");
+    lbl.className = "track-plugin-param";
+    if (parameter.enumeration || pluginParamScalePoints(parameter).length) lbl.classList.add("is-enum");
+    const span = document.createElement("span");
+    span.textContent = parameter.name || parameter.symbol;
+    span.title = parameter.name || parameter.symbol;
+    const out = document.createElement("output");
+    out.textContent = formatPluginParamValue(parameter, current);
+    out.title = out.textContent;
+    const commit = (raw) => {
+      const value = normalizedPluginParamValue(parameter, raw, current);
+      out.textContent = formatPluginParamValue(parameter, value);
+      out.title = out.textContent;
+      setPluginParamValue(hit, parameter, value);
+      return value;
+    };
+    const range = document.createElement("input");
+    range.type = "range";
+    range.min = String(parameter.min);
+    range.max = String(parameter.max);
+    range.step = String(pluginParamStep(parameter));
+    range.value = String(current);
+    range.dataset.midiParam = `track.${hit}.plugin.${parameter.symbol}`;
+    range.dataset.midiLabel = `${trackDisplayLabel(hit)} ${parameter.name || parameter.symbol}`;
+    range.dataset.midiAction = "value";
+    range.addEventListener("input", () => {
+      range.value = String(commit(range.value));
+    });
+    range.addEventListener("change", syncJson);
+    lbl.append(span, range, out);
+    return lbl;
+  }
+
+  function renderPluginParameter(hit, panel) {
+    const source = pluginSourceForTrack(hit);
+    const sampleWrap = panel.querySelector(".track-inspector-sample");
+    const row = panel.querySelector(".track-inspector-sample-row");
+    if (sampleWrap) {
+      sampleWrap.hidden = false;
+      sampleWrap.style.display = "";
+      sampleWrap.classList.add("track-inspector-parameter", "track-inspector-parameter--plugin");
+      sampleWrap.classList.remove("track-inspector-parameter--sample", "track-inspector-parameter--hit-type");
+    }
+    const label = sampleWrap?.querySelector(".track-inspector-sublabel");
+    if (label) label.textContent = "Plugin";
+    if (row) {
+      row.innerHTML = "";
+      const meta = document.createElement("span");
+      meta.className = "track-plugin-meta";
+      const midi = Number(source?.midiInputs) > 0 ? "MIDI" : "Audio";
+      meta.textContent = source
+        ? `${midi} · ${source.audioInputs || 0} in/${source.audioOutputs || 0} out · ${source.controlInputs || 0} controls`
+        : "catalog metadata unavailable";
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.className = "track-plugin-reset";
+      reset.textContent = "Reset";
+      reset.title = "Reset plugin parameters to catalog defaults";
+      reset.disabled = !state.config.trackPluginParams?.[hit];
+      reset.addEventListener("click", () => resetPluginParams(hit));
+      row.append(meta, reset);
+    }
+    const parameters = Array.isArray(source?.parameters) ? source.parameters : [];
+    const wrap = document.createElement("div");
+    wrap.className = "track-inspector-extra-config track-inspector-plugin-params";
+    parameters.forEach((parameter) => {
+      const control = renderPluginParamControl(hit, parameter);
+      if (control) wrap.appendChild(control);
+    });
+    if (!parameters.length) {
+      const empty = document.createElement("div");
+      empty.className = "track-plugin-more";
+      empty.textContent = "No control inputs";
+      wrap.appendChild(empty);
+    }
+    sampleWrap ? sampleWrap.after(wrap) : panel.appendChild(wrap);
   }
 
   function renderEightOhEightParameter(hit, panel) {
@@ -1165,7 +1334,7 @@ export function createTrackPanels(deps) {
   function setTrackStepCount(hit, value) {
     const nextValue = normalizeTrackStepCount(value);
     const next = { ...(state.config.trackStepCounts || {}) };
-    if (nextValue === DEFAULT_TRACK_STEPS_PER_BAR) delete next[hit];
+    if (Math.abs(nextValue - DEFAULT_TRACK_STEPS_PER_BAR) < 0.0001) delete next[hit];
     else next[hit] = nextValue;
     state.config.trackStepCounts = next;
     applyConfig();
@@ -1173,7 +1342,7 @@ export function createTrackPanels(deps) {
     renderTrackExplorer();
     renderTrackInspector();
     syncJson();
-    setStatus(`${instanceLabel(hit)} grid set to ${nextValue} steps/bar`);
+    setStatus(`${instanceLabel(hit)} steps/bar set to ${nextValue}`);
   }
 
   function trackIdsForBase(baseId) {
@@ -1199,18 +1368,14 @@ export function createTrackPanels(deps) {
     });
   }
 
-  function setPianoRollTrackOpen(track, value, { exposeGrid = true } = {}) {
+  function setPianoRollTrackOpen(track, value, { exposeGrid = false } = {}) {
     if (!track) return;
     const target = Math.round(Number(value)) >= 1 ? 1 : 0;
     const next = new Set(pianoRollTrackIds());
     if (target) {
       next.add(track.id);
-      if (!state.gridTrackIds.includes(track.id)) addGridTrack(track.id, { expose: exposeGrid, hidden: !exposeGrid });
+      if (exposeGrid && !state.gridTrackIds.includes(track.id)) addGridTrack(track.id, { expose: true });
       else if (exposeGrid) addProjectTrack(track.id, { render: false });
-      else {
-        hideGridTrack(track.id);
-        removeProjectTrack(track.id);
-      }
       onEditorLaneOpen?.("piano", track.id);
       ensureTrackPatternRows(track.id);
       state.config.generatedRowsEditable = 1;
@@ -1304,6 +1469,8 @@ export function createTrackPanels(deps) {
     } else if (instrumentKind === "sampler") {
       renderSamplerParameter(hit, panel);
       renderSamplerDefaultControls(hit, panel);
+    } else if (def?.plugin) {
+      renderPluginParameter(hit, panel);
     } else if (sampleWrap) {
       sampleWrap.hidden = true;
       sampleWrap.style.display = "none";
@@ -1469,7 +1636,12 @@ export function createTrackPanels(deps) {
     let tracks = orderBySelectedGrid(selectedIds.filter((id) => state.gridTrackIds.includes(id)));
     if (state.trackEditorMode === "pianoRoll") {
       const openPianoRollTracks = new Set(pianoRollTrackIds());
-      tracks = tracks.filter((id) => openPianoRollTracks.has(id));
+      const pianoSelected = selectedIds.filter((id) => openPianoRollTracks.has(id) && getTrackDef(id));
+      const gridOrdered = tracks.filter((id) => openPianoRollTracks.has(id));
+      pianoSelected.forEach((id) => {
+        if (!gridOrdered.includes(id)) gridOrdered.push(id);
+      });
+      tracks = gridOrdered;
     }
     onTrackInspectorSelectionChange(tracks.length);
     trackInspectorPanels.innerHTML = "";

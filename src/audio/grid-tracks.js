@@ -128,6 +128,16 @@ export function removeTrackFromConfigMaps(config, trackId) {
       next[mapKey] = map;
     }
   });
+  if (next?.trackPluginSources?.[trackId] !== undefined) {
+    const map = { ...next.trackPluginSources };
+    delete map[trackId];
+    next.trackPluginSources = map;
+  }
+  if (next?.trackPluginParams?.[trackId] !== undefined) {
+    const map = { ...next.trackPluginParams };
+    delete map[trackId];
+    next.trackPluginParams = map;
+  }
   if (next?.trackAutomationParams && typeof next.trackAutomationParams === "object") {
     const map = { ...next.trackAutomationParams };
     delete map[`grid:${trackId}`];

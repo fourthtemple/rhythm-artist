@@ -525,7 +525,7 @@ button.is-active {
 .sequencer-panel {
   position: relative;
   display: grid;
-  grid-template-rows: auto auto 1fr 4px auto;
+  grid-template-rows: auto auto minmax(0, 1fr) 4px var(--bottom-panel-height, auto);
   gap: 3px;
   min-width: 0;
   min-height: 0;
@@ -750,11 +750,13 @@ button.is-active {
 }
 
 .bar-tabs button {
+  position: relative;
   min-height: 22px;
   padding: 0 var(--bar-tab-pad-x, 5px);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   user-select: none;
+  overflow: hidden;
 }
 
 .bar-tabs button.is-section-start {
@@ -770,6 +772,26 @@ button.is-active {
 
 .bar-tabs button.is-section-start.is-active:not(.is-multi-selected):not(.is-playing) {
   border-left-color: var(--accent-2);
+}
+
+.bar-tabs button.is-range-selected {
+  border-color: rgba(245, 215, 110, 0.46);
+}
+
+.bar-tabs button.is-range-selected::before {
+  content: "";
+  position: absolute;
+  left: var(--bar-range-left, 0%);
+  top: 2px;
+  bottom: 2px;
+  width: var(--bar-range-width, 0%);
+  min-width: 2px;
+  border-radius: 3px;
+  background: rgba(245, 215, 110, 0.26);
+  box-shadow:
+    inset 0 0 0 1px rgba(245, 215, 110, 0.46),
+    0 0 6px rgba(245, 215, 110, 0.16);
+  pointer-events: none;
 }
 
 @media (max-width: 900px) {
@@ -1257,17 +1279,18 @@ button.is-active {
 
 .selected-step {
   display: grid;
-  grid-template-rows: auto min-content;
+  grid-template-rows: auto minmax(0, 1fr);
   align-items: start;
-  align-content: start;
+  align-content: stretch;
   gap: 2px;
   width: 100%;
+  height: 100%;
   margin-top: -3px;
   padding: 2px 5px 4px;
   border-top: 1px solid var(--line);
   background: color-mix(in srgb, var(--panel) 96%, transparent);
-  min-height: 0;
-  max-height: none;
+  min-height: 60px;
+  max-height: 100%;
   overflow: hidden;
 }
 
@@ -1301,14 +1324,50 @@ button.is-active {
   min-width: 0;
 }
 
+.selected-quantize-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 16px;
+  width: 16px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 10px;
+  font-weight: 760;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+}
+
+.selected-quantize-toggle input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: #70d8ca;
+}
+
+.selected-quantize-toggle[hidden] {
+  display: none !important;
+}
+
+.selected-quantize-toggle.is-active {
+  color: #c7efe8;
+}
+
 .selected-grid-steps {
   display: inline-grid;
-  grid-template-columns: max-content 46px;
+  grid-template-columns: max-content 48px 58px;
   align-items: center;
   flex: 0 0 auto;
   gap: 4px;
   height: 22px;
-  min-width: 112px;
+  min-width: 174px;
   min-height: 22px;
   padding: 2px 6px;
   border: 1px solid #2a3848;
@@ -1318,6 +1377,11 @@ button.is-active {
   font-size: 10px;
   line-height: 1;
   white-space: nowrap;
+}
+
+.selected-grid-steps.is-grid-locked {
+  grid-template-columns: max-content 48px;
+  min-width: 116px;
 }
 
 .selected-grid-steps[hidden] {
@@ -1333,7 +1397,7 @@ button.is-active {
 
 .selected-grid-steps input {
   display: block;
-  width: 46px;
+  width: 48px;
   height: 18px;
   min-width: 0;
   padding: 0 4px;
@@ -1344,6 +1408,25 @@ button.is-active {
   font-size: 11px;
   line-height: 1;
   text-align: center;
+}
+
+.selected-grid-note-value {
+  display: block;
+  width: 58px;
+  height: 18px;
+  min-width: 0;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 3px;
+  background: #111b26;
+  color: #d8e7ee;
+  font-size: 10px;
+  font-weight: 680;
+  line-height: 1;
+}
+
+.selected-grid-note-value[hidden] {
+  display: none !important;
 }
 
 .selected-grid-steps output {
@@ -1410,7 +1493,7 @@ button.is-active {
 
 .selected-midi-clear-take-button {
   min-width: 58px;
-  color: #8fa2b5;
+  color: #9caec0;
   font-weight: 700;
 }
 
@@ -1720,9 +1803,17 @@ button.is-active {
   width: 92px;
 }
 
+.selected-track-panel .track-inspector-parameter--plugin {
+  width: 150px;
+}
+
 .selected-track-panel .track-inspector-parameter--hit-type .track-inspector-sample-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+}
+
+.selected-track-panel .track-inspector-parameter--plugin .track-inspector-sample-row {
+  display: block;
 }
 
 .selected-track-panel .track-inspector-layout {
@@ -1813,12 +1904,21 @@ button.is-active {
   display: flex;
   flex: 0 0 auto;
   flex-direction: row;
+  flex-wrap: nowrap;
   align-items: flex-start;
   gap: 4px;
   min-width: 0;
+  max-width: 100%;
   margin: 0;
   padding: 0;
   border: 0;
+}
+
+.selected-track-panel .track-inspector-plugin-params {
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  width: 100%;
+  overflow: visible;
 }
 
 .selected-track-panel .track-inspector-sampler-defaults label {
@@ -1828,6 +1928,55 @@ button.is-active {
 .selected-track-panel .track-inspector-sampler-defaults label span {
   font-size: 7.5px;
   white-space: nowrap;
+}
+
+.selected-track-panel .track-inspector-plugin-params label {
+  flex: 0 0 68px;
+  width: 68px;
+  box-sizing: border-box;
+}
+
+.selected-track-panel .track-inspector-plugin-params label span {
+  max-width: 56px;
+  overflow: hidden;
+  font-size: 7.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selected-track-panel .track-inspector-sample-row .track-plugin-reset {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 34px;
+  min-height: 16px;
+  padding: 0 6px;
+  font-size: 8px;
+}
+
+.selected-track-panel .track-inspector-sample-row .track-plugin-reset:disabled {
+  opacity: 0.45;
+}
+
+.selected-track-panel .track-plugin-meta,
+.selected-track-panel .track-plugin-more {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: #c1ccd8;
+  font-size: 8.5px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selected-track-panel .track-plugin-more {
+  align-self: stretch;
+  padding: 10px 7px;
+  border: 1px solid #27313d;
+  border-radius: 3px;
+  background: #111820;
+  color: #9aa8b8;
+  font-weight: 700;
 }
 
 .selected-track-panel .track-inspector-shape {
@@ -2650,7 +2799,6 @@ button.is-active {
 #sample-config-section { order: 3; }
 #sample-browser-section { order: 4; }
 #track-explorer-section { order: 5; }
-#quantize-panel { order: 6; }
 #loop-region-panel { order: 7; }
 #song-properties-section { order: 0; }
 
@@ -2998,13 +3146,6 @@ input[type="range"] {
   pointer-events: none;
   background:
     repeating-linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.018) 0,
-      rgba(255, 255, 255, 0.018) calc(100% / var(--pitch-rows, 12) - 1px),
-      rgba(0, 0, 0, 0.18) calc(100% / var(--pitch-rows, 12) - 1px),
-      rgba(0, 0, 0, 0.18) calc(100% / var(--pitch-rows, 12))
-    ),
-    repeating-linear-gradient(
       90deg,
       rgba(255, 255, 255, 0.04) 0,
       rgba(255, 255, 255, 0.04) 1px,
@@ -3031,6 +3172,23 @@ input[type="range"] {
 .piano-roll-note-area {
   position: absolute;
   inset: 0;
+}
+
+.piano-roll-pitch-lines {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.piano-roll-pitch-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  transform: translateY(-0.5px);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.18);
 }
 
 .piano-roll-pitch-overlay {
@@ -3177,9 +3335,10 @@ input[type="range"] {
 
 .piano-roll-note:hover,
 .piano-roll-note:focus-visible {
-  outline: 1px solid rgba(255, 255, 255, 0.8);
+  outline: 1px solid color-mix(in srgb, var(--track-accent, #67c6df) 62%, #6fbad2);
   outline-offset: 1px;
   opacity: 1;
+  filter: saturate(1.04) brightness(1.06);
 }
 
 .piano-roll-automation {
@@ -3352,23 +3511,47 @@ input[type="range"] {
   position: absolute;
   left: 8px;
   right: 8px;
-  bottom: 0;
-  height: 12px;
+  height: 11px;
   cursor: ns-resize;
   z-index: 6;
   background: transparent;
+}
+
+.piano-roll-resize-handle--top {
+  top: 0;
+}
+
+.piano-roll-resize-handle--bottom {
+  bottom: 0;
+}
+
+.piano-roll-resize-handle--lane {
+  left: 0;
+  right: 0;
+  height: 13px;
 }
 
 .piano-roll-resize-handle::after {
   content: "";
   position: absolute;
   left: 50%;
-  bottom: 2px;
+  top: 50%;
   width: 34px;
   height: 2px;
   border-radius: 999px;
-  transform: translateX(-50%);
-  background: rgba(180, 210, 225, 0.42);
+  transform: translate(-50%, -50%);
+  background: rgba(180, 210, 225, 0.32);
+  opacity: 0.5;
+}
+
+.piano-roll-resize-handle:hover::after,
+.piano-roll-resize-handle:focus-visible::after {
+  background: color-mix(in srgb, var(--track-accent, #8bd8bd) 54%, #ffffff 16%);
+  opacity: 0.9;
+}
+
+.piano-roll-resize-handle--lane::after {
+  width: 46px;
 }
 
 /* ══ Sample / Loop Track Lanes ════════════════════════════════ */
@@ -3779,53 +3962,6 @@ input[type="range"] {
   line-height: 1;
 }
 
-/* ── Quantize panel ─────────────────────────────────── */
-
-.quantize-panel {
-  display: grid;
-  gap: 6px;
-  padding: 6px;
-  border: 1px solid #293f3a;
-  border-radius: 7px;
-  background: #11151f;
-}
-
-.quantize-panel[hidden] {
-  display: none;
-}
-
-.quantize-controls {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.quantize-toggle-label {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.quantize-grid-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.quantize-grid-label select {
-  background: var(--bg2, #1e1e2e);
-  color: var(--text);
-  border: 1px solid var(--border, #444);
-  border-radius: 3px;
-  font-size: 12px;
-  padding: 2px 4px;
-}
 
 /* ── Loop region panel ──────────────────────────────── */
 
@@ -4693,6 +4829,19 @@ input[type="range"] {
   margin-top: 8px;
 }
 
+.track-add-palette-divider {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  color: #6f7e90;
+  font-size: 8px;
+  font-weight: 780;
+  letter-spacing: 0.1em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
 .track-add-palette button {
   display: flex;
   align-items: center;
@@ -4731,6 +4880,17 @@ input[type="range"] {
 .track-add-palette button.is-effect-control::before {
   content: "fx";
   color: #b9a8ff;
+}
+
+.track-add-palette button.is-wadspa-plugin::before {
+  content: none;
+}
+
+.track-add-palette button.is-wadspa-plugin span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .track-add-palette button:hover,
@@ -6001,6 +6161,7 @@ html[data-theme="morning"] .sample-browser-breadcrumb
 html[data-theme="morning"] .time-sig-number,
 html[data-theme="morning"] .transport .time-sig-control .time-sig-number,
 html[data-theme="morning"] .selected-grid-steps input,
+html[data-theme="morning"] .selected-grid-note-value,
 html[data-theme="morning"] .midi-map-note-input,
 html[data-theme="morning"] .loop-region-controls input[type="number"]
 {
@@ -6025,6 +6186,7 @@ html[data-theme="morning"] .track-shape-row .track-shape-name,
 html[data-theme="morning"] .midi-map-note-label,
 html[data-theme="morning"] .midi-map-control-source,
 html[data-theme="morning"] .track-add-count,
+html[data-theme="morning"] .track-add-palette-divider,
 html[data-theme="morning"] .track-inspector-sublabel,
 html[data-theme="morning"] .track-inspector-body > label > span,
 html[data-theme="morning"] .track-inspector-extra-config label span
@@ -6161,6 +6323,19 @@ html[data-theme="morning"] .bar-tabs button.is-multi-selected
   box-shadow: inset 0 0 0 1px rgba(164, 126, 44, 0.28);
 }
 
+html[data-theme="morning"] .bar-tabs button.is-range-selected
+{
+  border-color: #b8a35a;
+}
+
+html[data-theme="morning"] .bar-tabs button.is-range-selected::before
+{
+  background: rgba(190, 145, 30, 0.3);
+  box-shadow:
+    inset 0 0 0 1px rgba(164, 126, 44, 0.42),
+    0 0 6px rgba(164, 126, 44, 0.14);
+}
+
 html[data-theme="morning"] .step-button,
 html[data-theme="morning"] .step-button.is-generated-step
 {
@@ -6208,7 +6383,12 @@ html[data-theme="morning"] .selected-effects-default-controls label
 html[data-theme="morning"] .selected-track-panel .track-inspector-panel-head,
 html[data-theme="morning"] .selected-track-panel .track-inspector-sample,
 html[data-theme="morning"] .selected-track-panel .track-inspector-layout,
+html[data-theme="morning"] .selected-track-panel .track-inspector-shape,
+html[data-theme="morning"] .selected-track-panel .track-shape-row.has-rotary,
+html[data-theme="morning"] .selected-track-panel .track-plugin-more,
 html[data-theme="morning"] .selected-track-panel .track-inspector-sample-row,
+html[data-theme="morning"] .selected-track-panel .track-instrument-select,
+html[data-theme="morning"] .selected-track-panel .track-param-select,
 html[data-theme="morning"] .selected-track-panel .track-inspector-sample-row select,
 html[data-theme="morning"] .selected-track-panel .track-inspector-body select,
 html[data-theme="morning"] .selected-track-panel .track-inspector-extra-config select
@@ -6217,6 +6397,14 @@ html[data-theme="morning"] .selected-track-panel .track-inspector-extra-config s
   background:
     linear-gradient(180deg, #ffffff 0%, #edf2f6 100%);
   color: #26313a;
+}
+
+html[data-theme="morning"] .selected-track-panel .track-instrument-select,
+html[data-theme="morning"] .selected-track-panel .track-param-select
+{
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 1px 1px rgba(64, 80, 96, 0.06);
 }
 
 html[data-theme="morning"] .selected-controls label > span,
@@ -6230,16 +6418,20 @@ html[data-theme="morning"] .selected-effects-default-controls label > span
 
 html[data-theme="morning"] .selected-step strong,
 html[data-theme="morning"] .track-inspector-name,
+html[data-theme="morning"] .track-inspector-panel-name,
 html[data-theme="morning"] .midi-map-track,
 html[data-theme="morning"] .track-shape-value,
 html[data-theme="morning"] .track-inspector-body output,
 html[data-theme="morning"] .track-inspector-extra-config output,
+html[data-theme="morning"] .selected-track-panel .track-plugin-meta,
+html[data-theme="morning"] .selected-track-panel .track-plugin-more,
 html[data-theme="morning"] .selected-controls label.pitch-control .selected-number
 {
   color: #26313a;
 }
 
 html[data-theme="morning"] .selected-grid-steps input,
+html[data-theme="morning"] .selected-grid-note-value,
 html[data-theme="morning"] .selected-number,
 html[data-theme="morning"] .control-panel output,
 html[data-theme="morning"] .selected-step output,
@@ -6248,6 +6440,30 @@ html[data-theme="morning"] .transport output
 {
   color: #14554f;
   font-weight: 650;
+}
+
+html[data-theme="morning"] .selected-quantize-toggle
+{
+  color: #38505f;
+  font-weight: 760;
+}
+
+html[data-theme="morning"] .selected-quantize-toggle.is-active
+{
+  color: #14554f;
+}
+
+html[data-theme="morning"] .selected-midi-clear-take-button
+{
+  color: #425869;
+}
+
+html[data-theme="morning"] .selected-midi-clear-take-button:not(:disabled).has-take
+{
+  border-color: #7f9aaa;
+  color: #203442;
+  background:
+    linear-gradient(180deg, #ffffff 0%, #e2e9ef 100%);
 }
 
 html[data-theme="morning"] .rotary-control
@@ -6363,13 +6579,6 @@ html[data-theme="morning"] .piano-roll-lane::before
   border-color: rgba(122, 136, 150, 0.22);
   background:
     repeating-linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.58) 0,
-      rgba(255, 255, 255, 0.58) calc(100% / var(--pitch-rows, 12) - 1px),
-      rgba(138, 151, 164, 0.24) calc(100% / var(--pitch-rows, 12) - 1px),
-      rgba(138, 151, 164, 0.24) calc(100% / var(--pitch-rows, 12))
-    ),
-    repeating-linear-gradient(
       90deg,
       rgba(99, 114, 130, 0.22) 0,
       rgba(99, 114, 130, 0.22) 1px,
@@ -6381,6 +6590,12 @@ html[data-theme="morning"] .piano-roll-lane::before
   box-shadow:
     inset 0 1px 3px rgba(99, 113, 128, 0.28),
     inset 0 0 0 1px rgba(255, 255, 255, 0.52);
+}
+
+html[data-theme="morning"] .piano-roll-pitch-line
+{
+  background: rgba(116, 130, 144, 0.24);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.58);
 }
 
 html[data-theme="morning"] .piano-roll-empty,
@@ -6425,6 +6640,24 @@ html[data-theme="morning"] .piano-roll-note.is-live
     inset 0 1px 0 rgba(255, 255, 255, 0.22),
     inset 0 -1px 0 rgba(0, 0, 0, 0.3),
     0 0 10px rgba(45, 128, 119, 0.24);
+}
+
+html[data-theme="morning"] .piano-roll-note:hover,
+html[data-theme="morning"] .piano-roll-note:focus-visible
+{
+  outline-color: #6faec4;
+  filter: saturate(1.03) brightness(1.05);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3),
+    0 0 0 2px rgba(91, 152, 176, 0.13),
+    0 1px 3px rgba(55, 72, 88, 0.22);
+}
+
+html[data-theme="morning"] .piano-roll-note:hover .piano-roll-note-resize,
+html[data-theme="morning"] .piano-roll-note:focus-visible .piano-roll-note-resize
+{
+  background: rgba(64, 126, 148, 0.36);
 }
 
 html[data-theme="morning"] .piano-roll-automation

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_NOTE_INSTRUMENT,
   DEFAULT_GRID_TRACK_IDS,
+  createBlankRhythmConfig,
   effectiveStepOptionsForTrack,
   metronomeBeatEventsForStep,
   normalizeTrackOptionDefaults,
@@ -12,10 +13,33 @@ import {
   TRACK_BY_ID
 } from "../src/audio/rhythm-config.js";
 
-test("normalizeTrackStepCount allows arbitrary integer grid densities", () => {
+test("createBlankRhythmConfig starts an empty editable project", () => {
+  const config = createBlankRhythmConfig();
+  assert.equal(config.generatedRowsEditable, 1);
+  assert.equal(config.patterns.jazz.bars.length, 32);
+  assert.deepEqual(config.loopTracks, []);
+  assert.deepEqual(config.pianoRollTracks, []);
+  assert.deepEqual(config.trackSamples, {});
+  assert.deepEqual(config.trackViewTrackIds, []);
+  assert.deepEqual(config.editorLaneOrder, []);
+  assert.deepEqual(config.soloTracks, []);
+  assert.deepEqual(config.mutedTracks, []);
+  assert.equal(config.loopPhraseBar, null);
+  assert.equal(config.loopPhraseBarLength, 0);
+  assert.equal(config.loopPhraseBarStart, null);
+  assert.equal(
+    config.patterns.jazz.bars.reduce((sum, bar) => (
+      sum + Object.values(bar).reduce((barSum, hits) => barSum + hits.length, 0)
+    ), 0),
+    0
+  );
+});
+
+test("normalizeTrackStepCount allows arbitrary grid densities", () => {
   assert.equal(normalizeTrackStepCount(7), 7);
   assert.equal(normalizeTrackStepCount(13), 13);
-  assert.equal(normalizeTrackStepCount(20.8), 21);
+  assert.equal(normalizeTrackStepCount(20.8), 20.8);
+  assert.equal(normalizeTrackStepCount(2.4), 2.4);
 });
 
 test("normalizeTrackStepCount clamps unusable extremes", () => {
@@ -40,10 +64,17 @@ test("normalizeRhythmConfig preserves opened piano roll instruments", () => {
       pad: 999,
       missing: 120,
       kick: 9999
+    },
+    pianoRollPitchMins: {
+      bass: -12,
+      pad: 32,
+      missing: 0,
+      kick: 999
     }
   });
   assert.deepEqual(config.pianoRollTracks, ["bass", "pad"]);
   assert.deepEqual(config.pianoRollLaneHeights, { bass: 58, pad: 999 });
+  assert.deepEqual(config.pianoRollPitchMins, { bass: -12, pad: 32 });
 });
 
 test("normalizeRhythmConfig preserves lane automation parameter choices", () => {
@@ -255,8 +286,10 @@ test("normalizeRhythmConfig clamps arrangement and metronome settings", () => {
 test("normalizeTimeSignature accepts common meters and rejects unusable values", () => {
   assert.equal(normalizeTimeSignature("7/8"), "7/8");
   assert.equal(normalizeTimeSignature("3/4"), "3/4");
+  assert.equal(normalizeTimeSignature("3/5"), "3/5");
   assert.equal(normalizeTimeSignature("bad"), "4/4");
   assert.equal(normalizeTimeSignature("17/4"), "4/4");
+  assert.equal(normalizeTimeSignature("4/33"), "4/4");
 });
 
 test("metronome beat events follow the selected time signature", () => {

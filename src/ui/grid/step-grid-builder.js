@@ -15,8 +15,32 @@ import {
   automationParameterById
 } from "../automation/automation-parameters.js";
 import { syncStepGridLaneRows } from "./lane-grid-layout.js";
-import { appendPianoRollLanes } from "../piano-roll/piano-roll-lanes.js";
+import { appendPianoRollLanes, refreshLivePianoRollNotes as refreshLivePianoRollNotesBase } from "../piano-roll/piano-roll-lanes.js";
 import { createAutomationLane } from "../piano-roll/automation/automation-lane.js";
+
+export function selectedBarsCameraSpanRange(selectedBars, visibleStart = 0, visibleCount = 1, stepsPerBar = 16) {
+  const start = Math.max(0, Math.round(Number(visibleStart) || 0));
+  const count = Math.max(1, Math.round(Number(visibleCount) || 1));
+  const stepCount = Math.max(1, Math.round(Number(stepsPerBar) || 16));
+  const end = start + count;
+  const bars = [...new Set(Array.isArray(selectedBars) ? selectedBars : [])]
+    .map((bar) => Math.round(Number(bar)))
+    .filter((bar) => Number.isFinite(bar) && bar >= start && bar < end)
+    .sort((a, b) => a - b);
+  if (!bars.length) return null;
+  const localStart = bars[0] - start;
+  const localEnd = bars[bars.length - 1] - start + 1;
+  const startStepAbs = localStart * stepCount;
+  const endStepAbs = localEnd * stepCount;
+  return {
+    source: "bar",
+    startBar: localStart,
+    startStep: 0,
+    startStepAbs,
+    endStepAbs,
+    lengthSteps: endStepAbs - startStepAbs
+  };
+}
 
 /**
  * @param {object} deps
@@ -68,6 +92,7 @@ import { createAutomationLane } from "../piano-roll/automation/automation-lane.j
  * @param {(event:MouseEvent, items:any[]) => void} [deps.showContextMenu]
  * @param {(range:any) => void|Promise<void>} [deps.loopBeatSelection]
  * @param {(range:any) => void|Promise<void>} [deps.playBeatSelection]
+ * @param {(range:any) => void} [deps.copyBeatSelection]
  * @param {() => boolean|void} [deps.clearBeatLoop]
  * @param {(kind:string, id:string, fallbackIndex:number, gridTrackRows:number) => number} [deps.editorLaneGridRow]
  * @param {() => number} [deps.editorLaneCount]
@@ -125,6 +150,7 @@ export function createStepGridBuilder(deps) {
     showContextMenu,
     loopBeatSelection,
     playBeatSelection,
+    copyBeatSelection,
     clearBeatLoop,
     editorLaneGridRow = null,
     editorLaneCount = null,
@@ -159,6 +185,7 @@ export function createStepGridBuilder(deps) {
   let cameraSuppressClick = false;
   let cameraPointerHandledClick = false;
   let cameraRenderRaf = 0;
+  let barTabsSelectionRaf = 0;
   let cameraSelectionCommitRaf = 0;
   let cameraSelectionCommitTimer = 0;
   let pendingCameraSelectionCommit = null;
@@ -844,6 +871,87 @@ export function createStepGridBuilder(deps) {
     });
   }
 
+  function normalizeCameraSelectionRange(range) {
+    if (!range || !range.lengthSteps) return null;
+    const totalSteps = Math.max(1, renderedSegmentCount() * BASE_STEPS_PER_BAR);
+    const start = Math.max(0, Math.min(totalSteps, Math.round(Number(range.startStepAbs) || 0)));
+    const end = Math.max(start + 1, Math.min(totalSteps, Math.round(Number(range.endStepAbs ?? start + range.lengthSteps) || start + 1)));
+    if (end <= start) return null;
+    return {
+      ...range,
+      startStepAbs: start,
+      endStepAbs: end,
+      lengthSteps: end - start
+    };
+  }
+
+  function selectedBarCameraRanges() {
+    const selected = Array.isArray(state.selectedBars) ? state.selectedBars : [];
+    if (!selected.length) return [];
+    const visibleStart = gridStartBar();
+    const visibleEnd = visibleStart + renderedSegmentCount();
+    return selected
+      .filter((bar) => Number.isFinite(Number(bar)) && bar >= visibleStart && bar < visibleEnd)
+      .map((bar) => {
+        const localBar = Math.round(Number(bar)) - visibleStart;
+        const startStepAbs = localBar * BASE_STEPS_PER_BAR;
+        return {
+          source: "bar",
+          startBar: localBar,
+          startStep: 0,
+          startStepAbs,
+          endStepAbs: startStepAbs + BASE_STEPS_PER_BAR,
+          lengthSteps: BASE_STEPS_PER_BAR
+        };
+      });
+  }
+
+  function selectedBarCameraSpan() {
+    return selectedBarsCameraSpanRange(
+      state.selectedBars,
+      gridStartBar(),
+      renderedSegmentCount(),
+      BASE_STEPS_PER_BAR
+    );
+  }
+
+  function cameraSelectionRanges() {
+    const beatRange = normalizeCameraSelectionRange(state.cameraBeatSelection);
+    if (beatRange) return [{ ...beatRange, source: "beat" }];
+    return selectedBarCameraRanges();
+  }
+
+  function cameraSelectionCoverageForBar(barIndex) {
+    const range = normalizeCameraSelectionRange(state.cameraBeatSelection);
+    if (!range) return null;
+    const localBar = Math.round(Number(barIndex) || 0) - gridStartBar();
+    const barStart = localBar * BASE_STEPS_PER_BAR;
+    const barEnd = barStart + BASE_STEPS_PER_BAR;
+    const start = Math.max(barStart, range.startStepAbs);
+    const end = Math.min(barEnd, range.endStepAbs);
+    if (end <= start) return null;
+    return {
+      left: ((start - barStart) / BASE_STEPS_PER_BAR) * 100,
+      width: ((end - start) / BASE_STEPS_PER_BAR) * 100
+    };
+  }
+
+  function drawCameraSelectionBands(ctx, barWidth, height) {
+    const ranges = cameraSelectionRanges();
+    if (!ranges.length) return;
+    const morning = isMorningTheme();
+    const stepWidth = barWidth / BASE_STEPS_PER_BAR;
+    ranges.forEach((range) => {
+      const x = Math.round(range.startStepAbs * stepWidth);
+      const width = Math.max(2, Math.round(range.lengthSteps * stepWidth));
+      ctx.fillStyle = morning ? "rgba(196, 154, 45, 0.16)" : "rgba(245, 215, 110, 0.12)";
+      ctx.fillRect(x, 0, width, height);
+      ctx.strokeStyle = morning ? "rgba(164, 126, 44, 0.42)" : "rgba(245, 215, 110, 0.48)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, 0.5, Math.max(1, width - 1), Math.max(1, height - 1));
+    });
+  }
+
   function renderCameraRuler(cssWidth, barWidth, dpr) {
     if (!cameraRulerCanvas || !cameraRulerWrap) return;
     const cssHeight = Math.max(1, cameraRulerWrap.clientHeight || CAMERA_RULER_HEIGHT);
@@ -865,21 +973,7 @@ export function createStepGridBuilder(deps) {
     const morning = isMorningTheme();
     ctx.fillStyle = morning ? "#edf2f6" : "#151c28";
     ctx.fillRect(0, 0, cssWidth, cssHeight);
-
-    const selectedBars = new Set(Array.isArray(state.selectedBars) ? state.selectedBars : []);
-    if (selectedBars.size) {
-      for (let bar = 0; bar < renderedSegmentCount(); bar += 1) {
-        const absoluteBar = barIndexForSegment(bar);
-        if (!selectedBars.has(absoluteBar)) continue;
-        const x = Math.round(bar * barWidth);
-        const width = Math.max(2, Math.round(barWidth));
-        ctx.fillStyle = "rgba(245, 215, 110, 0.16)";
-        ctx.fillRect(x, 0, width, cssHeight);
-        ctx.strokeStyle = "rgba(245, 215, 110, 0.72)";
-        ctx.lineWidth = 1;
-        ctx.strokeRect(x + 0.5, 0.5, Math.max(1, width - 1), Math.max(1, cssHeight - 1));
-      }
-    }
+    drawCameraSelectionBands(ctx, barWidth, cssHeight);
 
     ctx.strokeStyle = line;
     ctx.lineWidth = 1;
@@ -1057,7 +1151,8 @@ export function createStepGridBuilder(deps) {
       noteNameForPitch,
       formatPitch,
       editorLaneGridRow: (kind, id, index) => editorLaneGridRow?.(kind, id, index, gridRows().length),
-      setStatus: (message) => { status.textContent = message; }
+      setStatus: (message) => { status.textContent = message; },
+      showContextMenu
     });
   }
 
@@ -1078,6 +1173,19 @@ export function createStepGridBuilder(deps) {
     stepGrid.scrollLeft = scrollLeft;
     stepGrid.scrollTop = scrollTop;
     return laneCount;
+  }
+
+  function refreshLivePianoRollNotes() {
+    return refreshLivePianoRollNotesBase({
+      state,
+      stepGrid,
+      renderedSegmentCount: renderedSegmentCount(),
+      viewStartBar: gridStartBar(),
+      baseStepsPerBar: BASE_STEPS_PER_BAR,
+      normalizeStepPosition,
+      noteNameForPitch,
+      formatPitch
+    });
   }
 
   function sameCameraTarget(a, b) {
@@ -1441,12 +1549,25 @@ export function createStepGridBuilder(deps) {
 
   function setCameraBeatSelection(range) {
     state.cameraBeatSelection = range;
+    if (range?.lengthSteps && state.selectedBars?.length) {
+      state.selectedBars = [];
+      state.barAnchor = null;
+      buildBarTabs();
+    }
+    scheduleBarTabsSelectionState();
     updateCameraSelectionOverlay();
   }
 
-  function openCameraSelectionMenu(event) {
-    const range = state.cameraBeatSelection;
+  function openCameraSelectionMenu(event, menuRange = null) {
+    const range = normalizeCameraSelectionRange(menuRange || state.cameraBeatSelection);
     if (!showContextMenu || !range || !range.lengthSteps) return;
+    const selectionSource = range.source === "bar" ? "bar" : "beat";
+    const rangeMatchesActiveBeatLoop = () => {
+      const active = normalizeCameraSelectionRange(state.loopBeatRange);
+      return Boolean(active)
+        && active.startStepAbs === range.startStepAbs
+        && active.endStepAbs === range.endStepAbs;
+    };
     showContextMenu(event, [
       {
         label: `Loop ${cameraRangeLabel(range)}`,
@@ -1458,8 +1579,23 @@ export function createStepGridBuilder(deps) {
       },
       { separator: true },
       {
-        label: "Clear beat selection",
+        label: `Copy ${cameraRangeLabel(range)}`,
+        disabled: !copyBeatSelection,
+        action: () => { copyBeatSelection?.({ ...range }); }
+      },
+      { separator: true },
+      {
+        label: selectionSource === "bar" ? "Clear bar selection" : "Clear beat selection",
         action: () => {
+          if (selectionSource === "bar") {
+            const stoppedLoop = rangeMatchesActiveBeatLoop() ? clearBeatLoop?.() : false;
+            state.selectedBars = [];
+            state.barAnchor = null;
+            buildBarTabs();
+            renderStepGrid();
+            status.textContent = stoppedLoop ? "Bar selection cleared; loop off" : "Bar selection cleared";
+            return;
+          }
           setCameraBeatSelection(null);
           const stoppedLoop = clearBeatLoop?.();
           status.textContent = stoppedLoop ? "Beat selection cleared; loop off" : "Beat selection cleared";
@@ -1728,6 +1864,12 @@ export function createStepGridBuilder(deps) {
     cameraRulerWrap.addEventListener("contextmenu", (event) => {
       if (!state.cameraBeatSelection?.lengthSteps) {
         const position = cameraBarPositionFromEvent(event);
+        const selectedSpan = selectedBarCameraSpan();
+        const pointerStep = clampCameraStepAbs(position * BASE_STEPS_PER_BAR);
+        if (selectedSpan && pointerStep >= selectedSpan.startStepAbs && pointerStep <= selectedSpan.endStepAbs) {
+          openCameraSelectionMenu(event, selectedSpan);
+          return;
+        }
         setCameraBeatSelection(cameraRangeFromPositions(position, position + 1 / BASE_STEPS_PER_BAR));
       }
       openCameraSelectionMenu(event);
@@ -2157,6 +2299,37 @@ export function createStepGridBuilder(deps) {
     updatePlaybackTabHighlights();
   }
 
+  function syncBarButtonSelectionState(button, index) {
+    const localBar = Number(button.dataset.localBar);
+    const isSelected = state.selectedBars.includes(index);
+    button.classList.toggle("is-active", index === state.activeBar);
+    button.classList.toggle("is-section-start", Number.isFinite(localBar) && localBar % sectionBarCount() === 0);
+    button.classList.toggle("is-multi-selected", isSelected);
+    const coverage = cameraSelectionCoverageForBar(index);
+    button.classList.toggle("is-range-selected", Boolean(coverage) && !isSelected);
+    if (coverage && !isSelected) {
+      button.style.setProperty("--bar-range-left", `${coverage.left}%`);
+      button.style.setProperty("--bar-range-width", `${coverage.width}%`);
+    } else {
+      button.style.removeProperty("--bar-range-left");
+      button.style.removeProperty("--bar-range-width");
+    }
+  }
+
+  function syncBarTabsSelectionState() {
+    document.querySelectorAll(".bar-tabs button").forEach((button) => {
+      syncBarButtonSelectionState(button, Number(button.dataset.bar));
+    });
+  }
+
+  function scheduleBarTabsSelectionState() {
+    if (barTabsSelectionRaf) return;
+    barTabsSelectionRaf = window.requestAnimationFrame(() => {
+      barTabsSelectionRaf = 0;
+      syncBarTabsSelectionState();
+    });
+  }
+
   function buildBarTabs() {
     syncActiveLoopToBar();
     installRulerDragScroll(barTabs);
@@ -2176,9 +2349,7 @@ export function createStepGridBuilder(deps) {
       button.dataset.section = String(Math.floor(localIndex / barsPerSection) + 1);
       button.textContent = String(localIndex + 1).padStart(2, "0");
       button.title = `Loop ${displayedLoop + 1}, bar ${localIndex + 1} (song bar ${index + 1}) · Shift-click to multi-select · Right-click to copy/paste`;
-      button.classList.toggle("is-active", index === state.activeBar);
-      button.classList.toggle("is-section-start", localIndex % barsPerSection === 0);
-      button.classList.toggle("is-multi-selected", state.selectedBars.includes(index));
+      syncBarButtonSelectionState(button, index);
       let barPointer = null;
       button.addEventListener("pointerdown", (event) => {
         if (event.button !== 0) return;
@@ -2259,9 +2430,7 @@ export function createStepGridBuilder(deps) {
       });
       document.querySelectorAll(".bar-tabs button").forEach((button) => {
         const barIndex = Number(button.dataset.bar);
-        button.classList.toggle("is-active", barIndex === state.activeBar);
-        button.classList.toggle("is-multi-selected", state.selectedBars.includes(barIndex));
-        button.classList.toggle("is-section-start", Number(button.dataset.localBar) % sectionBarCount() === 0);
+        syncBarButtonSelectionState(button, barIndex);
       });
       stepGrid.querySelectorAll(".track-label").forEach((label) => {
         const isPrimary = state.selected?.hit === label.dataset.hit && state.selected?.mode === "row";
@@ -2288,9 +2457,7 @@ export function createStepGridBuilder(deps) {
     });
     document.querySelectorAll(".bar-tabs button").forEach((button) => {
       const barIndex = Number(button.dataset.bar);
-      button.classList.toggle("is-active", barIndex === state.activeBar);
-      button.classList.toggle("is-multi-selected", state.selectedBars.includes(barIndex));
-      button.classList.toggle("is-section-start", Number(button.dataset.localBar) % sectionBarCount() === 0);
+      syncBarButtonSelectionState(button, barIndex);
     });
     stepGrid.querySelectorAll(".step-button").forEach((button) => {
       const hit = button.dataset.hit;
@@ -2329,6 +2496,7 @@ export function createStepGridBuilder(deps) {
     buildBarTabs,
     renderStepGrid,
     refreshPianoRollLanes,
+    refreshLivePianoRollNotes,
     renderCameraPlayheadHits,
     clearCameraPlayheadHits,
     updatePlaybackTabHighlights

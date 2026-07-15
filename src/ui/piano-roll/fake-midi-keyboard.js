@@ -4,6 +4,7 @@ import { MIDI_DRUM_ROOT_NOTE, midiNoteToGridTrack } from "../midi/midi-note-map.
 const GRID_MODE = "grid";
 const PIANO_ROLL_MODE = "pianoRoll";
 const WAVE_MODE = "wave";
+const BASE_STEPS_PER_BAR = 16;
 const PITCH_ZERO_MIDI_NOTE = 33;
 const COMPUTER_OCTAVE_MIN = 1;
 const COMPUTER_OCTAVE_MAX = 10;
@@ -84,22 +85,46 @@ export function resolvePerformanceTrack({
   const open = Array.isArray(openPianoRollTracks) ? openPianoRollTracks.filter((id) => typeof id === "string" && id) : [];
   const openSet = new Set(open);
   const selected = Array.isArray(selectedTracks) ? selectedTracks : [];
-  const candidates = [
+  const selectedCandidates = [
     selectedHit,
-    pianoRollTargetTrack,
     ...selected
   ];
+  const trackCanReceivePerformance = (id) => typeof id === "string" && id && (grid.has(id) || openSet.has(id));
   if (trackEditorMode === PIANO_ROLL_MODE) {
-    for (const id of candidates) {
-      if (typeof id === "string" && openSet.has(id)) return id;
-    }
+    for (const id of selectedCandidates) if (trackCanReceivePerformance(id)) return id;
+    if (typeof pianoRollTargetTrack === "string" && openSet.has(pianoRollTargetTrack)) return pianoRollTargetTrack;
     return open[0] || null;
   }
-  for (const id of candidates) {
-    if (typeof id !== "string" || !id) continue;
-    if (grid.has(id) || openSet.has(id)) return id;
-  }
+  for (const id of [...selectedCandidates, pianoRollTargetTrack]) if (trackCanReceivePerformance(id)) return id;
   return open[0] || null;
+}
+
+export function resolvePerformanceInputTarget({
+  trackEditorMode = GRID_MODE,
+  selectedHit = null,
+  selectedTracks = [],
+  pianoRollTargetTrack = null,
+  openPianoRollTracks = [],
+  gridTrackIds = []
+} = {}) {
+  const selectedTrack = resolvePerformanceTrack({
+    trackEditorMode,
+    selectedHit,
+    selectedTracks,
+    pianoRollTargetTrack,
+    openPianoRollTracks,
+    gridTrackIds
+  });
+  const open = new Set(Array.isArray(openPianoRollTracks) ? openPianoRollTracks.filter(Boolean) : []);
+  const grid = new Set(Array.isArray(gridTrackIds) ? gridTrackIds.filter(Boolean) : []);
+  if (selectedTrack) {
+    if (grid.has(selectedTrack) && !open.has(selectedTrack)) return { mode: "gridTrack", hit: selectedTrack };
+    return { mode: "track", track: selectedTrack };
+  }
+  if (trackEditorMode === PIANO_ROLL_MODE) return { mode: "none" };
+  const tracks = Array.from(grid);
+  if (tracks.length) return { mode: "grid", tracks };
+  return { mode: "none" };
 }
 
 const isTypingTarget = (target) => {
@@ -112,16 +137,7 @@ const clampNumber = (value, min, max, fallback = 0) => {
   return Math.max(min, Math.min(max, Number.isFinite(number) ? number : fallback));
 };
 
-const parseQuantizeValue = (value) => {
-  if (typeof value === "string" && value.includes("/")) {
-    const [top, bottom] = value.split("/").map(Number);
-    if (Number.isFinite(top) && Number.isFinite(bottom) && bottom !== 0) return top / bottom;
-  }
-  const number = Number(value);
-  return Number.isFinite(number) ? number : 0;
-};
-
-const roundStep = (value) => Number(clampNumber(value, 0, 15, 0).toFixed(4));
+const roundStep = (value) => Number(clampNumber(value, 0, BASE_STEPS_PER_BAR - 0.0001, 0).toFixed(4));
 
 /**
  * Virtual MIDI input for users without a physical controller.
@@ -143,6 +159,7 @@ export function createFakeMidiKeyboard({
   selectStep,
   buildStepGrid = null,
   refreshPianoRollLanes = null,
+  refreshLivePianoRollNotes = null,
   renderStepGrid,
   addGridTrack,
   renderTrackExplorer,
@@ -158,6 +175,9 @@ export function createFakeMidiKeyboard({
   defaultNoteState = null,
   trackName = (id) => id,
   showContextMenu = null,
+  syncRecordedConfig = () => {},
+  onPianoRollPitchFocus = () => {},
+  onPianoRollRecordPosition = () => {},
   onTrackEditorModeChange = () => {}
 }) {
   const selectedPiano = $("#selected-piano");
@@ -175,8 +195,12 @@ export function createFakeMidiKeyboard({
   const activeComputerKeys = new Map();
   const recordingTake = new Map();
   let pianoRollRebuildRaf = 0;
+  let livePianoRollRebuildRaf = 0;
   let gridRebuildRaf = 0;
   let liveNoteSerial = 0;
+  let pendingRecordedPianoRollRefresh = false;
+  let pendingRecordedConfigSync = false;
+  const heldRecordedNotes = new Map();
   let midiAccessGestureRequested = false;
 
 	  const totalBars = () => Math.max(1, state.config?.patterns?.jazz?.bars?.length || 1);
@@ -298,6 +322,36 @@ export function createFakeMidiKeyboard({
       refresh();
     });
   };
+  const scheduleLivePianoRollRefresh = ({ immediate = false } = {}) => {
+    const refresh = typeof refreshLivePianoRollNotes === "function"
+      ? refreshLivePianoRollNotes
+      : typeof refreshPianoRollLanes === "function"
+        ? refreshPianoRollLanes
+        : typeof buildStepGrid === "function"
+          ? buildStepGrid
+          : null;
+    if (!refresh || !openPianoRollTracks().length) {
+      renderStepGrid();
+      return;
+    }
+    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+      refresh();
+      return;
+    }
+    if (immediate) {
+      if (livePianoRollRebuildRaf) {
+        window.cancelAnimationFrame?.(livePianoRollRebuildRaf);
+        livePianoRollRebuildRaf = 0;
+      }
+      refresh();
+      return;
+    }
+    if (livePianoRollRebuildRaf) return;
+    livePianoRollRebuildRaf = window.requestAnimationFrame(() => {
+      livePianoRollRebuildRaf = 0;
+      refresh();
+    });
+  };
   const scheduleGridRefresh = ({ immediate = false } = {}) => {
     if (typeof renderStepGrid !== "function") return;
     if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
@@ -322,6 +376,30 @@ export function createFakeMidiKeyboard({
     if (!Array.isArray(state.livePianoRollNotes)) state.livePianoRollNotes = [];
     return state.livePianoRollNotes;
   };
+  const selectorEscape = (value) => globalThis.CSS?.escape
+    ? globalThis.CSS.escape(String(value))
+    : String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+  const commitLivePianoRollVisual = (liveId) => {
+    if (!liveId || typeof document === "undefined" || typeof document.querySelectorAll !== "function") return false;
+    let committed = false;
+    document.querySelectorAll(`.piano-roll-note.is-live[data-live-id="${selectorEscape(liveId)}"]`).forEach((node) => {
+      node.classList.remove("is-live");
+      node.classList.add("is-recorded-preview");
+      node.removeAttribute("data-live-id");
+      committed = true;
+    });
+    return committed;
+  };
+  const flushPendingRecordedPianoRollRefresh = ({ immediate = false } = {}) => {
+    const shouldRefresh = pendingRecordedPianoRollRefresh;
+    const shouldSyncConfig = pendingRecordedConfigSync;
+    if (!shouldRefresh && !shouldSyncConfig) return false;
+    pendingRecordedPianoRollRefresh = false;
+    pendingRecordedConfigSync = false;
+    if (shouldSyncConfig) syncRecordedConfig();
+    if (shouldRefresh) schedulePianoRollRefresh({ immediate });
+    return true;
+  };
   const isTrackedLiveSourceActive = (sourceId) => {
     if (!sourceId || !/^(computer|midi):/.test(String(sourceId))) return true;
     for (const active of activeComputerKeys.values()) {
@@ -337,14 +415,29 @@ export function createFakeMidiKeyboard({
     const before = state.livePianoRollNotes.length;
     state.livePianoRollNotes = state.livePianoRollNotes.filter((entry) => entry?.id !== id);
     const changed = state.livePianoRollNotes.length !== before;
-    if (changed && refresh) schedulePianoRollRefresh();
+    if (changed && refresh) scheduleLivePianoRollRefresh();
     return changed;
   };
   const clearLivePianoRollNotes = ({ refresh = true } = {}) => {
-    if (!Array.isArray(state.livePianoRollNotes) || !state.livePianoRollNotes.length) return false;
+    const hadHeldNotes = heldRecordedNotes.size > 0;
+    heldRecordedNotes.clear();
+    if (!Array.isArray(state.livePianoRollNotes) || !state.livePianoRollNotes.length) return hadHeldNotes;
     state.livePianoRollNotes = [];
-    if (refresh) schedulePianoRollRefresh();
+    if (refresh) scheduleLivePianoRollRefresh();
     return true;
+  };
+  const releaseLivePianoRollNote = (liveId, { recorded = false } = {}) => {
+    if (recorded) {
+      updateHeldRecordedNoteDuration(liveId);
+      removeLivePianoRollNote(liveId, { refresh: false });
+      if (state.playing && commitLivePianoRollVisual(liveId)) {
+        pendingRecordedPianoRollRefresh = true;
+      } else {
+        schedulePianoRollRefresh();
+      }
+      return;
+    }
+    removeLivePianoRollNote(liveId);
   };
   const addLivePianoRollNote = ({
     id,
@@ -365,6 +458,8 @@ export function createFakeMidiKeyboard({
     const liveId = id || `preview:${target}:${pitch}:${++liveNoteSerial}`;
     const { barIndex, step } = position || recordPosition();
     removeLivePianoRollNote(liveId, { refresh: false });
+    onPianoRollRecordPosition({ track: target, barIndex, step, pitch, live: true });
+    onPianoRollPitchFocus(pitch, { track: target, refresh: false });
     liveNoteEntries().push({
       id: liveId,
       track: target,
@@ -379,7 +474,7 @@ export function createFakeMidiKeyboard({
         pianoRoll: 1
       })
     });
-    schedulePianoRollRefresh();
+    scheduleLivePianoRollRefresh();
     return { id: liveId, track: target, barIndex, step };
   };
   const selectedPerformanceTrack = () => resolvePerformanceTrack({
@@ -395,11 +490,15 @@ export function createFakeMidiKeyboard({
     return typeof defaults?.instrument === "string" && defaults.instrument ? defaults.instrument : null;
   };
   const inputTarget = () => {
-    const selectedTrack = selectedPerformanceTrack();
-    if (selectedTrack) return { mode: "track", track: selectedTrack };
-    if (isPianoRollMode()) return { mode: "none" };
-    const tracks = gridHitTracks();
-    if (tracks.length) return { mode: "grid", tracks };
+    const target = resolvePerformanceInputTarget({
+      trackEditorMode: state.trackEditorMode,
+      selectedHit: state.selected?.hit,
+      selectedTracks: state.selectedTracks,
+      pianoRollTargetTrack: state.pianoRollTargetTrack,
+      openPianoRollTracks: openPianoRollTracks(),
+      gridTrackIds: gridHitTracks()
+    });
+    if (target.mode !== "none") return target;
     const fallbackTrack = defaultPerformanceTrack();
     if (fallbackTrack) return { mode: "track", track: fallbackTrack };
     return { mode: "none" };
@@ -408,6 +507,7 @@ export function createFakeMidiKeyboard({
     inputTarget().mode !== "none" || Boolean(defaultPerformanceTrack()) || Boolean(state.midiLearnTarget || state.midiControlLearnTarget);
   const inputTargetSummary = (target = inputTarget()) => {
     if (target.mode === "track") return `${trackName(target.track)} keys`;
+    if (target.mode === "gridTrack") return `${trackName(target.hit)} drum trigger`;
     if (target.mode === "grid") {
       const first = target.tracks[0] ? trackName(target.tracks[0]) : "row 1";
       return `Grid hits · note ${MIDI_DRUM_ROOT_NOTE}=${first}`;
@@ -449,10 +549,12 @@ export function createFakeMidiKeyboard({
       if (midiMapPanel?.learnFromNote?.(noteNumber, { channel })) return;
       if (midiMapPanel?.applyNote?.({ noteNumber, velocity, pressure, channel })) return;
       const target = inputTarget();
-      if (target.mode === "grid") {
-        const hit = midiNoteToGridTrack(noteNumber, target.tracks, {
-          trackNoteMap: state.config?.midiNoteMap || {}
-        });
+      if (target.mode === "grid" || target.mode === "gridTrack") {
+        const hit = target.mode === "gridTrack"
+          ? target.hit
+          : midiNoteToGridTrack(noteNumber, target.tracks, {
+            trackNoteMap: state.config?.midiNoteMap || {}
+          });
         if (hit) {
           activeMidiNotes.set(noteNumber, { mode: "grid", hit });
           rememberPerformanceMidi({
@@ -469,7 +571,7 @@ export function createFakeMidiKeyboard({
         const pitch = midiNoteToPitch(noteNumber);
         if (fallbackTrack && pitch != null) {
           const liveId = `midi:${channel ?? 0}:${noteNumber}`;
-          activeMidiNotes.set(noteNumber, { mode: "piano", pitch, track: fallbackTrack, liveId });
+          activeMidiNotes.set(noteNumber, { mode: "piano", pitch, track: fallbackTrack, liveId, recorded: isRecording() });
           rememberPerformanceMidi({
             lastInput: inputName,
             lastNote: noteNumber,
@@ -490,7 +592,7 @@ export function createFakeMidiKeyboard({
           return;
         }
         const liveId = `midi:${channel ?? 0}:${noteNumber}`;
-        activeMidiNotes.set(noteNumber, { mode: "piano", pitch, track: target.track, liveId });
+        activeMidiNotes.set(noteNumber, { mode: "piano", pitch, track: target.track, liveId, recorded: isRecording() });
         rememberPerformanceMidi({
           lastInput: inputName,
           lastNote: noteNumber,
@@ -509,7 +611,7 @@ export function createFakeMidiKeyboard({
       if (active?.mode === "grid") setGridActive(active.hit, false);
       if (active?.mode === "piano") {
         setActive(active.pitch, false);
-        removeLivePianoRollNote(active.liveId);
+        releaseLivePianoRollNote(active.liveId, { recorded: active.recorded });
       }
     },
     onPressure: ({ pressure, scoped, noteNumber }) => {
@@ -571,10 +673,6 @@ export function createFakeMidiKeyboard({
     if (!state.config.pianoRollTracks.includes(target)) {
       state.config.pianoRollTracks = [...state.config.pianoRollTracks, target];
     }
-    if (!state.gridTrackIds.includes(target)) {
-      addGridTrack?.(target);
-      renderTrackExplorer?.();
-    }
     if (state.config) state.config.generatedRowsEditable = 1;
     const bars = state.config?.patterns?.jazz?.bars || [];
     bars.forEach((bar) => {
@@ -584,39 +682,129 @@ export function createFakeMidiKeyboard({
     return target;
   }
 
+  function trackSnapStepSize(track) {
+    if (!state.quantize?.enabled) return 0;
+    const configured = state.config?.trackStepCounts?.[track];
+    const stepsPerBar = clampNumber(configured ?? BASE_STEPS_PER_BAR, 1, 128, BASE_STEPS_PER_BAR);
+    return BASE_STEPS_PER_BAR / Math.max(1, stepsPerBar);
+  }
+
+  function finitePlaybackNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function engineRecordAbsStep() {
+    if (!state.playing) return null;
+    const currentPosition = state.engine?.currentPlaybackPosition?.() || state.engine?.getPlaybackState?.()?.currentPosition;
+    const currentAbsStep = finitePlaybackNumber(currentPosition?.absStep);
+    if (currentAbsStep !== null) {
+      return clampNumber(currentAbsStep, 0, totalBars() * BASE_STEPS_PER_BAR - 0.0001, 0);
+    }
+    const playback = state.engine?.getPlaybackState?.();
+    if (playback && playback.playing === false) return null;
+    const contextTime = finitePlaybackNumber(playback?.contextTime ?? state.engine?.context?.currentTime);
+    const nextStepTime = finitePlaybackNumber(playback?.nextStepTime ?? state.engine?.nextStepTime);
+    const stepDuration = finitePlaybackNumber(playback?.stepDuration ?? playback?.stepDurationSeconds ?? state.engine?.activeStepDurationSeconds);
+    const nextStep = finitePlaybackNumber(playback?.step ?? state.engine?.nextStep);
+    let bar = finitePlaybackNumber(playback?.phraseBar ?? playback?.barIndex ?? state.cameraPlayheadBar ?? state.activeBar);
+    if (
+      contextTime === null
+      || nextStepTime === null
+      || stepDuration === null
+      || !(stepDuration > 0)
+      || nextStep === null
+      || bar === null
+    ) {
+      return null;
+    }
+    let step = nextStep - ((nextStepTime - contextTime) / stepDuration);
+    while (step < 0) {
+      step += BASE_STEPS_PER_BAR;
+      bar -= 1;
+    }
+    while (step >= BASE_STEPS_PER_BAR) {
+      step -= BASE_STEPS_PER_BAR;
+      bar += 1;
+    }
+    const bars = totalBars();
+    const wrappedBar = ((Math.floor(bar) % bars) + bars) % bars;
+    return wrappedBar * BASE_STEPS_PER_BAR + clampNumber(step, 0, BASE_STEPS_PER_BAR - 0.0001, 0);
+  }
+
   function rawRecordAbsStep() {
+    const engineAbsStep = engineRecordAbsStep();
+    if (engineAbsStep !== null) return engineAbsStep;
     const playingBar = clampNumber(state.cameraPlayheadBar ?? state.activeBar, 0, totalBars() - 1, 0);
-    const playingStep = clampNumber(state.cameraPlayheadStep ?? state.playheadStep, 0, 15, 0);
-    if (state.playing) return playingBar * 16 + playingStep;
+    const playingStep = clampNumber(state.cameraPlayheadStep ?? state.playheadStep, 0, BASE_STEPS_PER_BAR - 0.0001, 0);
+    if (state.playing) return playingBar * BASE_STEPS_PER_BAR + playingStep;
     const selectedBar = clampNumber(state.selected?.bar ?? state.activeBar, 0, totalBars() - 1, 0);
-    const selectedStep = clampNumber(state.selected?.step ?? state.playheadStep ?? 0, 0, 15, 0);
-    return selectedBar * 16 + selectedStep;
+    const selectedStep = clampNumber(state.selected?.step ?? state.playheadStep ?? 0, 0, BASE_STEPS_PER_BAR - 0.0001, 0);
+    return selectedBar * BASE_STEPS_PER_BAR + selectedStep;
   }
 
-  function quantizedAbsStep(rawAbsStep) {
-    const q = state.quantize || {};
-    const raw = clampNumber(rawAbsStep, 0, totalBars() * 16 - 1, 0);
-    const value = parseQuantizeValue(q.value);
-    if (!q.enabled || !(value > 0)) return raw;
-    const gridSteps = Math.max(0.0001, value * 16);
+  function quantizedAbsStep(rawAbsStep, track = selectedPerformanceTrack()) {
+    const raw = clampNumber(rawAbsStep, 0, totalBars() * BASE_STEPS_PER_BAR - 0.0001, 0);
+    const gridSteps = trackSnapStepSize(track);
+    if (!(gridSteps > 0)) return raw;
     const snapped = Math.round(raw / gridSteps) * gridSteps;
-    return clampNumber(snapped, 0, totalBars() * 16 - 1, 0);
+    return clampNumber(snapped, 0, totalBars() * BASE_STEPS_PER_BAR - 0.0001, 0);
   }
 
-  function recordPosition() {
-    const absStep = quantizedAbsStep(rawRecordAbsStep());
+  function quantizedDurationSteps(duration, track = selectedPerformanceTrack()) {
+    const gridSteps = trackSnapStepSize(track);
+    const unit = gridSteps > 0 ? gridSteps : 0.25;
+    const rounded = Math.round(Number(duration) / unit) * unit;
+    return clampNumber(Number(rounded.toFixed(4)), unit, 64, unit);
+  }
+
+  function recordPosition(track = selectedPerformanceTrack()) {
+    const absStep = quantizedAbsStep(rawRecordAbsStep(), track);
     return {
-      barIndex: Math.max(0, Math.min(totalBars() - 1, Math.floor(absStep / 16))),
-      step: roundStep(absStep % 16)
+      barIndex: Math.max(0, Math.min(totalBars() - 1, Math.floor(absStep / BASE_STEPS_PER_BAR))),
+      step: roundStep(absStep % BASE_STEPS_PER_BAR)
     };
   }
 
-  function quantizeLabel() {
-    const q = state.quantize || {};
-    const value = parseQuantizeValue(q.value);
-    if (!q.enabled || !(value > 0)) return "free";
-    if (value >= 1) return `${value} bar${value === 1 ? "" : "s"}`;
-    return `1/${Math.round(1 / value)}`;
+  function storedHitOptions(entry) {
+    return Array.isArray(entry) ? entry[2] : entry?.options;
+  }
+
+  function storedHitVelocity(entry) {
+    return Array.isArray(entry) ? entry[1] : entry?.velocity;
+  }
+
+  function updateHeldRecordedNoteDuration(liveId) {
+    const held = heldRecordedNotes.get(liveId);
+    if (!held) return false;
+    heldRecordedNotes.delete(liveId);
+    const bar = state.config?.patterns?.jazz?.bars?.[held.barIndex];
+    if (!bar) return false;
+    const current = typeof readStoredHit === "function" ? readStoredHit(bar, held.track, held.step) : null;
+    if (!current) return false;
+    const totalSteps = totalBars() * BASE_STEPS_PER_BAR;
+    let releaseAbs = quantizedAbsStep(rawRecordAbsStep(), held.track);
+    if (state.playing && releaseAbs <= held.startAbs) releaseAbs += totalSteps;
+    const durationSteps = quantizedDurationSteps(releaseAbs - held.startAbs, held.track);
+    const options = normalizeStepOptions({
+      ...(storedHitOptions(current) || {}),
+      durationSteps,
+      pianoRoll: 1
+    });
+    setHitData(held.track, held.step, {
+      velocity: storedHitVelocity(current) ?? held.velocity,
+      options,
+      deferApply: true,
+      skipHistory: true
+    }, held.barIndex);
+    pendingRecordedConfigSync = true;
+    return true;
+  }
+
+  function quantizeLabel(track = selectedPerformanceTrack()) {
+    if (!state.quantize?.enabled) return "free";
+    const stepsPerBar = Math.round(BASE_STEPS_PER_BAR / Math.max(0.0001, trackSnapStepSize(track)));
+    return `${stepsPerBar}/bar`;
   }
 
   function updateTarget() {
@@ -779,11 +967,12 @@ export function createFakeMidiKeyboard({
     }
     state.midiKeyboardArmed = next;
     if (next) {
-      if (target.mode === "grid" && state.trackEditorMode !== GRID_MODE) setMode(GRID_MODE, { announce: false });
+      if ((target.mode === "grid" || target.mode === "gridTrack") && state.trackEditorMode !== GRID_MODE) setMode(GRID_MODE, { announce: false });
       midiInput.setEnabled(true, { request: true, announce });
     } else {
       state.midiRecording = false;
       clearActiveKeys();
+      flushPendingRecordedPianoRollRefresh();
       midiInput.setEnabled(shouldListenToMidi(), { announce: false });
     }
     updateTarget();
@@ -800,6 +989,7 @@ export function createFakeMidiKeyboard({
       if (announce) setStatus("Select or add a track first");
       return false;
     }
+    if (!next) flushPendingRecordedPianoRollRefresh();
     if (next) recordingTake.clear();
     state.midiRecording = next;
     updateTarget();
@@ -832,6 +1022,9 @@ export function createFakeMidiKeyboard({
       }
     });
     recordingTake.clear();
+    heldRecordedNotes.clear();
+    pendingRecordedPianoRollRefresh = false;
+    pendingRecordedConfigSync = false;
     schedulePianoRollRefresh();
     updateTarget();
     if (announce) {
@@ -844,7 +1037,8 @@ export function createFakeMidiKeyboard({
     velocity = velocityValue(),
     pressure = pressureValue(),
     track = selectedPerformanceTrack(),
-    chordIntervals = computerKeyboardChordIntervals()
+    chordIntervals = computerKeyboardChordIntervals(),
+    position = null
   } = {}) {
     if (runningFromFile) {
       setStatus("Open the localhost version for audio");
@@ -856,10 +1050,13 @@ export function createFakeMidiKeyboard({
       return;
     }
     const intervals = normalizeKeyboardChordIntervals(chordIntervals);
-    const gain = (velocity * (0.18 + pressure * 0.1)) / Math.sqrt(Math.max(1, intervals.length));
-    await Promise.all(intervals.map((interval) =>
-      state.engine.auditionPitchedTrack(targetTrack, pitch + interval, { gain, pressure })
-    ));
+    await state.engine.auditionPitchedTrack(targetTrack, pitch, {
+      gain: velocity,
+      pressure,
+      chordIntervals: intervals,
+      step: position?.step ?? state.playheadStep ?? 0,
+      phraseBar: position?.barIndex ?? state.activeBar ?? 0
+    });
   }
 
   async function previewGridHit(hit, { velocity = velocityValue() } = {}) {
@@ -884,7 +1081,7 @@ export function createFakeMidiKeyboard({
       renderTrackExplorer?.();
     }
     if (state.config) state.config.generatedRowsEditable = 1;
-    const { barIndex, step } = position || recordPosition();
+    const { barIndex, step } = position || recordPosition(hit);
     const nextVelocity = Math.max(0.01, velocity);
     const options = pressure > 0 ? { pressure } : undefined;
     const bar = state.config?.patterns?.jazz?.bars?.[barIndex];
@@ -918,11 +1115,15 @@ export function createFakeMidiKeyboard({
     chordIntervals = computerKeyboardChordIntervals(),
     position = null,
     deferRefresh = false,
+    refresh = true,
+    select = true,
+    deferApply = false,
+    reveal = true,
     announce = true
   } = {}) {
     const target = track ? ensureRecordedPianoRollTarget(track) : ensurePianoRollTrack();
     if (!target) return;
-    const { barIndex, step } = position || recordPosition();
+    const { barIndex, step } = position || recordPosition(target);
     const bar = state.config?.patterns?.jazz?.bars?.[barIndex];
     const current = typeof readStoredHit === "function" ? readStoredHit(bar, target, step) : null;
     let nextVelocity = velocity;
@@ -956,9 +1157,22 @@ export function createFakeMidiKeyboard({
       });
     }
     rememberTakeEdit(target, barIndex, step, current);
-    setHitData(target, step, { velocity: nextVelocity, options }, barIndex);
-    selectStep(target, step, "step", barIndex, state.intensity, undefined, { previewVelocity: velocity });
-    schedulePianoRollRefresh({ immediate: !deferRefresh });
+    if (reveal) onPianoRollRecordPosition({ track: target, barIndex, step, pitch, live: false });
+    onPianoRollPitchFocus(pitch, { track: target, refresh: false });
+    setHitData(target, step, {
+      velocity: nextVelocity,
+      options,
+      deferApply,
+      skipHistory: deferApply
+    }, barIndex);
+    if (deferApply) pendingRecordedConfigSync = true;
+    if (select) {
+      selectStep(target, step, "step", barIndex, state.intensity, undefined, {
+        previewVelocity: velocity,
+        deferTrackPanels: true
+      });
+    }
+    if (refresh) schedulePianoRollRefresh({ immediate: !deferRefresh });
     const chordSize = options.chordIntervals?.length || 1;
     if (announce) {
       setStatus(`${chordSize > 1 ? "Recorded chord" : `Recorded ${noteNameForPitch(pitch)} ${formatPitch(pitch)}`} · vel ${nextVelocity.toFixed(2)} to ${trackName(target)}`);
@@ -978,16 +1192,15 @@ export function createFakeMidiKeyboard({
     if (!note) return;
     const targetTrack = track || selectedPerformanceTrack();
     const intervals = normalizeKeyboardChordIntervals(note.chordIntervals || chordIntervals);
-    const position = recordPosition();
-    try {
-      await previewNote(note.pitch, { velocity, pressure, track: targetTrack, chordIntervals: intervals });
-    } catch (error) {
+    const position = recordPosition(targetTrack);
+    const audition = previewNote(note.pitch, { velocity, pressure, track: targetTrack, chordIntervals: intervals, position }).catch((error) => {
       console.warn("MIDI preview failed", error);
-    }
-    if (hold && sourceId && !isTrackedLiveSourceActive(sourceId)) return;
+    });
+    const sourceStillActive = !(hold && sourceId) || isTrackedLiveSourceActive(sourceId);
+    if (!sourceStillActive && !record) return;
     state.pianoRollLastVelocity = velocity;
-    setChordActive(note.pitch, intervals, true);
-    const live = addLivePianoRollNote({
+    if (sourceStillActive) setChordActive(note.pitch, intervals, true);
+    const live = sourceStillActive ? addLivePianoRollNote({
       id: sourceId || "",
       track: targetTrack,
       pitch: note.pitch,
@@ -995,17 +1208,32 @@ export function createFakeMidiKeyboard({
       pressure,
       chordIntervals: intervals,
       position
-    });
+    }) : null;
     if (record) {
+      const notePosition = live ? { barIndex: live.barIndex, step: live.step } : position;
       recordNote(note.pitch, {
         velocity,
         pressure,
         track: targetTrack,
         chordIntervals: intervals,
-        position: live ? { barIndex: live.barIndex, step: live.step } : position,
+        position: notePosition,
         deferRefresh: true,
+        refresh: !hold || !live,
+        select: !hold || !live,
+        deferApply: Boolean(hold && live),
+        reveal: !live,
         announce: false
       });
+      if (hold && live?.id) {
+        const startAbs = notePosition.barIndex * BASE_STEPS_PER_BAR + notePosition.step;
+        heldRecordedNotes.set(live.id, {
+          track: live.track || targetTrack,
+          barIndex: notePosition.barIndex,
+          step: notePosition.step,
+          startAbs,
+          velocity
+        });
+      }
     }
     else {
       const chord = computerKeyboardChord();
@@ -1014,17 +1242,16 @@ export function createFakeMidiKeyboard({
         : `Preview ${noteNameForPitch(note.pitch)} ${formatPitch(note.pitch)} · ${chord.label}`);
     }
     if (!hold && live?.id) window.setTimeout(() => removeLivePianoRollNote(live.id), 180);
-    window.setTimeout(() => setChordActive(note.pitch, intervals, false), 180);
+    if (sourceStillActive) window.setTimeout(() => setChordActive(note.pitch, intervals, false), 180);
+    void audition;
   }
 
   async function triggerGridHit(hit, { record = isRecording(), velocity = velocityValue(), pressure = pressureValue() } = {}) {
     if (!hit) return;
-    const position = recordPosition();
-    try {
-      await previewGridHit(hit, { velocity, pressure });
-    } catch (error) {
+    const position = recordPosition(hit);
+    const audition = previewGridHit(hit, { velocity, pressure }).catch((error) => {
       console.warn("MIDI grid preview failed", error);
-    }
+    });
     state.pianoRollLastVelocity = velocity;
     setGridActive(hit, true);
     if (record) {
@@ -1038,6 +1265,7 @@ export function createFakeMidiKeyboard({
     }
     else setStatus(`Preview ${trackName(hit)}`);
     window.setTimeout(() => setGridActive(hit, false), 140);
+    void audition;
   }
 
   function setActive(pitch, active) {
@@ -1207,8 +1435,8 @@ export function createFakeMidiKeyboard({
       if (!note || activeComputerKeys.has(key)) return;
       event.preventDefault();
       const target = inputTarget();
-      if (target.mode === "grid") {
-        const hit = computerKeyToGridHit(key);
+      if (target.mode === "grid" || target.mode === "gridTrack") {
+        const hit = target.mode === "gridTrack" ? target.hit : computerKeyToGridHit(key);
         if (!hit) {
           setStatus(`Key ${key.toUpperCase()} has no grid row`);
           return;
@@ -1218,7 +1446,7 @@ export function createFakeMidiKeyboard({
       } else {
         const intervals = computerKeyboardChordIntervals();
         const liveId = `computer:${key}`;
-        activeComputerKeys.set(key, { mode: "piano", pitch: note.pitch, chordIntervals: intervals, liveId });
+        activeComputerKeys.set(key, { mode: "piano", pitch: note.pitch, chordIntervals: intervals, liveId, recorded: isRecording() });
         void triggerNote(note, {
           record: isRecording(),
           track: target.track,
@@ -1235,7 +1463,7 @@ export function createFakeMidiKeyboard({
       activeComputerKeys.delete(key);
       if (active.mode === "piano") {
         setChordActive(active.pitch, active.chordIntervals || [0], false);
-        removeLivePianoRollNote(active.liveId);
+        releaseLivePianoRollNote(active.liveId, { recorded: active.recorded });
       }
       if (active.mode === "grid") setGridActive(active.hit, false);
     });
@@ -1276,8 +1504,9 @@ export function createFakeMidiKeyboard({
     clearTakeButton?.addEventListener("click", () => {
       clearRecordingTake();
     });
-    document.querySelector("#quantize-enabled")?.addEventListener("change", updateTarget);
-    document.querySelector("#quantize-value")?.addEventListener("change", updateTarget);
+    document.querySelector("#selected-quantize-enabled")?.addEventListener("change", updateTarget);
+    document.querySelector("#selected-grid-steps-input")?.addEventListener("change", updateTarget);
+    document.querySelector("#selected-grid-note-value")?.addEventListener("change", updateTarget);
     setMode(state.trackEditorMode || GRID_MODE, { announce: false, rebuild: false });
     midiInput.sync();
     wireBottomPiano();
@@ -1296,6 +1525,7 @@ export function createFakeMidiKeyboard({
     setComputerKeyboardChord,
     requestMidiAccess,
     triggerNote,
+    releaseNote: releaseLivePianoRollNote,
     recordNote
   };
 }

@@ -37,6 +37,7 @@
  * @param {(hit: string, step: number, mode?: string, barIndex?: number) => void} deps.selectStep
  * @param {(barIndex: number) => void|Promise<void>} deps.playFromBar
  * @param {(barIndex: number, length?: number) => void|Promise<void>} deps.loopFromBar
+ * @param {() => boolean|void} [deps.clearBeatLoop]
  * @param {(event: any, items: any[]) => void} deps.showContextMenu
  * @param {() => void} deps.resetSelectedPanel
  * @param {(hit: string) => string} deps.trackName
@@ -46,6 +47,7 @@
  * @param {(hit: string) => void} [deps.resetTrackMidiTrigger]
  * @param {(hit: string) => string} [deps.midiTriggerLabel]
  * @param {(hit: string) => boolean} [deps.hasCustomMidiTrigger]
+ * @param {() => any[]} [deps.getWaveTracks]
  */
 export function createArrangementClipboard(deps) {
   const {
@@ -73,6 +75,7 @@ export function createArrangementClipboard(deps) {
     selectStep,
     playFromBar,
     loopFromBar,
+    clearBeatLoop = null,
     showContextMenu,
     resetSelectedPanel,
     trackName,
@@ -81,7 +84,8 @@ export function createArrangementClipboard(deps) {
     startTrackMidiLearn = null,
     resetTrackMidiTrigger = null,
     midiTriggerLabel = null,
-    hasCustomMidiTrigger = null
+    hasCustomMidiTrigger = null,
+    getWaveTracks = () => []
   } = deps;
 
   // ── Two-bar source helpers ──────────────────────────────────
@@ -284,8 +288,11 @@ export function createArrangementClipboard(deps) {
   /** Range-aware multi-select toggle for bars (shift = range, cmd/ctrl = toggle). */
   function toggleBarMultiSelect(index, event = {}) {
     const shift = Boolean(event.shiftKey);
+    const previousSelectedBars = Array.isArray(state.selectedBars) ? state.selectedBars.slice() : [];
+    const selectionLoopWasActive = selectedBarsMatchActiveBeatLoop(previousSelectedBars);
     state.selectedLoops = [];
     state.loopAnchor = null;
+    state.cameraBeatSelection = null;
     if (shift && state.barAnchor != null) {
       const [lo, hi] = state.barAnchor <= index ? [state.barAnchor, index] : [index, state.barAnchor];
       const range = [];
@@ -304,6 +311,7 @@ export function createArrangementClipboard(deps) {
       state.selectedBars = [...set].sort((a, b) => a - b);
       state.barAnchor = index;
     }
+    if (!state.selectedBars.length && selectionLoopWasActive) clearBeatLoop?.();
     buildBarTabs();
     renderStepGrid();
     setStatus(state.selectedBars.length
@@ -417,6 +425,143 @@ export function createArrangementClipboard(deps) {
       : `Pasted ${clip.length} bar(s) at bar ${targetIndex + 1}`);
   }
 
+  function normalizedBeatRange(range) {
+    const source = bars();
+    const totalSteps = Math.max(1, source.length * 16);
+    const startStepAbs = Math.max(0, Math.min(totalSteps - 1, Math.round(Number(range?.startStepAbs) || 0)));
+    const requestedLength = Math.max(1, Math.round(Number(range?.lengthSteps) || 1));
+    const lengthSteps = Math.max(1, Math.min(requestedLength, totalSteps - startStepAbs));
+    return {
+      startStepAbs,
+      endStepAbs: startStepAbs + lengthSteps,
+      lengthSteps,
+      startBar: Math.floor(startStepAbs / 16),
+      endBar: Math.floor((startStepAbs + lengthSteps - 1) / 16)
+    };
+  }
+
+  function beatRangeLabel(range) {
+    const labelStep = (stepAbs) => `${Math.floor(stepAbs / 16) + 1}.${String((stepAbs % 16) + 1).padStart(2, "0")}`;
+    return `${labelStep(range.startStepAbs)}-${labelStep(range.endStepAbs - 1)}`;
+  }
+
+  function entryStep(entry) {
+    const value = Array.isArray(entry) ? entry[0] : entry?.step;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : 0;
+  }
+
+  function entryOptions(entry) {
+    return (Array.isArray(entry) ? entry[2] : entry?.options) || {};
+  }
+
+  function entryIsPianoRoll(entry) {
+    const options = entryOptions(entry);
+    return options.pianoRoll === true || Number(options.pianoRoll) >= 0.5;
+  }
+
+  function selectedBeatTargets() {
+    const selectedHit = state.selected?.hit || "";
+    const selectedTracks = Array.isArray(state.selectedTracks) ? state.selectedTracks.filter(Boolean) : [];
+    const openPiano = new Set(Array.isArray(state.config?.pianoRollTracks) ? state.config.pianoRollTracks : []);
+    const waveTracks = getWaveTracks();
+    const waveIds = new Set(waveTracks.map((track) => track?.id).filter(Boolean));
+    const grid = [];
+    const piano = [];
+    const wave = [];
+    const addUnique = (list, id) => {
+      if (id && !list.includes(id)) list.push(id);
+    };
+
+    if (state.trackEditorMode === "pianoRoll") {
+      [state.pianoRollTargetTrack, ...selectedTracks, selectedHit].forEach((id) => {
+        if (openPiano.has(id)) addUnique(piano, id);
+      });
+    } else if (state.trackEditorMode === "wave") {
+      waveTracks
+        .filter((track) => track?.selected || track?.id === selectedHit)
+        .forEach((track) => addUnique(wave, track.id));
+    } else {
+      const candidates = selectedTracks.length ? selectedTracks : (selectedHit ? [selectedHit] : []);
+      candidates.forEach((id) => {
+        if (waveIds.has(id)) addUnique(wave, id);
+        else addUnique(grid, id);
+      });
+    }
+
+    return {
+      grid,
+      piano,
+      wave,
+      hasSelection: grid.length > 0 || piano.length > 0 || wave.length > 0
+    };
+  }
+
+  function entriesForBeatRange(sourceBar, trackId, barIndex, range, { pianoRoll = false } = {}) {
+    const entries = Array.isArray(sourceBar?.[trackId]) ? sourceBar[trackId] : [];
+    return entries.filter((entry) => {
+      if (entryIsPianoRoll(entry) !== pianoRoll) return false;
+      const abs = barIndex * 16 + entryStep(entry);
+      return abs >= range.startStepAbs && abs < range.endStepAbs;
+    }).map(clone);
+  }
+
+  function copyBeatSelection(range) {
+    const normalized = normalizedBeatRange(range);
+    const source = bars();
+    const targets = selectedBeatTargets();
+    const wholeGrid = !targets.hasSelection;
+    const copiedBars = [];
+    for (let barIndex = normalized.startBar; barIndex <= normalized.endBar; barIndex += 1) {
+      const sourceBar = source[barIndex] || {};
+      const gridTargets = wholeGrid
+        ? Object.keys(sourceBar).filter((trackId) => Array.isArray(sourceBar[trackId]))
+        : targets.grid;
+      const barClip = { barIndex, grid: {}, piano: {} };
+      gridTargets.forEach((trackId) => {
+        const entries = entriesForBeatRange(sourceBar, trackId, barIndex, normalized, { pianoRoll: false });
+        if (entries.length) barClip.grid[trackId] = entries;
+      });
+      targets.piano.forEach((trackId) => {
+        const entries = entriesForBeatRange(sourceBar, trackId, barIndex, normalized, { pianoRoll: true });
+        if (entries.length) barClip.piano[trackId] = entries;
+      });
+      if (Object.keys(barClip.grid).length || Object.keys(barClip.piano).length) copiedBars.push(barClip);
+    }
+
+    const startBar = normalized.startStepAbs / 16;
+    const endBar = normalized.endStepAbs / 16;
+    const waveTracks = targets.wave.length
+      ? getWaveTracks()
+          .filter((track) => targets.wave.includes(track?.id))
+          .map((track) => ({
+            id: track.id,
+            name: track.name,
+            regions: (Array.isArray(track.regions) ? track.regions : [])
+              .filter((region) => {
+                const regionStart = Number(region.bar) || 0;
+                const regionEnd = regionStart + Math.max(0, Number(region.len) || 0);
+                return regionEnd > startBar && regionStart < endBar;
+              })
+              .map(clone)
+          }))
+          .filter((track) => track.regions.length)
+      : [];
+
+    state.beatClipboard = {
+      range: normalized,
+      targets: {
+        grid: wholeGrid ? null : targets.grid.slice(),
+        piano: targets.piano.slice(),
+        wave: targets.wave.slice()
+      },
+      bars: copiedBars,
+      waveTracks
+    };
+    const laneCount = (wholeGrid ? "grid" : `${targets.grid.length + targets.piano.length + targets.wave.length} selected lane(s)`);
+    setStatus(`Copied ${laneCount} ${beatRangeLabel(normalized)}`);
+  }
+
   // ── Right-click context menus ────────────────────────────────
 
   function openLoopContextMenu(event, index) {
@@ -438,6 +583,30 @@ export function createArrangementClipboard(deps) {
     const start = safeBars[0] ?? index;
     const end = safeBars[safeBars.length - 1] ?? start;
     return { start, length: Math.max(1, end - start + 1) };
+  }
+
+  function selectedBarsMatchActiveBeatLoop(selectedBars = state.selectedBars) {
+    const range = state.loopBeatRange;
+    if (!range?.lengthSteps) return false;
+    const safeBars = [...new Set(Array.isArray(selectedBars) ? selectedBars : [])]
+      .map((bar) => Math.round(Number(bar)))
+      .filter((bar) => Number.isFinite(bar) && bar >= 0 && bar < bars().length)
+      .sort((a, b) => a - b);
+    if (!safeBars.length) return false;
+    const startStepAbs = safeBars[0] * 16;
+    const endStepAbs = (safeBars[safeBars.length - 1] + 1) * 16;
+    return Math.round(Number(range.startStepAbs) || 0) === startStepAbs
+      && Math.round(Number(range.endStepAbs ?? (Number(range.startStepAbs) || 0) + (Number(range.lengthSteps) || 0))) === endStepAbs;
+  }
+
+  function clearBarSelection({ stopMatchingLoop = false } = {}) {
+    const shouldStopLoop = stopMatchingLoop && selectedBarsMatchActiveBeatLoop();
+    state.selectedBars = [];
+    state.barAnchor = null;
+    const stoppedLoop = shouldStopLoop ? Boolean(clearBeatLoop?.()) : false;
+    buildBarTabs();
+    renderStepGrid();
+    return stoppedLoop;
   }
 
   function openBarContextMenu(event, index) {
@@ -462,7 +631,14 @@ export function createArrangementClipboard(deps) {
     items.push(
       { label: "Paste here", disabled: !state.barClipboard?.bars?.length, action: () => pasteBarsAt(index) },
       { separator: true },
-      { label: "Clear bar selection", disabled: !state.selectedBars.length, action: () => { state.selectedBars = []; buildBarTabs(); renderStepGrid(); } }
+      {
+        label: "Clear bar selection",
+        disabled: !state.selectedBars.length,
+        action: () => {
+          const stoppedLoop = clearBarSelection({ stopMatchingLoop: true });
+          setStatus(stoppedLoop ? "Bar selection cleared; loop off" : "Bar selection cleared");
+        }
+      }
     );
     showContextMenu(event, items);
   }
@@ -575,6 +751,7 @@ export function createArrangementClipboard(deps) {
     pasteLoopsAt,
     copySelectedBars,
     pasteBarsAt,
+    copyBeatSelection,
     openLoopContextMenu,
     openBarContextMenu,
     openTrackContextMenu,

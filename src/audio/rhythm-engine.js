@@ -23,6 +23,7 @@ import {
   shiftedAccentStepsForBar,
   baseTrackId,
   isInstanceId,
+  isPluginTrackId,
   voiceForTrack
 } from "./rhythm-config.js";
 import {
@@ -34,6 +35,7 @@ import { RhythmEventEmitter } from "./rhythm-events.js";
 import { EightOhEightVoices } from "./rhythm-engine-808.js";
 import { SynthVoices } from "./rhythm-engine-synth.js";
 import { MasteringChain } from "./rhythm-mastering.js";
+import { WadspaPluginHost, midiNoteForPitchOffset } from "./wadspa-plugin-host.js";
 
 export {
   DEFAULT_RHYTHM_CONFIG,
@@ -91,10 +93,12 @@ export class RhythmEngine {
     this.customSampleBuffers = new Map();
     this.customSampleUrls = new Map();
     this.loadingPromise = null;
+    this.kitLoaded = false;
     this.timer = null;
     this.playing = false;
     this.nextStep = 0;
     this.nextStepTime = 0;
+    this.scheduledBeatQueue = [];
     this.barIndex = 0;
     this.segmentStartBar = 0;
     this.forceSegmentChange = false;
@@ -116,6 +120,7 @@ export class RhythmEngine {
     this.lastBossLanded = false;
     // ── Event emitter (game API hooks) ──────────────────────────
     this.events = new RhythmEventEmitter();
+    this.wadspaHost = null;
   }
 
   /** Subscribe to a sequencer event. Returns an unsubscribe function.
@@ -160,11 +165,13 @@ export class RhythmEngine {
       throw new Error("AudioContext did not resume from the user gesture");
     }
     await this.loadKit();
+    await this.preparePluginTracks();
     if (this.playing) {
       this.setVolume(volume);
       return;
     }
     this.playing = true;
+    this.scheduledBeatQueue = [];
     this.nextStep = this.resolveStepIndex(step);
     this.barIndex = this.resolveBarIndexForPhrase(phraseBar);
     ({ bar: this.barIndex, step: this.nextStep } = this.wrapStepIntoLoopRange(this.barIndex, this.nextStep));
@@ -182,6 +189,7 @@ export class RhythmEngine {
     this.duckEchoNextTime = 0;
     this.duckAccentArmed = true;
     this.duckReleasedAt = 0;
+    this.scheduledBeatQueue = [];
     this.lastDucking = false;
     this.lastBossLanded = false;
     this.nextStepTime = this.context.currentTime + 0.08;
@@ -203,6 +211,7 @@ export class RhythmEngine {
     this.duckReleasedAt = 0;
     this.lastDucking = false;
     this.lastBossLanded = false;
+    if (this.wadspaHost) this.wadspaHost.stopAllNotes();
     if (this.masterGain && this.context) {
       const now = this.context.currentTime;
       this.masterGain.gain.cancelScheduledValues(now);
@@ -499,6 +508,14 @@ export class RhythmEngine {
     this.mastering = new MasteringChain(this.context, this.config.masterEq);
     this.masterGain.connect(this.mastering.input);
     this.mastering.output.connect(this.context.destination);
+    this.wadspaHost = new WadspaPluginHost({
+      context: this.context,
+      engine: this,
+      output: this.masterGain,
+      delaySend: this.fxSend,
+      reverbSend: this.reverbSend
+    });
+    this.wadspaHost.setConfig(this.config);
   }
 
   /** Expose the mastering chain (analyser + EQ) for the editor's spectrum UI. */
@@ -518,6 +535,7 @@ export class RhythmEngine {
   }
 
   async loadKit() {
+    if (this.kitLoaded && this.loadingPromise) return this.loadingPromise;
     if (this.loadingPromise) return this.loadingPromise;
     this.loadingPromise = Promise.all(Object.entries(this.kit).map(async ([name, url]) => {
       const response = await fetch(url);
@@ -527,8 +545,208 @@ export class RhythmEngine {
       this.buffers.set(name, buffer);
     })).catch((error) => {
       console.warn("Drum kit failed to load; rhythm engine will use synth fallbacks", error);
+    }).finally(() => {
+      this.kitLoaded = true;
     });
     return this.loadingPromise;
+  }
+
+  async preparePluginTracks() {
+    if (!this.wadspaHost) return;
+    await this.wadspaHost.prepareTracks();
+  }
+
+  async preparePluginTrack(track) {
+    if (!this.wadspaHost || !track) return null;
+    return this.wadspaHost.ensureInstrument(track);
+  }
+
+  readyForImmediateAudition() {
+    return Boolean(this.context && this.context.state === "running" && this.kitLoaded);
+  }
+
+  async prepareAudition() {
+    await this.ensureContext();
+    await this.resumeContext();
+    await this.loadKit();
+  }
+
+  raiseAuditionVolumeFloor() {
+    if (!this.playing && this.masterGain) this.setVolume(Math.max(this.volume, 0.5), { immediate: true });
+  }
+
+  pluginFallbackProfile(track) {
+    const source = this.config.trackPluginSources?.[track] || {};
+    const text = `${track || ""} ${source.name || ""} ${source.slug || ""} ${source.id || ""}`.toLowerCase();
+    if (/geonkick|chow[-_ ]?kick|\bkick\b/.test(text)) return "kick";
+    if (/drumkv1|beatbox|\bdrum\b|808|909/.test(text)) return "drum";
+    if (/so[-_ ]?404|bass|sub|mono|acid|nekobi|monosynth/.test(text)) return "bass";
+    if (/dx10|dexed|\bfm\b|fm[-_ ]?synth/.test(text)) return "fm";
+    if (/e[-_ ]?piano|epiano|\bpiano\b|so[-_ ]?kl5/.test(text)) return "piano";
+    if (/organ|setbfree|adlplug|\badl\b|opl|juce[-_ ]?opl/.test(text)) return "organ";
+    if (/string/.test(text)) return "string";
+    if (/pad|helm|synthv1|zyn|obxd|jx10|amsynth/.test(text)) return "pad";
+    if (/so[-_ ]?666|sorcer|vl1|cellular|casynth|wadspa[-_ ]?synth/.test(text)) return "weird";
+    if (/samplv1|tsf|soundfont/.test(text)) return "sampler";
+    return "pluck";
+  }
+
+  pluginFallbackVariant(track) {
+    const source = this.config.trackPluginSources?.[track] || {};
+    const text = `${track || ""} ${source.name || ""} ${source.slug || ""} ${source.id || ""}`;
+    let hash = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+    }
+    return (hash % 997) / 996;
+  }
+
+  playPluginFallbackInstrument(time, frequencies, {
+    track,
+    gain = 0.5,
+    duration = 0.5,
+    style = "jazz",
+    options = {}
+  } = {}) {
+    const voiceFrequencies = (Array.isArray(frequencies) ? frequencies : [frequencies])
+      .map((frequency) => Number(frequency))
+      .filter((frequency) => Number.isFinite(frequency) && frequency > 0);
+    const frequency = voiceFrequencies[0] || this.synthFrequency(0, 1);
+    const profile = this.pluginFallbackProfile(track);
+    const variant = this.pluginFallbackVariant(track);
+    const voiceGain = clamp01(gain);
+    const common = {
+      delaySend: options.delaySend,
+      reverbSend: options.reverbSend,
+      dubEcho: options.dubEcho
+    };
+    if (profile === "kick") {
+      this.play808Kick(time, Math.max(voiceGain * this.config.eightOhEightLevel, this.config.eightOhEightLevel * 0.08), Number(options.pitch) || 0, track, options);
+      return;
+    }
+    if (profile === "drum") {
+      const tune = Number(options.pitch) || 0;
+      this.play808Kick(time, Math.max(voiceGain * this.config.eightOhEightLevel * 0.72, this.config.eightOhEightLevel * 0.06), tune, track, options);
+      this.play808Snare(time + 0.018 + variant * 0.012, voiceGain * this.config.eightOhEightLevel * 0.42, track, options);
+      return;
+    }
+    if (profile === "bass") {
+      this.playBassSynth(time, frequency, {
+        track,
+        gain: voiceGain * (0.8 + variant * 0.32),
+        duration: Math.max(0.28, duration * (1.05 + variant * 0.35)),
+        style,
+        attackMs: options.attackMs,
+        delayMs: options.delayMs,
+        ...common
+      });
+      return;
+    }
+    if (profile === "fm") {
+      const chordGain = voiceGain / Math.sqrt(Math.max(1, voiceFrequencies.length || 1));
+      (voiceFrequencies.length ? voiceFrequencies : [frequency]).forEach((voiceFrequency, index) => {
+        this.playFunkSynth(time + index * 0.004, voiceFrequency * (1 + variant * 0.006), {
+          track,
+          gain: chordGain,
+          duration: Math.max(0.18, duration * 0.72),
+          bite: 0.78 + variant * 0.22,
+          wobble: options.wobble ?? (0.08 + variant * 0.16),
+          pan: (index - (voiceFrequencies.length - 1) / 2) * 0.18,
+          ...common
+        });
+      });
+      return;
+    }
+    if (profile === "piano") {
+      const chordGain = voiceGain / Math.sqrt(Math.max(1, voiceFrequencies.length || 1));
+      (voiceFrequencies.length ? voiceFrequencies : [frequency]).forEach((voiceFrequency, index) => {
+        this.playPluckSynth(time + index * 0.004, voiceFrequency, {
+          track,
+          gain: chordGain * 0.9,
+          duration: Math.max(0.42, duration * (1.2 + variant * 0.28)),
+          wobble: options.wobble ?? 0,
+          pan: (index - (voiceFrequencies.length - 1) / 2) * 0.12,
+          ...common
+        });
+      });
+      return;
+    }
+    if (profile === "organ") {
+      const organFrequencies = (voiceFrequencies.length ? voiceFrequencies : [frequency])
+        .flatMap((voiceFrequency) => [voiceFrequency, voiceFrequency * 2]);
+      this.playPadSynth(time, organFrequencies, {
+        track,
+        gain: voiceGain * 0.64,
+        duration: Math.max(duration * 2.4, 1.1),
+        style,
+        wobble: options.wobble ?? (0.02 + variant * 0.04),
+        ...common
+      });
+      return;
+    }
+    if (profile === "string") {
+      this.playPadSynth(time, voiceFrequencies.length ? voiceFrequencies : [frequency], {
+        track,
+        gain: voiceGain * 0.58,
+        duration: Math.max(duration * 3.1, 1.4),
+        style,
+        wobble: options.wobble ?? (0.18 + variant * 0.18),
+        ...common
+      });
+      return;
+    }
+    if (profile === "pad") {
+      this.playPadSynth(time, voiceFrequencies.length ? voiceFrequencies : [frequency], {
+        track,
+        gain: voiceGain * (0.56 + variant * 0.22),
+        duration: Math.max(duration * 2.1, 1.2),
+        style,
+        wobble: options.wobble ?? (0.08 + variant * 0.22),
+        ...common
+      });
+      return;
+    }
+    if (profile === "weird") {
+      this.playWhaleSynth(time, {
+        track,
+        gain: voiceGain * 0.72,
+        duration: Math.max(duration * 2, 0.9),
+        style,
+        bend: variant > 0.5 ? 0.85 : -0.55,
+        pan: variant * 1.4 - 0.7,
+        ...common
+      });
+      this.playEchoPingSynth(time + 0.012, {
+        track,
+        gain: voiceGain * 0.22,
+        duration: Math.max(duration, 0.5),
+        frequency: frequency * (1.5 + variant),
+        pan: 0.7 - variant * 1.4,
+        ...common
+      });
+      return;
+    }
+    if (profile === "sampler") {
+      this.playPluckSynth(time, frequency, {
+        track,
+        gain: voiceGain,
+        duration: Math.max(0.24, duration * 0.9),
+        wobble: options.wobble ?? 0.04,
+        ...common
+      });
+      return;
+    }
+    const chordGain = voiceGain / Math.sqrt(Math.max(1, voiceFrequencies.length || 1));
+    (voiceFrequencies.length ? voiceFrequencies : [frequency]).forEach((voiceFrequency, index) => {
+      this.playPluckSynth(time + index * 0.006, voiceFrequency, {
+        track,
+        gain: chordGain,
+        duration: Math.max(0.18, duration * (0.85 + variant * 0.36)),
+        wobble: options.wobble ?? (0.05 + variant * 0.12),
+        pan: (variant * 2 - 1) * 0.24,
+        ...common
+      });
+    });
   }
 
   /** True when the track has a user-assigned custom sample loaded. */
@@ -580,10 +798,13 @@ export class RhythmEngine {
    * otherwise triggers the built-in voice via the generated-row dispatcher.
    */
   async auditionTrack(track, { gain = 0.6 } = {}) {
-    await this.ensureContext();
-    await this.resumeContext();
-    await this.loadKit();
-    if (this.masterGain) this.setVolume(Math.max(this.volume, 0.5), { immediate: true });
+    if (!this.readyForImmediateAudition()) await this.prepareAudition();
+    this.auditionTrackNow(track, { gain });
+  }
+
+  auditionTrackNow(track, { gain = 0.6 } = {}) {
+    if (!this.context) return;
+    this.raiseAuditionVolumeFloor();
     const time = this.context.currentTime + 0.02;
     if (this.hasCustomSample(track)) {
       this.playHit(track, time, gain, 1, {});
@@ -596,114 +817,55 @@ export class RhythmEngine {
    * Audition the selected track as an instrument voice. Synth tracks use their
    * melodic oscillator path; sample and sampler tracks pitch the loaded buffer.
    */
-  async auditionPitchedTrack(track, pitch = 0, { gain = 0.6, pressure = 0 } = {}) {
+  async auditionPitchedTrack(track, pitch = 0, {
+    gain = 0.6,
+    pressure = 0,
+    chordIntervals = [0],
+    step = 0,
+    phraseBar = 0,
+    style = "jazz",
+    durationSteps = 1,
+    optionsRaw = {}
+  } = {}) {
     if (!track) return;
-    await this.ensureContext();
-    await this.resumeContext();
-    await this.loadKit();
-    if (this.masterGain) this.setVolume(Math.max(this.volume, 0.5), { immediate: true });
+    if (!this.readyForImmediateAudition()) await this.prepareAudition();
+    if (isPluginTrackId(baseTrackId(track))) await this.preparePluginTrack(track);
+    this.auditionPitchedTrackNow(track, pitch, { gain, pressure, chordIntervals, step, phraseBar, style, durationSteps, optionsRaw });
+  }
+
+  auditionPitchedTrackNow(track, pitch = 0, {
+    gain = 0.6,
+    pressure = 0,
+    chordIntervals = [0],
+    step = 0,
+    phraseBar = 0,
+    style = "jazz",
+    durationSteps = 1,
+    optionsRaw = {}
+  } = {}) {
+    if (!track || !this.context) return;
+    this.raiseAuditionVolumeFloor();
     const time = this.context.currentTime + 0.012;
     const semitones = Number.isFinite(Number(pitch)) ? Number(pitch) : 0;
     const force = clamp01(pressure);
     const voiceGain = Math.max(0.001, Number.isFinite(Number(gain)) ? Number(gain) : 0.6);
-    const base = baseTrackId(track);
-    const stepDuration = this.activeStepDurationSeconds || this.stepDurationSeconds("jazz", 0.4);
-    const frequency = SYNTH_ROOT_HZ * 2 ** (semitones / 12);
-    const options = {
-      pitch: semitones,
-      pressure: force,
-      delaySend: force * 0.08,
-      reverbSend: base === "pad" ? 0.18 : 0.08,
-      wobble: force * 0.18
-    };
-    switch (base) {
-      case "bass":
-        this.playBassSynth(time, frequency, { track, gain: voiceGain * 0.9, duration: 0.48 + force * 0.25, style: "jazz" });
-        break;
-      case "pluck":
-        this.playPluckSynth(time, frequency, { track, gain: voiceGain, duration: 0.42 + force * 0.34, ...options });
-        break;
-      case "funk":
-        this.playFunkSynth(time, frequency, {
-          track,
-          gain: voiceGain,
-          duration: 0.42 + force * 0.28,
-          bite: 0.55 + force * 0.3,
-          ...options
-        });
-        break;
-      case "pad":
-        this.playPadSynth(time, [frequency], { track, gain: voiceGain * 0.72, duration: 0.7 + force * 0.45, style: "jazz", ...options });
-        break;
-      case "whale":
-        this.playWhaleSynth(time, {
-          track,
-          gain: voiceGain,
-          duration: stepDuration * 6,
-          style: "jazz",
-          bend: semitones < 0 ? -0.55 : 0.55,
-          delaySend: options.delaySend,
-          reverbSend: options.reverbSend,
-          dubEcho: 0
-        });
-        break;
-      case "eightOhEightKick":
-        this.play808Kick(time, Math.max(voiceGain * this.config.eightOhEightLevel, this.config.eightOhEightLevel * 0.08), semitones, track, options);
-        break;
-      case "eightOhEightSnare":
-        this.play808Snare(time, voiceGain * this.config.eightOhEightLevel * 0.82, track, options);
-        break;
-      case "eightOhEightHat":
-        this.play808Hat(time, voiceGain * this.config.eightOhEightLevel * 0.52, track, options);
-        break;
-      case "eightOhEightClick":
-        this.play808Click(time, voiceGain * this.config.eightOhEightLevel * 0.42, track, options);
-        break;
-      case "eightOhEightClap":
-        this.play808Clap(time, voiceGain * this.config.eightOhEightLevel * 0.7, track, options);
-        break;
-      case "eightOhEightTomLow":
-        this.play808Tom(time, voiceGain * this.config.eightOhEightLevel * 0.72, semitones - 7, track, options);
-        break;
-      case "eightOhEightTomMid":
-        this.play808Tom(time, voiceGain * this.config.eightOhEightLevel * 0.72, semitones, track, options);
-        break;
-      case "eightOhEightTomHigh":
-        this.play808Tom(time, voiceGain * this.config.eightOhEightLevel * 0.72, semitones + 7, track, options);
-        break;
-      case "eightOhEightCowbell":
-        this.play808Cowbell(time, voiceGain * this.config.eightOhEightLevel * 0.6, track, options);
-        break;
-      case "eightOhEightConga":
-        this.play808Conga(time, voiceGain * this.config.eightOhEightLevel * 0.7, semitones, track, options);
-        break;
-      case "eightOhEightMaraca":
-        this.play808Maraca(time, voiceGain * this.config.eightOhEightLevel * 0.5, track, options);
-        break;
-      case "eightOhEightCymbal":
-        this.play808Cymbal(time, voiceGain * this.config.eightOhEightLevel * 0.55, track, options);
-        break;
-      case "echo":
-        this.playEchoPingSynth(time + 0.01, {
-          gain: voiceGain,
-          duration: stepDuration * 4,
-          frequency,
-          delaySend: options.delaySend,
-          reverbSend: options.reverbSend,
-          dubEcho: force * 0.35
-        });
-        break;
-      case "space":
-        if (semitones < 0) this.playSpaceDrop(time, "jazz", { force: true, drumAccent: false });
-        else if (semitones > 0) this.playSpacePickup(time, "jazz", { force: true, drumAccent: false });
-        else this.playNeutralSpaceSound(time, "jazz", { gain: voiceGain, dubEcho: force * 0.2 });
-        break;
-      default: {
-        const rate = Math.pow(2, semitones / 12);
-        this.playHit(track, time, voiceGain, rate, options);
-        break;
+    const auditionOptions = optionsRaw && typeof optionsRaw === "object" ? optionsRaw : {};
+    this.playEditableGeneratedTrackNote(track, time, {
+      step,
+      phraseBar,
+      style,
+      velocity: voiceGain,
+      optionsRaw: {
+        ...auditionOptions,
+        pitch: semitones,
+        chordIntervals,
+        pressure: force,
+        attackMs: auditionOptions.attackMs ?? Math.round(8 + force * 14),
+        reverbSend: auditionOptions.reverbSend ?? 0.08,
+        durationSteps,
+        pianoRoll: 1
       }
-    }
+    });
   }
 
   /** Trigger a single hit of a track's built-in voice (no custom sample). */
@@ -711,6 +873,10 @@ export class RhythmEngine {
     const stepDuration = this.activeStepDurationSeconds || this.stepDurationSeconds("jazz", 0.4);
     const freq = this.synthFrequency(0, 1);
     const base = baseTrackId(track);
+    if (isPluginTrackId(base)) {
+      this.playWadspaPluginTrackNote(track, time, { pitch: 0, chordIntervals: [0] }, { gain, duration: stepDuration * 1.85 });
+      return;
+    }
     switch (base) {
       case "bass": this.playBassSynth(time, freq, { track, gain, duration: 0.42, style: "jazz" }); break;
       case "kick": case "snare": case "hat": case "rim": this.playHit(track, time, gain, 1, {}); break;
@@ -747,6 +913,52 @@ export class RhythmEngine {
     }
   }
 
+  rememberScheduledBeat(beatPayload) {
+    if (!beatPayload) return;
+    const scheduledTime = finiteNumber(beatPayload.scheduledTime ?? beatPayload.time, 0);
+    const stepDuration = Math.max(0.001, finiteNumber(beatPayload.stepDuration, this.activeStepDurationSeconds || 0.125));
+    this.scheduledBeatQueue.push({
+      phraseBar: Math.floor(finiteNumber(beatPayload.phraseBar, 0)),
+      step: Math.floor(finiteNumber(beatPayload.step, 0)),
+      scheduledTime,
+      stepDuration
+    });
+    const now = this.context?.currentTime ?? scheduledTime;
+    const cutoff = now - Math.max(2, stepDuration * 64);
+    while (this.scheduledBeatQueue.length > 2 && this.scheduledBeatQueue[1].scheduledTime < cutoff) {
+      this.scheduledBeatQueue.shift();
+    }
+    if (this.scheduledBeatQueue.length > 160) {
+      this.scheduledBeatQueue.splice(0, this.scheduledBeatQueue.length - 160);
+    }
+  }
+
+  currentPlaybackPosition(now = this.context?.currentTime ?? 0, tolerance = 0.002) {
+    const queue = Array.isArray(this.scheduledBeatQueue) ? this.scheduledBeatQueue : [];
+    if (!queue.length) return null;
+    const time = finiteNumber(now, 0);
+    const lookahead = time + Math.max(0, finiteNumber(tolerance, 0.002));
+    let index = 0;
+    while (index < queue.length - 1 && queue[index + 1].scheduledTime <= lookahead) index += 1;
+    const beat = queue[index];
+    if (!beat) return null;
+    const elapsedSteps = beat.scheduledTime > lookahead
+      ? 0
+      : Math.max(0, (time - beat.scheduledTime) / Math.max(0.001, beat.stepDuration));
+    const rawStep = beat.step + elapsedSteps;
+    const barOffset = Math.floor(rawStep / 16);
+    const totalBars = Math.max(1, this.patterns?.jazz?.bars?.length || this.config?.patterns?.jazz?.bars?.length || PHRASE_BARS);
+    const phraseBar = ((beat.phraseBar + barOffset) % totalBars + totalBars) % totalBars;
+    const step = ((rawStep % 16) + 16) % 16;
+    return {
+      phraseBar,
+      step,
+      absStep: phraseBar * 16 + step,
+      scheduledTime: beat.scheduledTime,
+      stepDuration: beat.stepDuration
+    };
+  }
+
   scheduleStep(step, time) {
     if (step === 0) {
       this.applyQueuedPatternStyle(time);
@@ -771,6 +983,7 @@ export class RhythmEngine {
       style: patternStyle,
       intensity: this.intensity
     };
+    this.rememberScheduledBeat(beatPayload);
     this.events.emit("beat", beatPayload);
     if (step === 0) {
       this.events.emit("bar", beatPayload);
@@ -807,7 +1020,7 @@ export class RhythmEngine {
     this.scheduleSequencedBassStep(bar, step, scheduledTime, phraseBar, patternStyle);
     Object.entries(bar).forEach(([hit, hits]) => {
       if (baseTrackId(hit) === "bass") return;
-      if (EDITABLE_GENERATED_ROWS.includes(baseTrackId(hit))) return;
+      if (this.editableInstrumentOwnsTrack(hit)) return;
       if (!this.trackIsAudible(hit)) return;
       hits.forEach(([hitStep, velocity, optionsRaw]) => {
         const timing = this.hitTimingForSchedulerStep(hitStep, step, stepDuration);
@@ -869,6 +1082,7 @@ export class RhythmEngine {
   setConfig(config = {}) {
     this.config = normalizeRhythmConfig(config);
     this.patterns = this.config.patterns;
+    if (this.wadspaHost) this.wadspaHost.setConfig(this.config);
     this.applyAudioSettings();
     this.queuePatternStyle("jazz");
     this.events.emit("config", { config: this.config });
@@ -885,6 +1099,7 @@ export class RhythmEngine {
   }
 
   getPlaybackState() {
+    const currentPosition = this.currentPlaybackPosition();
     return {
       playing: this.playing,
       step: this.nextStep,
@@ -893,6 +1108,7 @@ export class RhythmEngine {
       nextStepTime: this.nextStepTime,
       stepDuration: this.activeStepDurationSeconds,
       contextTime: this.context?.currentTime ?? 0,
+      currentPosition,
       intensity: this.intensity,
       activeBarIntensity: this.activeBarIntensity
     };
@@ -1097,6 +1313,13 @@ export class RhythmEngine {
     return soloTracks.length === 0 || soloTracks.includes(track);
   }
 
+  editableInstrumentOwnsTrack(track) {
+    const base = baseTrackId(track);
+    return isPluginTrackId(track)
+      || EDITABLE_GENERATED_ROWS.includes(base)
+      || (isInstanceId(track) && base === "bass");
+  }
+
   /**
    * Every generated (synth/808/sampler/space voice) track id that should be scheduled
    * for this bar: the registry's editable generated rows plus any *instance*
@@ -1111,7 +1334,13 @@ export class RhythmEngine {
     if (bar && typeof bar === "object") {
       const known = new Set(ids);
       Object.keys(bar).forEach((key) => {
-        if (known.has(key) || !isInstanceId(key)) return;
+        if (known.has(key)) return;
+        if (isPluginTrackId(key)) {
+          ids.push(key);
+          known.add(key);
+          return;
+        }
+        if (!isInstanceId(key)) return;
         // Only schedule instances whose base voice is a known generated row.
         // Bass is a base pattern row, but bass *instances* are editable synth
         // instrument lanes and should use this generated-row path.
@@ -1305,12 +1534,32 @@ export class RhythmEngine {
     return SYNTH_ROOT_HZ * 2 ** ((SYNTH_SCALE[wrapped] + octaveOffset * 12) / 12);
   }
 
-  chordFrequenciesForOptions(options, octave = 1) {
-    const root = this.synthFrequency(options.pitch, octave);
+  chordFrequenciesForOptions(options) {
+    const root = SYNTH_ROOT_HZ * 2 ** ((Number(options.pitch) || 0) / 12);
     const intervals = Array.isArray(options.chordIntervals) && options.chordIntervals.length
       ? options.chordIntervals
       : [0];
     return intervals.map((interval) => root * 2 ** ((Number(interval) || 0) / 12));
+  }
+
+  midiNotesForOptions(options) {
+    const root = Number(options?.pitch) || 0;
+    const intervals = Array.isArray(options?.chordIntervals) && options.chordIntervals.length
+      ? options.chordIntervals
+      : [0];
+    return intervals.map((interval) => midiNoteForPitchOffset(root + (Number(interval) || 0)));
+  }
+
+  playWadspaPluginTrackNote(track, time, options = {}, {
+    gain = 0.5,
+    duration = 0.25
+  } = {}) {
+    if (!this.wadspaHost) return false;
+    return this.wadspaHost.playNotes(track, this.midiNotesForOptions(options), {
+      time,
+      duration,
+      velocity: gain
+    });
   }
 
   chromaticFrequenciesForOptions(options) {
@@ -1333,6 +1582,140 @@ export class RhythmEngine {
     });
   }
 
+  playEditableGeneratedTrackNote(track, time, {
+    step = 0,
+    phraseBar = 0,
+    style = this.style,
+    velocity = 0,
+    optionsRaw = {}
+  } = {}) {
+    if (!track || velocity <= 0.001) return false;
+    const base = baseTrackId(track);
+    const pressure = clamp01(this.activeBarIntensity);
+    const stepDuration = this.activeStepDurationSeconds || this.stepDurationSeconds(style, pressure);
+    const voiceStep = Math.floor(Number(step) || 0);
+    const options = effectiveStepOptionsForTrack(this.config, track, optionsRaw);
+    const hitTime = time + options.offsetMs / 1000 + Math.max(0, options.delayMs / 1000);
+    const chordFrequencies = this.chordFrequenciesForOptions(options, 1);
+    const gain = clamp01(velocity);
+    const bassGain = base === "bass" && track === "bass"
+      ? (0.08 + pressure * 0.08) * gain
+      : gain;
+    const chordGain = gain / Math.sqrt(Math.max(1, chordFrequencies.length));
+    if (isPluginTrackId(base)) {
+      this.playWadspaPluginTrackNote(track, hitTime, options, { gain, duration: stepDuration * 1.85 });
+    } else if (base === "bass") {
+      this.playBassSynth(hitTime, SYNTH_ROOT_HZ * 2 ** (options.pitch / 12), {
+        track,
+        gain: bassGain,
+        duration: stepDuration * (voiceStep % 4 === 0 ? 2.7 : 1.85),
+        style,
+        attackMs: options.attackMs,
+        delayMs: options.delayMs,
+        delaySend: options.delaySend,
+        reverbSend: options.reverbSend,
+        dubEcho: options.dubEcho
+      });
+    } else if (base === "pluck") {
+      chordFrequencies.forEach((voiceFrequency, index) => {
+        this.playPluckSynth(hitTime + index * 0.006, voiceFrequency, {
+          track,
+          gain: chordGain,
+          duration: stepDuration * 1.85,
+          pan: Math.sin((phraseBar * 4 + voiceStep + index * 0.6) * 0.74) * 0.5,
+          wobble: options.wobble,
+          delaySend: options.delaySend,
+          reverbSend: options.reverbSend,
+          dubEcho: options.dubEcho
+        });
+      });
+    } else if (base === "funk") {
+      chordFrequencies.forEach((voiceFrequency, index) => {
+        this.playFunkSynth(hitTime + stepDuration * (voiceStep % 2 ? 0.12 : 0) + index * 0.004, voiceFrequency, {
+          track,
+          gain: chordGain,
+          duration: stepDuration * 1.35,
+          pan: Math.sin((phraseBar * 8 + voiceStep + index * 0.7) * 0.46) * 0.38,
+          bite: 0.45 + pressure * 0.5,
+          wobble: options.wobble,
+          delaySend: options.delaySend,
+          reverbSend: options.reverbSend,
+          dubEcho: options.dubEcho
+        });
+      });
+    } else if (base === "pad") {
+      this.playPadSynth(hitTime, chordFrequencies, {
+        track,
+        gain,
+        duration: stepDuration * 32,
+        style,
+        wobble: options.wobble,
+        delaySend: options.delaySend,
+        reverbSend: options.reverbSend,
+        dubEcho: options.dubEcho
+      });
+    } else if (base === "whale") {
+      this.playWhaleSynth(hitTime, {
+        track,
+        gain,
+        duration: stepDuration * 8,
+        style,
+        bend: options.pitch < 0 ? -0.55 : 0.55,
+        pan: Math.sin((phraseBar + voiceStep) * 0.7) * 0.42,
+        delaySend: options.delaySend,
+        reverbSend: options.reverbSend,
+        dubEcho: options.dubEcho
+      });
+    } else if (base === "eightOhEightKick") {
+      this.play808Kick(hitTime, Math.max(gain * this.config.eightOhEightLevel, this.config.eightOhEightLevel * 0.08), options.pitch, track, options);
+    } else if (base === "eightOhEightSnare") {
+      this.play808Snare(hitTime, gain * this.config.eightOhEightLevel * 0.82, track, options);
+    } else if (base === "eightOhEightHat") {
+      this.play808Hat(hitTime, gain * this.config.eightOhEightLevel * 0.52, track, options);
+    } else if (base === "eightOhEightClick") {
+      this.play808Click(hitTime, gain * this.config.eightOhEightLevel * 0.42, track, options);
+    } else if (base === "eightOhEightClap") {
+      this.play808Clap(hitTime, gain * this.config.eightOhEightLevel * 0.7, track, options);
+    } else if (base === "eightOhEightTomLow") {
+      this.play808Tom(hitTime, gain * this.config.eightOhEightLevel * 0.72, options.pitch - 7, track, options);
+    } else if (base === "eightOhEightTomMid") {
+      this.play808Tom(hitTime, gain * this.config.eightOhEightLevel * 0.72, options.pitch, track, options);
+    } else if (base === "eightOhEightTomHigh") {
+      this.play808Tom(hitTime, gain * this.config.eightOhEightLevel * 0.72, options.pitch + 7, track, options);
+    } else if (base === "eightOhEightCowbell") {
+      this.play808Cowbell(hitTime, gain * this.config.eightOhEightLevel * 0.6, track, options);
+    } else if (base === "eightOhEightConga") {
+      this.play808Conga(hitTime, gain * this.config.eightOhEightLevel * 0.7, options.pitch, track, options);
+    } else if (base === "eightOhEightMaraca") {
+      this.play808Maraca(hitTime, gain * this.config.eightOhEightLevel * 0.5, track, options);
+    } else if (base === "eightOhEightCymbal") {
+      this.play808Cymbal(hitTime, gain * this.config.eightOhEightLevel * 0.55, track, options);
+    } else if (base === "echo") {
+      this.playEchoPingSynth(hitTime + 0.01, {
+        gain,
+        duration: stepDuration * 4,
+        frequency: this.synthFrequency(options.pitch || 12, 1),
+        pan: voiceStep % 8 === 0 ? -0.18 : 0.22,
+        delaySend: options.delaySend,
+        reverbSend: options.reverbSend,
+        dubEcho: options.dubEcho
+      });
+      this.pushDubFx(hitTime, Math.max(gain, options.dubEcho), { sustainSeconds: 0.35 + options.dubEcho * 1.8 });
+    } else if (base === "space") {
+      if (options.pitch < 0) this.playSpaceDrop(hitTime, style, { force: true, drumAccent: false });
+      else if (options.pitch > 0) this.playSpacePickup(hitTime, style, { force: true, drumAccent: false });
+      else this.playNeutralSpaceSound(hitTime, style, { gain, dubEcho: options.dubEcho });
+    } else if (this.hasCustomSample(track)) {
+      const rate = Math.pow(2, (options.pitch || 0) / 12);
+      this.playHit(track, hitTime, this.drumGain(gain), rate, options);
+    }
+    const dubEcho = clamp01(options.dubEcho);
+    if ((options.delaySend > 0.001 || dubEcho > 0.001) && base !== "echo" && base !== "space") {
+      this.pushDubFx(hitTime, Math.max(options.delaySend, dubEcho) * 0.62, { sustainSeconds: 0.35 + dubEcho * 1.8 });
+    }
+    return true;
+  }
+
   scheduleEditableGeneratedRows(bar, step, time, phraseBar, style) {
     const pressure = clamp01(this.activeBarIntensity);
     const stepDuration = this.activeStepDurationSeconds || this.stepDurationSeconds(style, pressure);
@@ -1341,128 +1724,17 @@ export class RhythmEngine {
     // keeps its own id for per-track sends/level/pan/shape routing.
     this.editableGeneratedTrackIds(bar).forEach((track) => {
       if (!this.trackIsAudible(track)) return;
-      const base = baseTrackId(track);
       const hits = Array.isArray(bar?.[track]) ? bar[track] : [];
       hits.forEach(([hitStep, velocity, optionsRaw]) => {
         const timing = this.hitTimingForSchedulerStep(hitStep, step, stepDuration);
         if (!timing || velocity <= 0.001) return;
-        const options = effectiveStepOptionsForTrack(this.config, track, optionsRaw);
-        const hitTime = time + timing.offsetSeconds + options.offsetMs / 1000 + Math.max(0, options.delayMs / 1000);
-        const chordFrequencies = this.chordFrequenciesForOptions(options, 1);
-        const frequency = chordFrequencies[0] || this.synthFrequency(options.pitch, 1);
-        const gain = clamp01(velocity);
-        const chordGain = gain / Math.sqrt(Math.max(1, chordFrequencies.length));
-        if (base === "bass") {
-          this.playBassSynth(hitTime, SYNTH_ROOT_HZ * 2 ** (options.pitch / 12), {
-            track,
-            gain,
-            duration: stepDuration * (step % 4 === 0 ? 2.7 : 1.85),
-            style,
-            attackMs: options.attackMs,
-            delayMs: options.delayMs,
-            delaySend: options.delaySend,
-            reverbSend: options.reverbSend,
-            dubEcho: options.dubEcho
-          });
-        } else if (base === "pluck") {
-          chordFrequencies.forEach((voiceFrequency, index) => {
-            this.playPluckSynth(hitTime + index * 0.006, voiceFrequency, {
-              track,
-              gain: chordGain,
-              duration: stepDuration * 1.85,
-              pan: Math.sin((phraseBar * 4 + step + index * 0.6) * 0.74) * 0.5,
-              wobble: options.wobble,
-              delaySend: options.delaySend,
-              reverbSend: options.reverbSend,
-              dubEcho: options.dubEcho
-            });
-          });
-        } else if (base === "funk") {
-          chordFrequencies.forEach((voiceFrequency, index) => {
-            this.playFunkSynth(hitTime + stepDuration * (step % 2 ? 0.12 : 0) + index * 0.004, voiceFrequency, {
-              track,
-              gain: chordGain,
-              duration: stepDuration * 1.35,
-              pan: Math.sin((phraseBar * 8 + step + index * 0.7) * 0.46) * 0.38,
-              bite: 0.45 + pressure * 0.5,
-              wobble: options.wobble,
-              delaySend: options.delaySend,
-              reverbSend: options.reverbSend,
-              dubEcho: options.dubEcho
-            });
-          });
-        } else if (base === "pad") {
-          this.playPadSynth(hitTime, chordFrequencies, {
-            track,
-            gain,
-            duration: stepDuration * 32,
-            style,
-            wobble: options.wobble,
-            delaySend: options.delaySend,
-            reverbSend: options.reverbSend,
-            dubEcho: options.dubEcho
-          });
-        } else if (base === "whale") {
-          this.playWhaleSynth(hitTime, {
-            track,
-            gain,
-            duration: stepDuration * 8,
-            style,
-            bend: options.pitch < 0 ? -0.55 : 0.55,
-            pan: Math.sin((phraseBar + step) * 0.7) * 0.42,
-            delaySend: options.delaySend,
-            reverbSend: options.reverbSend,
-            dubEcho: options.dubEcho
-          });
-        } else if (base === "eightOhEightKick") {
-          this.play808Kick(hitTime, Math.max(gain * this.config.eightOhEightLevel, this.config.eightOhEightLevel * 0.08), options.pitch, track, options);
-        } else if (base === "eightOhEightSnare") {
-          this.play808Snare(hitTime, gain * this.config.eightOhEightLevel * 0.82, track, options);
-        } else if (base === "eightOhEightHat") {
-          this.play808Hat(hitTime, gain * this.config.eightOhEightLevel * 0.52, track, options);
-        } else if (base === "eightOhEightClick") {
-          this.play808Click(hitTime, gain * this.config.eightOhEightLevel * 0.42, track, options);
-        } else if (base === "eightOhEightClap") {
-          this.play808Clap(hitTime, gain * this.config.eightOhEightLevel * 0.7, track, options);
-        } else if (base === "eightOhEightTomLow") {
-          this.play808Tom(hitTime, gain * this.config.eightOhEightLevel * 0.72, options.pitch - 7, track, options);
-        } else if (base === "eightOhEightTomMid") {
-          this.play808Tom(hitTime, gain * this.config.eightOhEightLevel * 0.72, options.pitch, track, options);
-        } else if (base === "eightOhEightTomHigh") {
-          this.play808Tom(hitTime, gain * this.config.eightOhEightLevel * 0.72, options.pitch + 7, track, options);
-        } else if (base === "eightOhEightCowbell") {
-          this.play808Cowbell(hitTime, gain * this.config.eightOhEightLevel * 0.6, track, options);
-        } else if (base === "eightOhEightConga") {
-          this.play808Conga(hitTime, gain * this.config.eightOhEightLevel * 0.7, options.pitch, track, options);
-        } else if (base === "eightOhEightMaraca") {
-          this.play808Maraca(hitTime, gain * this.config.eightOhEightLevel * 0.5, track, options);
-        } else if (base === "eightOhEightCymbal") {
-          this.play808Cymbal(hitTime, gain * this.config.eightOhEightLevel * 0.55, track, options);
-        } else if (base === "echo") {
-          this.playEchoPingSynth(hitTime + 0.01, {
-            gain,
-            duration: stepDuration * 4,
-            frequency: this.synthFrequency(options.pitch || 12, 1),
-            pan: step % 8 === 0 ? -0.18 : 0.22,
-            delaySend: options.delaySend,
-            reverbSend: options.reverbSend,
-            dubEcho: options.dubEcho
-          });
-          this.pushDubFx(hitTime, Math.max(gain, options.dubEcho), { sustainSeconds: 0.35 + options.dubEcho * 1.8 });
-        } else if (base === "space") {
-          if (options.pitch < 0) this.playSpaceDrop(hitTime, style, { force: true, drumAccent: false });
-          else if (options.pitch > 0) this.playSpacePickup(hitTime, style, { force: true, drumAccent: false });
-          else this.playNeutralSpaceSound(hitTime, style, { gain, dubEcho: options.dubEcho });
-        } else if (this.hasCustomSample(track)) {
-          // Sampler tracks (and any track with a user sample assigned): play the
-          // loaded buffer, pitched by the step's pitch offset (semitones).
-          const rate = Math.pow(2, (options.pitch || 0) / 12);
-          this.playHit(track, hitTime, this.drumGain(gain), rate, options);
-        }
-        const dubEcho = clamp01(options.dubEcho);
-        if ((options.delaySend > 0.001 || dubEcho > 0.001) && base !== "echo" && base !== "space") {
-          this.pushDubFx(hitTime, Math.max(options.delaySend, dubEcho) * 0.62, { sustainSeconds: 0.35 + dubEcho * 1.8 });
-        }
+        this.playEditableGeneratedTrackNote(track, time + timing.offsetSeconds, {
+          step,
+          phraseBar,
+          style,
+          velocity,
+          optionsRaw
+        });
       });
     });
   }
@@ -1526,11 +1798,18 @@ export class RhythmEngine {
     bassHits.forEach(([hitStep, velocity, optionsRaw], hitIndex) => {
       const timing = this.hitTimingForSchedulerStep(hitStep, step, stepDuration);
       if (!timing) return;
+      if (this.generatedRowsAreEditable()) {
+        this.playEditableGeneratedTrackNote("bass", time + timing.offsetSeconds, {
+          step,
+          phraseBar,
+          style,
+          velocity,
+          optionsRaw
+        });
+        return;
+      }
       const options = effectiveStepOptionsForTrack(this.config, "bass", optionsRaw);
-      const manualPitch = this.generatedRowsAreEditable();
-      const frequency = manualPitch
-        ? SYNTH_ROOT_HZ * 2 ** (options.pitch / 12)
-        : this.synthFrequency(sequencedBassPitchForStep({ phraseBar, hitIndex, step }), 0) * 2 ** (options.pitch / 12);
+      const frequency = this.synthFrequency(sequencedBassPitchForStep({ phraseBar, hitIndex, step }), 0) * 2 ** (options.pitch / 12);
       this.playBassSynth(time + timing.offsetSeconds + options.offsetMs / 1000, frequency, {
         gain: (0.08 + pressure * 0.08) * velocity,
         duration: stepDuration * (step % 4 === 0 ? 2.7 : 1.85),

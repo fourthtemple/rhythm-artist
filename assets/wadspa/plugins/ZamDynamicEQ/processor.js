@@ -1,0 +1,58 @@
+import createZamDynamicEQPlugin from './ZamDynamicEQ.js';
+
+let mod = null;
+const inPtrs  = [0, 0];
+const outPtrs = [0];
+const SETTERS = {"att":"_shim_set_att","rel":"_shim_set_rel","kn":"_shim_set_kn","rat":"_shim_set_rat","thr":"_shim_set_thr","max":"_shim_set_max","slew":"_shim_set_slew","sidech":"_shim_set_sidech","togglelow":"_shim_set_togglelow","togglepeak":"_shim_set_togglepeak","togglehigh":"_shim_set_togglehigh","detectfreq":"_shim_set_detectfreq","targetfreq":"_shim_set_targetfreq","targetwidth":"_shim_set_targetwidth","boostcut":"_shim_set_boostcut"};
+
+class WadspProcessor extends AudioWorkletProcessor {
+    constructor() {
+        super();
+        this.port.onmessage = async ({ data }) => {
+            if (data.type === 'setup') {
+                try {
+                    mod = await createZamDynamicEQPlugin({ wasmBinary: data.wasm, locateFile: (p, d) => d + p });
+                    mod._shim_init(sampleRate);
+                    inPtrs[0]  = mod._shim_input_buf_lv2_audio_in_1() >> 2;
+                    inPtrs[1]  = mod._shim_input_buf_lv2_sidechain_in() >> 2;
+                    outPtrs[0] = mod._shim_output_buf_lv2_audio_out_1() >> 2;
+                    this.port.postMessage({ type: 'ready' });
+                } catch (e) {
+                    this.port.postMessage({ type: 'error', message: e.message });
+                }
+            } else if (data.type === 'loadSample') {
+                if (!mod) return;
+                const pcm = new Float32Array(data.buffer);
+                const ptr = mod._malloc(pcm.byteLength);
+                mod.HEAPF32.set(pcm, ptr >> 2);
+                if (typeof mod._shim_sample_set_pcm === 'function')
+                    mod._shim_sample_set_pcm(ptr, pcm.length, data.srate);
+                if (typeof mod._shim_load_sample === 'function')
+                    mod._shim_load_sample();
+                mod._free(ptr);
+                this.port.postMessage({ type: 'sampleloaded' });
+            } else if (data.type === 'loadPad') {
+                if (!mod || typeof mod._shim_load_pad !== 'function') return;
+                const pcm = new Float32Array(data.buffer);
+                const ptr = mod._malloc(pcm.byteLength);
+                mod.HEAPF32.set(pcm, ptr >> 2);
+                mod._shim_load_pad(data.note, ptr, pcm.length, data.srate);
+                mod._free(ptr);
+                this.port.postMessage({ type: 'padloaded', note: data.note });
+            } else if (data.type === 'set') {
+                if (mod) { const fn = SETTERS[data.symbol]; if (fn) mod[fn](data.value); }
+            }
+        };
+    }
+
+    process(inputs, outputs) {
+        if (!mod) return true;
+        const _c0 = inputs[0]?.[0]; if (_c0 && _c0.length) mod.HEAPF32.set(_c0, inPtrs[0]);
+        const _c1 = inputs[1]?.[0]; if (_c1 && _c1.length) mod.HEAPF32.set(_c1, inPtrs[1]);
+        mod._shim_run(128);
+        outputs[0][0].set(mod.HEAPF32.subarray(outPtrs[0], outPtrs[0] + 128));
+        return true;
+    }
+}
+
+registerProcessor('wadspa-ZamDynamicEQ', WadspProcessor);

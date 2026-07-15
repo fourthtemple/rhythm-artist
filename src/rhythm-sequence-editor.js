@@ -1,5 +1,6 @@
 import {
   DEFAULT_RHYTHM_CONFIG,
+  createBlankRhythmConfig,
   generatedSynthEventsForStep,
   MAX_SEQUENCE_BARS,
   effectiveStepOptionsForTrack,
@@ -32,7 +33,8 @@ import {
   tracksByGroup,
   isInstanceId,
   baseTrackId,
-  makeInstanceId
+  makeInstanceId,
+  pluginTrackIdFor
 } from "./audio/rhythm-track-registry.js";
 import {
   orderGridTrackIds as orderGridTrackIdsBase,
@@ -52,6 +54,7 @@ import { createArrangementClipboard } from "./ui/arrangement-clipboard.js";
 import { createTransport } from "./ui/transport.js";
 import { createNoteInspector } from "./ui/note-inspector.js";
 import { createFakeMidiKeyboard } from "./ui/piano-roll/fake-midi-keyboard.js";
+import { centerPianoRollTrackOnPitch } from "./ui/piano-roll/piano-roll-lanes.js";
 import { createMidiMapPanel } from "./ui/midi/midi-map-panel.js";
 import { createConfigFile } from "./ui/config-file.js";
 import { createStepGridBuilder } from "./ui/grid/step-grid-builder.js";
@@ -111,9 +114,10 @@ import {
 const trackRowDescriptor = (id) => {
   const def = getTrackDef(id);
   const group = def?.group ? GROUP_BY_ID[def.group] : null;
+  const pluginName = state.config?.trackPluginSources?.[id]?.name;
   return {
     id,
-    label: isInstanceId(id) ? instanceLabel(id) : (def?.label || id),
+    label: pluginName || (isInstanceId(id) ? instanceLabel(id) : (def?.label || id)),
     type: def?.kind === "pattern" ? "pattern" : "generated",
     group: def?.group || null,
     accent: group?.accent || "#7dd3fc"
@@ -125,8 +129,9 @@ const gridRows = () => {
   return state.gridTrackIds.filter((id) => !hidden.has(id)).map(trackRowDescriptor);
 };
 const pianoRollRows = () => {
-  const open = new Set(Array.isArray(state.config?.pianoRollTracks) ? state.config.pianoRollTracks : []);
-  return state.gridTrackIds.filter((id) => open.has(id)).map(trackRowDescriptor);
+  return (Array.isArray(state.config?.pianoRollTracks) ? state.config.pianoRollTracks : [])
+    .filter((id) => typeof id === "string" && id && getTrackDef(id))
+    .map(trackRowDescriptor);
 };
 const PATTERN_ROW_IDS = new Set(PATTERN_TRACK_IDS);
 const ROW_LABELS = TRACK_LABELS;
@@ -136,6 +141,7 @@ const DEFAULT_LOOP_BAR_COUNT = PHRASE_BARS;
 const PITCH_SLIDER_MIN = PITCH_OFFSET_MIN;
 const PITCH_SLIDER_MAX = PITCH_OFFSET_MAX;
 const SAVED_RHYTHM_URL = "./assets/projects/default-project.rhythm-project.json";
+const WADSPA_CATALOG_URL = "./assets/wadspa/catalog.json";
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const $ = (selector) => document.querySelector(selector);
 const THEME_STORAGE_KEY = "rhythm-artist-theme";
@@ -226,6 +232,7 @@ const state = {
   // Rich clipboards for the new shift-select copy/paste flows.
   loopClipboard: null,
   barClipboard: null,
+  beatClipboard: null,
   playheadStep: 0,
   uiTimer: null,
   segmentsCount: 2,
@@ -528,8 +535,11 @@ const selectedControlsWrap = $("#selected-controls");
 const selectedTrackPanel = $("#selected-track-panel");
 const selectedTrackTab = $("#selected-tab-track");
 const selectedEffectsChainPanel = $("#selected-effects-chain-panel");
+const selectedQuantizeToggle = $("#selected-quantize-toggle");
+const selectedQuantizeEnabled = $("#selected-quantize-enabled");
 const selectedGridSteps = $("#selected-grid-steps");
 const selectedGridStepsInput = $("#selected-grid-steps-input");
+const selectedGridNoteValue = $("#selected-grid-note-value");
 const selectedGridStepsOutput = $("#selected-grid-steps-output");
 const effectsDefaultControls = $("#selected-effects-default-controls");
 const effectsDefaultLevel = $("#effects-default-level");
@@ -542,6 +552,7 @@ const effectsDefaultDelay = $("#effects-default-delay");
 const effectsDefaultDelayValue = $("#effects-default-delay-value");
 const effectsDefaultVerb = $("#effects-default-verb");
 const effectsDefaultVerbValue = $("#effects-default-verb-value");
+let clampBottomPanelHeightToContent = () => {};
 // Right-side panels
 const trackExplorerList = $("#track-explorer-list");
 const trackInspectorSection = $("#track-inspector-section");
@@ -693,29 +704,152 @@ function setDefaultNoteOption(field, value) {
   return next.options[field];
 }
 
-function selectedPanelGridTrackId() {
-  if (!state.selectedTracks?.length && !state.selected?.hit) return "";
-  const hit = selectedPanelTrackId();
-  if (!hit || state.trackEditorMode !== "grid") return "";
-  return state.gridTrackIds.includes(hit) ? hit : "";
+function selectedPanelStepTrackId() {
+  if (!state.selectedTracks?.length && !state.selected?.hit && state.trackEditorMode !== "pianoRoll") return "";
+  const hit = state.trackEditorMode === "pianoRoll"
+    ? (state.selectedTracks?.[0] || state.selected?.hit || state.pianoRollTargetTrack)
+    : selectedPanelTrackId();
+  if (!hit) return "";
+  if (state.trackEditorMode === "grid") {
+    return state.gridTrackIds.includes(hit) ? hit : "";
+  }
+  if (state.trackEditorMode === "pianoRoll") {
+    const open = new Set(Array.isArray(state.config?.pianoRollTracks) ? state.config.pianoRollTracks : []);
+    if (open.has(hit)) return hit;
+    return open.has(state.pianoRollTargetTrack) ? state.pianoRollTargetTrack : "";
+  }
+  return "";
+}
+
+const STEP_NOTE_VALUES = ["1/1", "1/2", "1/4", "1/8", "1/16", "1/32"];
+
+function formatStepCount(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "16";
+  if (Math.abs(number - Math.round(number)) < 0.0001) return String(Math.round(number));
+  return String(Number(number.toFixed(4)));
+}
+
+function currentTimeSigParts() {
+  const normalized = normalizeTimeSignature(state.config?.timeSignature || state.timeSig || "4/4");
+  const [numerator, denominator] = normalized.split("/").map(Number);
+  return {
+    label: normalized,
+    numerator: Number.isFinite(numerator) ? numerator : 4,
+    denominator: Number.isFinite(denominator) ? denominator : 4
+  };
+}
+
+function stepsPerBarForNoteValue(value) {
+  const match = /^1\/(\d+)$/.exec(String(value || ""));
+  if (!match) return null;
+  const noteDenominator = Number(match[1]);
+  const { numerator, denominator } = currentTimeSigParts();
+  const steps = (numerator * noteDenominator) / denominator;
+  if (!Number.isFinite(steps) || steps < 1 || steps > 128) return null;
+  return Number(steps.toFixed(4));
+}
+
+function noteValueForStepCount(steps) {
+  const number = Number(steps);
+  if (!Number.isFinite(number)) return "";
+  return STEP_NOTE_VALUES.find((value) => {
+    const candidate = stepsPerBarForNoteValue(value);
+    return candidate !== null && Math.abs(candidate - number) < 0.0001;
+  }) || "";
+}
+
+function syncSelectedGridNoteValue(steps) {
+  if (!selectedGridNoteValue) return;
+  const { label } = currentTimeSigParts();
+  Array.from(selectedGridNoteValue.options).forEach((option) => {
+    if (!option.value) {
+      option.disabled = false;
+      option.title = "Typed/custom steps per bar";
+      return;
+    }
+    const mapped = stepsPerBarForNoteValue(option.value);
+    option.disabled = mapped === null;
+    option.title = mapped === null
+      ? `${option.value} note does not fit in ${label} within the step range`
+      : `${option.value} note = ${formatStepCount(mapped)} steps/bar in ${label}`;
+  });
+  selectedGridNoteValue.value = noteValueForStepCount(steps);
+  selectedGridNoteValue.title = selectedGridNoteValue.value
+    ? `${selectedGridNoteValue.value} note grid in ${label}`
+    : `Custom grid in ${label}`;
 }
 
 function syncSelectedGridStepsControl() {
-  const hit = selectedPanelGridTrackId();
+  const hit = selectedPanelStepTrackId();
   const visible = Boolean(hit && selectedGridStepsInput && trackPanels?.trackStepCount);
+  const usesFreeTiming = state.trackEditorMode === "pianoRoll";
   if (selectedGridSteps) selectedGridSteps.hidden = !visible;
+  if (selectedQuantizeToggle) {
+    selectedQuantizeToggle.hidden = !(visible && usesFreeTiming);
+    selectedQuantizeToggle.classList.toggle("is-active", Boolean(state.quantize?.enabled));
+    selectedQuantizeToggle.title = state.quantize?.enabled
+      ? "MIDI recording snaps to the selected steps/bar grid"
+      : "MIDI recording uses free timing";
+  }
+  if (selectedQuantizeEnabled) {
+    selectedQuantizeEnabled.checked = Boolean(state.quantize?.enabled);
+    selectedQuantizeEnabled.disabled = !(visible && usesFreeTiming);
+  }
+  if (selectedGridNoteValue) selectedGridNoteValue.hidden = !(visible && usesFreeTiming);
+  selectedGridSteps?.classList.toggle("is-grid-locked", visible && !usesFreeTiming);
   if (!visible) return;
   const steps = trackPanels.trackStepCount(hit);
-  selectedGridStepsInput.value = String(steps);
-  if (selectedGridStepsOutput) selectedGridStepsOutput.textContent = String(steps);
-  if (selectedGridSteps) selectedGridSteps.title = `${trackName(hit)} grid steps per bar`;
+  selectedGridStepsInput.value = formatStepCount(steps);
+  syncSelectedGridNoteValue(steps);
+  if (selectedGridStepsOutput) selectedGridStepsOutput.textContent = formatStepCount(steps);
+  if (selectedGridSteps) {
+    const modeLabel = usesFreeTiming ? "MIDI snap" : "locked grid";
+    selectedGridSteps.title = `${trackName(hit)} ${modeLabel} steps per bar`;
+  }
 }
 
 function commitSelectedGridSteps() {
-  const hit = selectedPanelGridTrackId();
+  const hit = selectedPanelStepTrackId();
   if (!hit || !selectedGridStepsInput || !trackPanels?.setTrackStepCount) return;
   trackPanels.setTrackStepCount(hit, selectedGridStepsInput.value);
   syncSelectedGridStepsControl();
+}
+
+function commitSelectedGridNoteValue() {
+  const hit = selectedPanelStepTrackId();
+  if (state.trackEditorMode !== "pianoRoll") {
+    syncSelectedGridStepsControl();
+    return;
+  }
+  if (!hit || !selectedGridNoteValue || !selectedGridNoteValue.value || !selectedGridStepsInput || !trackPanels?.setTrackStepCount) {
+    syncSelectedGridStepsControl();
+    return;
+  }
+  const steps = stepsPerBarForNoteValue(selectedGridNoteValue.value);
+  if (steps === null) {
+    status.textContent = `${selectedGridNoteValue.value} note does not fit this meter`;
+    syncSelectedGridStepsControl();
+    return;
+  }
+  selectedGridStepsInput.value = formatStepCount(steps);
+  trackPanels.setTrackStepCount(hit, steps);
+  syncSelectedGridStepsControl();
+}
+
+function toggleSelectedQuantize(enabled = !state.quantize?.enabled) {
+  if (state.trackEditorMode !== "pianoRoll" && state.trackEditorMode !== "wave") {
+    syncSelectedGridStepsControl();
+    return;
+  }
+  state.quantize = {
+    ...(state.quantize || {}),
+    enabled: Boolean(enabled)
+  };
+  syncSelectedGridStepsControl();
+  fakeMidiKeyboard?.sync?.();
+  refreshPianoRollLanes();
+  status.textContent = state.quantize.enabled ? "Quantize on" : "Quantize off";
 }
 
 function syncSelectedEffectsDefaults() {
@@ -779,7 +913,7 @@ function commitSelectedEffectDefault(kind, value, options = {}) {
 }
 
 function setSelectedBottomTab(tab = "note") {
-  const noteAvailable = state.trackEditorMode === "grid";
+  const noteAvailable = state.trackEditorMode !== "wave";
   const requested = tab === "track" || tab === "effects" ? tab : "note";
   const next = requested === "note" && !noteAvailable ? "track" : requested;
   if (selectedControlsWrap) selectedControlsWrap.dataset.bottomTab = next;
@@ -797,6 +931,7 @@ function setSelectedBottomTab(tab = "note") {
   });
   syncSelectedGridStepsControl();
   syncSelectedEffectsDefaults();
+  clampBottomPanelHeightToContent({ fitContent: true });
 }
 
 function syncSelectedTrackTabLabel(trackCount = null) {
@@ -820,6 +955,16 @@ if (selectedGridStepsInput) {
     event.preventDefault();
     commitSelectedGridSteps();
     selectedGridStepsInput.blur();
+  });
+}
+
+if (selectedGridNoteValue) {
+  selectedGridNoteValue.addEventListener("change", commitSelectedGridNoteValue);
+}
+
+if (selectedQuantizeEnabled) {
+  selectedQuantizeEnabled.addEventListener("change", () => {
+    toggleSelectedQuantize(selectedQuantizeEnabled.checked);
   });
 }
 
@@ -1055,10 +1200,12 @@ const arrangement = createArrangementClipboard({
   resetSelectedPanel,
   trackName,
   moveTrackLane,
+  clearBeatLoop,
   startTrackMidiLearn: (hit) => midiMapPanel?.startLearning?.(hit),
   resetTrackMidiTrigger: (hit) => midiMapPanel?.resetTrackNote?.(hit),
   midiTriggerLabel: (hit) => midiMapPanel?.assignedNoteLabelFor?.(hit) || "",
   hasCustomMidiTrigger: (hit) => Boolean(midiMapPanel?.hasCustomTrackNote?.(hit)),
+  getWaveTracks: () => loopPanel?._tracks || [],
   playFromBar,
   loopFromBar,
   removeGridTrack: (hit) => removeGridTrack(hit)
@@ -1077,6 +1224,7 @@ function toggleBarMultiSelect(index, event) { return arrangement.toggleBarMultiS
 function openLoopContextMenu(event, index) { return arrangement.openLoopContextMenu(event, index); }
 function openBarContextMenu(event, index) { return arrangement.openBarContextMenu(event, index); }
 function openTrackContextMenu(event, hit, laneKey) { return arrangement.openTrackContextMenu(event, hit, laneKey); }
+function copyBeatSelection(range) { return arrangement.copyBeatSelection(range); }
 function setLoopCount(nextCount, opts) { return arrangement.setLoopCount(nextCount, opts); }
 function duplicateCurrentLoop() { return arrangement.duplicateCurrentLoop(); }
 function deleteCurrentLoop() { return arrangement.deleteCurrentLoop(); }
@@ -1176,6 +1324,31 @@ function redoEdit() {
   return restoreEditSnapshot(editRedoStack.pop(), "Redo");
 }
 
+function applyHitToEngine({ hit, step, barIndex, entry }) {
+  const engine = state.engine;
+  const engineBars = engine?.config?.patterns?.jazz?.bars;
+  if (!engine || !Array.isArray(engineBars) || !hit) return;
+  const commitToEngineBar = (index) => {
+    const bar = engineBars[index];
+    if (!bar) return;
+    commitHitEntry(bar, hit, step, entry);
+  };
+  const loopLength = activeLoopLength();
+  if (loopLength > 0) {
+    const loopStart = clampLoopStart(state.loopBarIndex, loopLength);
+    const local = Math.round(Number(barIndex) || 0) - loopStart;
+    if (local >= 0 && local < loopLength) {
+      for (let index = local; index < engineBars.length; index += loopLength) {
+        commitToEngineBar(index);
+      }
+      engine.patterns = engine.config.patterns;
+      return;
+    }
+  }
+  commitToEngineBar(Math.max(0, Math.round(Number(barIndex) || 0)));
+  engine.patterns = engine.config.patterns;
+}
+
 // ══ Hit-data access layer ═══════════════════════════════════════════════════
 // All pattern bar read/write (getHitData, setHitData, setHitVelocity,
 // getHitVelocity, getGeneratedHitData) live in their own module.
@@ -1189,6 +1362,7 @@ const hitData = createHitData({
   commitHitEntry,
   generatedSynthEventsForStep,
   applyConfig,
+  applyHitToEngine,
   pushEditHistory
 });
 
@@ -1200,6 +1374,76 @@ function setHitVelocities(edits) { return hitData.setHitVelocities(edits); }
 function getHitVelocity(hit, step, barIndex) { return hitData.getHitVelocity(hit, step, barIndex); }
 function getGeneratedHitData(hit, step, barIndex, pressure) { return hitData.getGeneratedHitData(hit, step, barIndex, pressure); }
 function generatedEventsAtStep(step, barIndex, pressure) { return hitData.generatedEventsAtStep(step, barIndex, pressure); }
+
+function pianoRollFocusTrack(preferredTrack = "") {
+  const open = Array.isArray(state.config?.pianoRollTracks)
+    ? state.config.pianoRollTracks.filter((id) => typeof id === "string" && id)
+    : [];
+  if (!open.length) return "";
+  const openSet = new Set(open);
+  const candidates = [
+    preferredTrack,
+    state.selected?.hit,
+    state.pianoRollTargetTrack,
+    ...(Array.isArray(state.selectedTracks) ? state.selectedTracks : [])
+  ];
+  return candidates.find((id) => typeof id === "string" && openSet.has(id)) || open[0] || "";
+}
+
+function focusPianoRollPitch(pitch, { track = "", refresh = true } = {}) {
+  const target = pianoRollFocusTrack(track);
+  if (!target) return false;
+  const changed = centerPianoRollTrackOnPitch(state, target, pitch);
+  if (changed && refresh) refreshPianoRollLanes();
+  return changed;
+}
+
+function scrollPianoRollRecordPositionIntoView({ barIndex = 0, step = 0 } = {}) {
+  if (!stepGrid || typeof window === "undefined") return;
+  const reveal = () => {
+    const labelWidth = stepGrid.querySelector(".step-header--corner")?.getBoundingClientRect?.().width || 92;
+    const renderedBars = Math.max(1, Math.round(Number(state.renderedSegmentsCount || state.segmentsCount) || 1));
+    const viewStartBar = state.cameraMode ? 0 : Math.max(0, Math.round(Number(state.activeBar) || 0));
+    const localPosition = Math.max(0, (Number(barIndex) || 0) - viewStartBar + ((Number(step) || 0) / 16));
+    const contentWidth = Math.max(1, stepGrid.scrollWidth - labelWidth);
+    const targetLeft = labelWidth + (localPosition / renderedBars) * contentWidth;
+    const viewportLeft = stepGrid.scrollLeft + labelWidth;
+    const viewportRight = stepGrid.scrollLeft + stepGrid.clientWidth;
+    const margin = Math.max(24, Math.min(120, (stepGrid.clientWidth - labelWidth) * 0.18));
+    if (targetLeft >= viewportLeft + margin && targetLeft <= viewportRight - margin) return;
+    const maxScrollLeft = Math.max(0, stepGrid.scrollWidth - stepGrid.clientWidth);
+    const centeredLeft = targetLeft - labelWidth - Math.max(1, stepGrid.clientWidth - labelWidth) * 0.42;
+    stepGrid.scrollLeft = Math.max(0, Math.min(maxScrollLeft, centeredLeft));
+  };
+  if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(reveal);
+  else reveal();
+}
+
+function focusPianoRollRecordPosition({ track = "", barIndex = 0, step = 0, pitch = null } = {}) {
+  const target = pianoRollFocusTrack(track);
+  if (!target) return false;
+  const pitchValue = Number(pitch);
+  const pitchChanged = Number.isFinite(pitchValue)
+    ? centerPianoRollTrackOnPitch(state, target, pitchValue)
+    : false;
+  const bar = Math.max(0, Math.min(
+    Math.max(0, (state.config?.patterns?.jazz?.bars?.length || 1) - 1),
+    Math.floor(Number(barIndex) || 0)
+  ));
+  let rebuilt = false;
+  if (!state.cameraMode) {
+    const visible = Math.max(1, Math.round(Number(state.segmentsCount) || 1));
+    const start = Math.max(0, Math.round(Number(state.activeBar) || 0));
+    const end = start + visible;
+    if (bar < start || bar >= end) {
+      state.activeBar = Math.max(0, Math.floor(bar / visible) * visible);
+      buildStepGrid();
+      rebuilt = true;
+    }
+  }
+  scrollPianoRollRecordPositionIntoView({ barIndex: bar, step });
+  return pitchChanged || rebuilt;
+}
 
 // ══ Per-note (step) inspector controller ═══════════════════════════════════
 // The on-screen piano, pitch preview/choose, velocity/pitch/effect-option
@@ -1249,7 +1493,8 @@ const noteInspector = createNoteInspector({
   defaultNoteState,
   setDefaultNoteVelocity,
   setDefaultNoteOption,
-  trackName
+  trackName,
+  onPitchFocus: (pitch, options = {}) => focusPianoRollPitch(pitch, options)
 });
 
 function bassBasePitch(step, barIndex = state.activeBar) { return noteInspector.bassBasePitch(step, barIndex); }
@@ -1427,6 +1672,7 @@ const gridBuilder = createStepGridBuilder({
   showContextMenu,
   loopBeatSelection,
   playBeatSelection,
+  copyBeatSelection,
   clearBeatLoop,
   editorLaneGridRow,
   editorLaneCount,
@@ -1442,6 +1688,7 @@ function renderStepGrid() {
   gridBuilder.renderStepGrid();
 }
 function refreshPianoRollLanes() { return gridBuilder.refreshPianoRollLanes(); }
+function refreshLivePianoRollNotes() { return gridBuilder.refreshLivePianoRollNotes?.(); }
 function renderCameraPlayheadHits(barIndex, stepIndex) { return gridBuilder.renderCameraPlayheadHits(barIndex, stepIndex); }
 function clearCameraPlayheadHits() { return gridBuilder.clearCameraPlayheadHits(); }
 function updatePlaybackTabHighlights(barIndex) { return gridBuilder.updatePlaybackTabHighlights(barIndex); }
@@ -1570,36 +1817,15 @@ function parseQuantizeValue(value) {
   return Number.isFinite(number) ? number : 0.25;
 }
 
-function formatQuantizeValue(value) {
-  const number = parseQuantizeValue(value);
-  if (number >= 1) return `${number} bar${number === 1 ? "" : "s"}`;
-  const denom = Math.round(1 / Math.max(0.0001, number));
-  return `1/${denom}`;
-}
-
 function syncQuantizeControls() {
-  const qEnabled = /** @type {HTMLInputElement|null} */ ($("#quantize-enabled"));
-  const qValue = /** @type {HTMLSelectElement|null} */ ($("#quantize-value"));
   state.quantize = {
     enabled: Boolean(state.quantize?.enabled),
     value: parseQuantizeValue(state.quantize?.value ?? 0.25)
   };
-  if (qEnabled) qEnabled.checked = state.quantize.enabled;
-  if (qValue) {
-    const target = String(state.quantize.value);
-    const match = [...qValue.options].find((option) => Math.abs(parseQuantizeValue(option.value) - state.quantize.value) < 0.000001);
-    qValue.value = match?.value || target;
-    qValue.disabled = !state.quantize.enabled;
-  }
 }
 
 function syncContextPanels() {
-  const quantizePanel = $("#quantize-panel");
-  if (quantizePanel) {
-    const sampleEditorMode = document.querySelector("#sample-browser-section")?.dataset.sampleAddMode === "loop";
-    quantizePanel.hidden = !(state.trackEditorMode === "pianoRoll" || state.trackEditorMode === "wave" || sampleEditorMode);
-    syncQuantizeControls();
-  }
+  syncQuantizeControls();
   const loopTracksGroup = $("#loop-tracks-group");
   if (loopTracksGroup) loopTracksGroup.hidden = state.trackEditorMode !== "wave";
   setSelectedBottomTab(selectedControlsWrap?.dataset.bottomTab || "note");
@@ -1693,6 +1919,7 @@ function applyTimeSig(value) {
     option.classList.toggle("is-active", active);
     option.setAttribute("aria-selected", active ? "true" : "false");
   });
+  syncSelectedGridStepsControl();
   status.textContent = `Time signature: ${next}`;
 }
 function syncJson() { return configSync.syncJson(); }
@@ -1892,28 +2119,6 @@ loopPanel = createLoopTrackPanel({
   }
 });
 
-// ── Quantize panel wiring ──────────────────────────────────────────────────
-{
-  const qEnabled = /** @type {HTMLInputElement|null} */ ($("#quantize-enabled"));
-  const qValue   = /** @type {HTMLSelectElement|null}  */ ($("#quantize-value"));
-  const applyQuantizeUiChange = () => {
-    syncQuantizeControls();
-    fakeMidiKeyboard?.sync?.();
-    refreshPianoRollLanes();
-    status.textContent = state.quantize.enabled
-      ? `Quantize ${formatQuantizeValue(state.quantize.value)}`
-      : "Quantize off";
-  };
-  if (qEnabled) qEnabled.addEventListener("change", () => {
-    state.quantize.enabled = qEnabled.checked;
-    applyQuantizeUiChange();
-  });
-  if (qValue) qValue.addEventListener("change", () => {
-    state.quantize.value = parseQuantizeValue(qValue.value);
-    applyQuantizeUiChange();
-  });
-}
-
 // ══ Track panels controller (grid mgmt + Add-Track + Explorer + Inspector) ══
 // The right-side track UI cluster lives in its own controller; the editor keeps
 // thin, hoisted wrappers so the rest of the file calls these by their old names.
@@ -2002,6 +2207,8 @@ function wireTrackPaletteButtons() {
   const effectsList = $("#effects-palette-list");
   const instrumentCount = $("#instrument-palette-count");
   const effectsCount = $("#effects-palette-count");
+  let wadspaPlugins = [];
+  let wadspaCatalogState = "loading";
   const effectPalette = [
     {
       id: "dubEcho",
@@ -2042,6 +2249,15 @@ function wireTrackPaletteButtons() {
       status.textContent = "Wave Edit is for samples only";
       return;
     }
+    if (respectsAddMode && mode === "pianoRoll") {
+      openTrackPianoRoll(trackId, { exposeGrid: false });
+      status.textContent = `Opened ${track.label} in Piano Roll`;
+      renderTrackPaletteButtons();
+      renderTrackExplorer();
+      renderTrackInspector();
+      syncJson();
+      return;
+    }
     if (track.instanceable && alreadyProject) {
       trackId = addTrackInstance(track.id, { select: true });
     } else {
@@ -2051,19 +2267,13 @@ function wireTrackPaletteButtons() {
       renderStepGrid();
     }
     if (!trackId) return;
-    if (respectsAddMode && mode === "pianoRoll") {
-      openTrackPianoRoll(trackId);
-      status.textContent = `Opened ${track.label} in Piano Roll`;
-    }
     renderTrackPaletteButtons();
     renderTrackExplorer();
     renderTrackInspector();
     syncJson();
-    if (!(respectsAddMode && mode === "pianoRoll")) {
-      status.textContent = alreadyProject && track.instanceable
-        ? `Added another ${track.label}`
-        : `Added ${track.label} to Track View`;
-    }
+    status.textContent = alreadyProject && track.instanceable
+      ? `Added another ${track.label}`
+      : `Added ${track.label} to Track View`;
   };
   const renderPalette = (host, countEl, tracks, { respectsAddMode = false } = {}) => {
     if (!host) return;
@@ -2103,10 +2313,136 @@ function wireTrackPaletteButtons() {
     }, 420);
     status.textContent = `${effect.label} is edited in the Note panel`;
   };
+  const wadspaKind = (plugin) => plugin?.kind === "instrument" ? "instrument" : plugin?.kind === "effect" ? "effect" : "";
+  const wadspaPluginsForKind = (kind) => wadspaPlugins.filter((plugin) => wadspaKind(plugin) === kind);
+  const wadspaParameterSummary = (plugin) => {
+    const controlCount = Number(plugin.controlInputs) || 0;
+    const audio = `${plugin.audioInputs || 0} in/${plugin.audioOutputs || 0} out`;
+    const midi = plugin.midiInputs ? `${plugin.midiInputs} MIDI in · ` : "";
+    return `${midi}${audio}${controlCount ? ` · ${controlCount} controls` : ""}`;
+  };
+  const addPluginInstrument = (plugin) => {
+    const trackId = pluginTrackIdFor(plugin);
+    state.config.trackPluginSources = {
+      ...(state.config.trackPluginSources || {}),
+      [trackId]: {
+        id: plugin.id,
+        slug: plugin.slug || trackId,
+        label: plugin.label || plugin.slug || trackId,
+        name: plugin.name,
+        kind: "instrument",
+        assetPath: plugin.assetPath || `plugins/${plugin.slug || trackId}`,
+        processorFile: plugin.processorFile || "processor.js",
+        wasmFile: plugin.wasmFile || "",
+        controlInputs: Number(plugin.controlInputs) || 0,
+        audioInputs: Number(plugin.audioInputs) || 0,
+        audioOutputs: Number(plugin.audioOutputs) || 0,
+        midiInputs: Number(plugin.midiInputs) || 0,
+        parameters: Array.isArray(plugin.parameters) ? plugin.parameters : []
+      }
+    };
+    const mode = currentSampleAddMode();
+    if (mode === "pianoRoll") {
+      openTrackPianoRoll(trackId, { exposeGrid: false });
+      status.textContent = `Opened ${plugin.name} in Piano Roll`;
+    } else {
+      addGridTrack(trackId, { expose: true });
+      addProjectTrack(trackId, { render: false });
+      selectRow(trackId, { deferTrackPanels: true });
+      renderStepGrid();
+      status.textContent = `Added ${plugin.name} to Track View`;
+    }
+    renderTrackPaletteButtons();
+    renderTrackExplorer();
+    renderTrackInspector();
+    syncJson();
+  };
+  const hydratePluginTrackSources = () => {
+    if (!state.config?.trackPluginSources || !wadspaPlugins.length) return;
+    let changed = false;
+    const catalogById = new Map(wadspaPlugins.map((plugin) => [plugin.id, plugin]));
+    const catalogBySlug = new Map(wadspaPlugins.map((plugin) => [plugin.slug, plugin]));
+    const next = { ...state.config.trackPluginSources };
+    const resetParamTracks = new Set();
+    Object.entries(next).forEach(([trackId, source]) => {
+      const plugin = catalogById.get(source?.id) || catalogBySlug.get(source?.slug);
+      if (!plugin) return;
+      const oldParameterCount = Array.isArray(source.parameters) ? source.parameters.length : 0;
+      const nextParameterCount = Array.isArray(plugin.parameters) ? plugin.parameters.length : 0;
+      if (oldParameterCount > 0 && nextParameterCount > oldParameterCount) {
+        resetParamTracks.add(trackId);
+      }
+      const hasParameters = Array.isArray(source.parameters) && source.parameters.length;
+      if (
+        hasParameters
+        && source.parameters.length === nextParameterCount
+        && source.controlInputs === plugin.controlInputs
+        && source.audioInputs === plugin.audioInputs
+        && source.audioOutputs === plugin.audioOutputs
+        && source.midiInputs === plugin.midiInputs
+        && source.assetPath === plugin.assetPath
+        && source.processorFile === plugin.processorFile
+        && source.wasmFile === plugin.wasmFile
+      ) {
+        return;
+      }
+      next[trackId] = {
+        ...source,
+        id: plugin.id,
+        slug: plugin.slug || source?.slug || trackId,
+        label: plugin.label || source?.label || plugin.slug || trackId,
+        name: plugin.name || source?.name || trackId,
+        kind: plugin.kind || source?.kind || "instrument",
+        assetPath: plugin.assetPath || source?.assetPath || `plugins/${plugin.slug || source?.slug || trackId}`,
+        processorFile: plugin.processorFile || source?.processorFile || "processor.js",
+        wasmFile: plugin.wasmFile || source?.wasmFile || "",
+        controlInputs: Number(plugin.controlInputs) || 0,
+        audioInputs: Number(plugin.audioInputs) || 0,
+        audioOutputs: Number(plugin.audioOutputs) || 0,
+        midiInputs: Number(plugin.midiInputs) || 0,
+        parameters: Array.isArray(plugin.parameters) ? plugin.parameters : []
+      };
+      changed = true;
+    });
+    if (resetParamTracks.size && state.config.trackPluginParams) {
+      const params = { ...(state.config.trackPluginParams || {}) };
+      resetParamTracks.forEach((trackId) => {
+        delete params[trackId];
+      });
+      state.config.trackPluginParams = params;
+      changed = true;
+    }
+    if (!changed) return;
+    state.config.trackPluginSources = next;
+    applyConfig();
+    renderTrackInspector();
+    syncJson();
+  };
+  const appendWadspaPalette = (host, plugins, kind) => {
+    if (!host || !plugins.length) return;
+    const divider = document.createElement("div");
+    divider.className = "track-add-palette-divider";
+    divider.textContent = kind === "instrument" ? "Plugin Instruments" : "Plugin Effects";
+    host.appendChild(divider);
+    plugins.forEach((plugin) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `is-wadspa-plugin ${kind === "effect" ? "is-effect-control" : ""}`;
+      button.dataset.wadspaPlugin = plugin.id;
+      button.title = `${plugin.name} · ${wadspaParameterSummary(plugin)}`;
+      const label = document.createElement("span");
+      label.textContent = plugin.name;
+      button.append(label);
+      button.addEventListener("click", () => {
+        if (kind === "instrument") addPluginInstrument(plugin);
+        else status.textContent = `${plugin.name} plugin is listed; effects-chain support is next`;
+      });
+      host.appendChild(button);
+    });
+  };
   const renderEffectPalette = () => {
     if (!effectsList) return;
     effectsList.innerHTML = "";
-    if (effectsCount) effectsCount.textContent = `${effectPalette.length}`;
     effectPalette.forEach((effect) => {
       const button = document.createElement("button");
       button.type = "button";
@@ -2117,13 +2453,50 @@ function wireTrackPaletteButtons() {
       button.addEventListener("click", () => focusEffectControl(effect));
       effectsList.appendChild(button);
     });
+    const wadspaEffects = wadspaPluginsForKind("effect");
+    appendWadspaPalette(effectsList, wadspaEffects, "effect");
+    if (effectsCount) {
+      effectsCount.textContent = wadspaCatalogState === "loading"
+        ? `${effectPalette.length}+`
+        : `${effectPalette.length + wadspaEffects.length}`;
+    }
   };
   function renderTrackPaletteButtons() {
     const instruments = TRACK_REGISTRY.filter((track) => track.group !== "fx" && track.voice !== "sample");
     renderPalette(instrumentList, instrumentCount, instruments, { respectsAddMode: true });
+    const wadspaInstruments = wadspaPluginsForKind("instrument");
+    appendWadspaPalette(instrumentList, wadspaInstruments, "instrument");
+    if (instrumentCount) {
+      instrumentCount.textContent = wadspaCatalogState === "loading"
+        ? `${instruments.length}+`
+        : `${instruments.length + wadspaInstruments.length}`;
+    }
     renderEffectPalette();
   }
+  const loadWadspaCatalog = async () => {
+    if (typeof fetch !== "function") {
+      wadspaCatalogState = "unavailable";
+      renderTrackPaletteButtons();
+      return;
+    }
+    try {
+      const response = await fetch(WADSPA_CATALOG_URL, { cache: "no-store" });
+      if (!response.ok) throw new Error(`catalog ${response.status}`);
+      const catalog = await response.json();
+      wadspaPlugins = Array.isArray(catalog.plugins)
+        ? catalog.plugins.filter((plugin) => wadspaKind(plugin))
+        : [];
+      wadspaCatalogState = "ready";
+      hydratePluginTrackSources();
+    } catch (error) {
+      console.warn("WADSPA catalog unavailable", error);
+      wadspaCatalogState = "unavailable";
+      wadspaPlugins = [];
+    }
+    renderTrackPaletteButtons();
+  };
   renderTrackPaletteButtons();
+  void loadWadspaCatalog();
   window.rhythmEditorRenderTrackPalettes = renderTrackPaletteButtons;
 }
 function renderAddTrackDialog() { return trackPanels.renderAddTrackDialog(); }
@@ -2252,6 +2625,7 @@ fakeMidiKeyboard = createFakeMidiKeyboard({
   selectStep,
   buildStepGrid,
   refreshPianoRollLanes,
+  refreshLivePianoRollNotes,
   renderStepGrid,
   addGridTrack,
   renderTrackExplorer,
@@ -2268,6 +2642,9 @@ fakeMidiKeyboard = createFakeMidiKeyboard({
   defaultNoteState,
   trackName: (id) => trackPanels?.instanceLabel?.(id) || id,
   showContextMenu,
+  syncRecordedConfig: applyConfig,
+  onPianoRollPitchFocus: (pitch, options = {}) => focusPianoRollPitch(pitch, { ...options, refresh: false }),
+  onPianoRollRecordPosition: (position) => focusPianoRollRecordPosition(position),
   onTrackEditorModeChange: syncContextPanels
 });
 
@@ -2311,6 +2688,7 @@ const resetMasterEq = () => globalMixPanel.reset();
 // ── Project Manager (save/load slots + WAV export) ─────────────────────────
 const projectManager = createProjectManager({
   getConfig: serializableConfig,
+  createNewConfig: () => createBlankRhythmConfig(),
   applyLoadedConfig,
   getEngine: () => state.engine,
   startPlayback,
@@ -2385,22 +2763,91 @@ state.engine.on("stop", () => loopPanel.detachScheduler());
 {
   const handle = $("#selected-step-resize-handle");
   const panel = $("#selected-step-panel");
-  if (handle && panel) {
+  const sequencerPanel = panel?.closest?.(".sequencer-panel");
+  const grid = $("#step-grid");
+  if (handle && panel && sequencerPanel) {
     let startY = 0;
     let startHeight = 0;
+    let clampRaf = 0;
+    let pendingFitContent = false;
+    const visibleElementContentHeight = (element, { floorToOwnRect = true } = {}) => {
+      if (!element || !element.getClientRects?.().length) return 0;
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      const paddingTop = parseFloat(style.paddingTop) || 0;
+      const paddingBottom = parseFloat(style.paddingBottom) || 0;
+      const children = Array.from(element.children || [])
+        .filter((child) => child.getClientRects?.().length);
+      if (!children.length) return Math.ceil(rect.height);
+      let bottom = paddingTop;
+      children.forEach((child) => {
+        const childRect = child.getBoundingClientRect();
+        const childTop = childRect.top - rect.top + (element.scrollTop || 0);
+        const childHeight = visibleElementContentHeight(child, { floorToOwnRect: true }) || childRect.height;
+        bottom = Math.max(bottom, childTop + childHeight);
+      });
+      const measured = bottom + paddingBottom;
+      return Math.ceil(floorToOwnRect ? Math.max(rect.height, measured) : measured);
+    };
+    const visibleBottomPanelContentHeight = () => {
+      const panelRect = panel.getBoundingClientRect();
+      const panelStyle = window.getComputedStyle(panel);
+      const paddingBottom = parseFloat(panelStyle.paddingBottom) || 0;
+      let bottom = 0;
+      [panel.querySelector(".selected-step-header"), selectedControlsWrap].forEach((element) => {
+        if (!element?.getClientRects?.().length) return;
+        const rect = element.getBoundingClientRect();
+        const isControlsWrap = element === selectedControlsWrap;
+        bottom = Math.max(bottom, rect.top - panelRect.top + visibleElementContentHeight(element, {
+          floorToOwnRect: !isControlsWrap
+        }));
+      });
+      return Math.ceil(bottom + paddingBottom);
+    };
     const clampPanelHeight = (h) => {
-      // Never exceed ~60% of the viewport height so the panel can't swallow the grid
-      const maxH = Math.floor(window.innerHeight * 0.6);
+      const sequencerRect = sequencerPanel.getBoundingClientRect();
+      const gridTop = grid?.getBoundingClientRect?.().top ?? sequencerRect.top;
+      const handleHeight = handle.getBoundingClientRect().height || 4;
+      const minGridHeight = 80;
+      const gridMaxH = Math.max(60, Math.floor(sequencerRect.bottom - gridTop - handleHeight - minGridHeight));
+      const contentMaxH = Math.max(60, visibleBottomPanelContentHeight());
+      const maxH = Math.max(60, Math.min(gridMaxH, contentMaxH));
       return Math.max(60, Math.min(maxH, h));
     };
+    const setBottomPanelHeight = (height, { fitContent = false } = {}) => {
+      const nextHeight = fitContent ? visibleBottomPanelContentHeight() : height;
+      sequencerPanel.style.setProperty("--bottom-panel-height", `${clampPanelHeight(nextHeight)}px`);
+      panel.style.height = "";
+    };
+    const currentBottomPanelHeight = () => {
+      const configured = parseFloat(getComputedStyle(sequencerPanel).getPropertyValue("--bottom-panel-height"));
+      return Number.isFinite(configured) ? configured : panel.getBoundingClientRect().height;
+    };
+    const scheduleBottomPanelClamp = ({ fitContent = false } = {}) => {
+      pendingFitContent = pendingFitContent || fitContent;
+      if (clampRaf) return;
+      clampRaf = window.requestAnimationFrame(() => {
+        const shouldFitContent = pendingFitContent;
+        pendingFitContent = false;
+        clampRaf = 0;
+        setBottomPanelHeight(currentBottomPanelHeight(), { fitContent: shouldFitContent });
+      });
+    };
+    clampBottomPanelHeightToContent = scheduleBottomPanelClamp;
+
+    if (panel.style.height) {
+      setBottomPanelHeight(parseInt(panel.style.height, 10));
+    }
 
     handle.addEventListener("mousedown", (e) => {
       startY = e.clientY;
       startHeight = panel.getBoundingClientRect().height;
       handle.classList.add("is-dragging");
+      e.preventDefault();
       const onMove = (me) => {
         const delta = startY - me.clientY;
-        panel.style.height = `${clampPanelHeight(startHeight + delta)}px`;
+        setBottomPanelHeight(startHeight + delta);
+        me.preventDefault();
       };
       const onUp = () => {
         handle.classList.remove("is-dragging");
@@ -2413,10 +2860,20 @@ state.engine.on("stop", () => loopPanel.detachScheduler());
 
     // Re-clamp on window resize so a previously set height can't overflow
     window.addEventListener("resize", () => {
-      if (panel.style.height) {
-        panel.style.height = `${clampPanelHeight(parseInt(panel.style.height, 10))}px`;
-      }
+      setBottomPanelHeight(currentBottomPanelHeight());
     });
+    if (typeof ResizeObserver !== "undefined") {
+      const resizeObserver = new ResizeObserver(scheduleBottomPanelClamp);
+      resizeObserver.observe(panel);
+      if (selectedControlsWrap) resizeObserver.observe(selectedControlsWrap);
+      if (selectedTrackPanel) resizeObserver.observe(selectedTrackPanel);
+      if (selectedEffectsChainPanel) resizeObserver.observe(selectedEffectsChainPanel);
+    }
+    if (typeof MutationObserver !== "undefined") {
+      const mutationObserver = new MutationObserver(scheduleBottomPanelClamp);
+      mutationObserver.observe(panel, { attributes: true, childList: true, subtree: true });
+    }
+    scheduleBottomPanelClamp();
   }
 }
 // Register every inspector slider/number input so setPairedControl never

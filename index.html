@@ -81,9 +81,21 @@
                 <button id="midi-clear-take" class="selected-midi-clear-take-button" type="button" title="Clear the last recording take" disabled>Clear Take</button>
               </div>
               <div class="selected-step-header-tools">
+                <label id="selected-quantize-toggle" class="selected-quantize-toggle" title="Use Steps/bar as the MIDI snap grid" hidden>
+                  <input id="selected-quantize-enabled" type="checkbox" aria-label="Enable MIDI quantize" />
+                </label>
                 <label id="selected-grid-steps" class="selected-grid-steps" hidden>
                   <span>Steps/bar</span>
-                  <input id="selected-grid-steps-input" type="number" min="1" max="128" step="1" value="16" aria-label="Grid steps per bar" />
+                  <input id="selected-grid-steps-input" type="number" min="1" max="128" step="0.0001" value="16" aria-label="Grid steps per bar" />
+                  <select id="selected-grid-note-value" class="selected-grid-note-value" aria-label="Equivalent note value">
+                    <option value="">Custom</option>
+                    <option value="1/1">1/1</option>
+                    <option value="1/2">1/2</option>
+                    <option value="1/4">1/4</option>
+                    <option value="1/8">1/8</option>
+                    <option value="1/16">1/16</option>
+                    <option value="1/32">1/32</option>
+                  </select>
                   <output id="selected-grid-steps-output">16</output>
                 </label>
               </div>
@@ -214,7 +226,7 @@
               <span class="time-sig-control">
                 <input id="time-sig-numerator" class="time-sig-number" type="number" min="1" max="16" step="1" value="4" aria-label="Time signature numerator" />
                 <span class="time-sig-slash">/</span>
-                <input id="time-sig-denominator" class="time-sig-number" type="number" min="2" max="16" step="1" value="4" aria-label="Time signature denominator" />
+                <input id="time-sig-denominator" class="time-sig-number" type="number" min="1" max="32" step="1" value="4" aria-label="Time signature denominator" />
                 <button id="time-sig-menu-button" class="time-sig-menu-button" type="button" aria-label="Common time signatures" aria-haspopup="listbox" aria-expanded="false" title="Common time signatures"></button>
                 <select id="time-sig-select" class="time-sig-native-select" aria-hidden="true" tabindex="-1">
                   <option value="4/4" selected>4/4</option>
@@ -274,28 +286,6 @@
             <p id="track-inspector-multi-hint" class="panel-hint" hidden>Shift-click track rows to inspect several at once.</p>
             <!-- One panel per selected track is rendered here. -->
             <div id="track-inspector-panels" class="track-inspector-panels"></div>
-            <!-- Piano roll/sample editor snapping belongs with the selected track context. -->
-            <section id="quantize-panel" class="quantize-panel" hidden>
-              <span class="panel-label">Quantize</span>
-              <div class="quantize-controls">
-                <label class="quantize-toggle-label">
-                  <input id="quantize-enabled" type="checkbox" />
-                  <span>On</span>
-                </label>
-                <label class="quantize-grid-label">
-                  <span>Grid</span>
-                  <select id="quantize-value">
-                    <option value="4">4 bars</option>
-                    <option value="2">2 bars</option>
-                    <option value="1">1 bar</option>
-                    <option value="0.5">1/2</option>
-                    <option value="0.25" selected>1/4</option>
-                    <option value="0.125">1/8</option>
-                    <option value="0.0625">1/16</option>
-                  </select>
-                </label>
-              </div>
-            </section>
             <!-- Hidden single-panel template cloned per selected track. -->
             <template id="track-inspector-template">
               <div class="track-inspector-body" data-track-panel>
