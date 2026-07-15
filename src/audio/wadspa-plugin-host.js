@@ -218,6 +218,8 @@ export class WadspaPluginHost {
     this.instances = new Map();
     this.pendingLoads = new Map();
     this.failedLoads = new Map();
+    this.effectInstances = new Map();
+    this.pendingEffectLoads = new Map();
     this.activeNotes = new Map();
   }
 
@@ -226,6 +228,25 @@ export class WadspaPluginHost {
     this.instances.forEach((entry, track) => {
       this.applyParams(track, entry);
       this.updateRoute(track, entry);
+    });
+    const activeEffects = new Set();
+    Object.entries(this.config.trackPluginEffects || {}).forEach(([track, effects]) => {
+      (Array.isArray(effects) ? effects : []).forEach((effect) => {
+        if (effect?.effectId) activeEffects.add(this.effectKey(track, effect.effectId));
+      });
+    });
+    this.effectInstances.forEach((entry, key) => {
+      if (!activeEffects.has(key)) {
+        entry.node.disconnect();
+        this.effectInstances.delete(key);
+        return;
+      }
+      const [track, effectId] = key.split("::");
+      const effect = this.effectForTrack(track, effectId);
+      if (effect) {
+        this.applyEffectParams(track, effect, entry);
+        this.updateEffectRoute(effect, entry);
+      }
     });
   }
 
@@ -238,7 +259,13 @@ export class WadspaPluginHost {
     const tracks = Object.entries(this.config.trackPluginSources || {})
       .filter(([, source]) => source?.kind !== "effect")
       .map(([track]) => track);
-    await Promise.all(tracks.map((track) => this.ensureInstrument(track).catch(() => null)));
+    const effectLoads = Object.entries(this.config.trackPluginEffects || {}).flatMap(([track, effects]) =>
+      (Array.isArray(effects) ? effects : []).map((effect) => this.ensureEffect(track, effect).catch(() => null))
+    );
+    await Promise.all([
+      ...tracks.map((track) => this.ensureInstrument(track).catch(() => null)),
+      ...effectLoads
+    ]);
   }
 
   async ensureInstrument(track) {
@@ -296,7 +323,7 @@ export class WadspaPluginHost {
       outputGain.connect(reverbSendGain);
       reverbSendGain.connect(this.reverbSend);
     }
-    return { node, outputGain, levelGain, dryPanner, delaySendGain, reverbSendGain };
+    return { node, outputGain, levelGain, dryPanner, delaySendGain, reverbSendGain, effectSendGains: new Map(), pendingEffectSendIds: new Set() };
   }
 
   updateRoute(track, entry) {
@@ -310,6 +337,7 @@ export class WadspaPluginHost {
     entry.delaySendGain.gain.setTargetAtTime(delaySend, now, 0.02);
     entry.reverbSendGain.gain.setTargetAtTime(reverbSend, now, 0.02);
     if (entry.dryPanner) entry.dryPanner.pan.setTargetAtTime(pan, now, 0.01);
+    this.updateInstrumentEffectSends(track, entry);
   }
 
   parameterValue(track, parameter) {
@@ -327,6 +355,133 @@ export class WadspaPluginHost {
     (Array.isArray(source.parameters) ? source.parameters : []).forEach((parameter) => {
       if (!parameter?.symbol) return;
       entry.node.set(parameter.symbol, this.parameterValue(track, parameter));
+    });
+  }
+
+  effectKey(track, effectId) {
+    return `${track}::${effectId}`;
+  }
+
+  effectChainForTrack(track) {
+    return Array.isArray(this.config.trackPluginEffects?.[track])
+      ? this.config.trackPluginEffects[track]
+      : [];
+  }
+
+  effectForTrack(track, effectId) {
+    return this.effectChainForTrack(track).find((effect) => effect?.effectId === effectId) || null;
+  }
+
+  async ensureEffect(track, effect) {
+    if (!this.context || !track || !effect?.effectId) return null;
+    const key = this.effectKey(track, effect.effectId);
+    const cached = this.effectInstances.get(key);
+    if (cached) return cached;
+    if (this.pendingEffectLoads.has(key)) return this.pendingEffectLoads.get(key);
+    if (!effect?.slug || !effect?.wasmFile) return null;
+    const pending = loadPlugin(this.context, moduleForSource(effect))
+      .then((node) => {
+        const entry = this.createEffectEntry(track, effect, node);
+        this.effectInstances.set(key, entry);
+        this.pendingEffectLoads.delete(key);
+        this.applyEffectParams(track, effect, entry);
+        this.updateEffectRoute(effect, entry);
+        return entry;
+      })
+      .catch((error) => {
+        console.warn(`Failed to load WADSPA effect for ${track}`, error);
+        this.pendingEffectLoads.delete(key);
+        return null;
+      });
+    this.pendingEffectLoads.set(key, pending);
+    return pending;
+  }
+
+  createEffectEntry(_track, _effect, node) {
+    const inputGain = this.context.createGain();
+    const wetGain = this.context.createGain();
+    inputGain.gain.value = 1;
+    wetGain.gain.value = 1;
+    inputGain.connect(node.node);
+    node.output.connect(wetGain);
+    wetGain.connect(this.output);
+    return { node, inputGain, wetGain };
+  }
+
+  updateEffectRoute(effect, entry) {
+    if (!entry || !this.context) return;
+    const now = this.context.currentTime;
+    entry.wetGain.gain.setTargetAtTime(effect?.bypass ? 0 : 1, now, 0.01);
+  }
+
+  effectParameterValue(track, effect, parameter) {
+    const stored = this.config.trackPluginEffectParams?.[track]?.[effect.effectId]?.[parameter.symbol];
+    const fallback = Number.isFinite(Number(parameter.default)) ? Number(parameter.default) : 0;
+    const min = Number.isFinite(Number(parameter.min)) ? Number(parameter.min) : -Infinity;
+    const max = Number.isFinite(Number(parameter.max)) ? Number(parameter.max) : Infinity;
+    const number = clamp(stored, min, max, fallback);
+    return parameter.integer || parameter.enumeration ? Math.round(number) : number;
+  }
+
+  applyEffectParams(track, effect, entry = this.effectInstances.get(this.effectKey(track, effect?.effectId))) {
+    if (!effect || !entry) return;
+    (Array.isArray(effect.parameters) ? effect.parameters : []).forEach((parameter) => {
+      if (!parameter?.symbol) return;
+      entry.node.set(parameter.symbol, this.effectParameterValue(track, effect, parameter));
+    });
+  }
+
+  connectEffectSend(source, destination, amount, collector = null) {
+    if (!this.context || !source || !destination) return null;
+    const send = clamp01(amount);
+    if (send <= 0.001) return null;
+    const sendGain = this.context.createGain();
+    sendGain.gain.value = send;
+    source.connect(sendGain);
+    sendGain.connect(destination);
+    if (collector) collector.push(sendGain);
+    return sendGain;
+  }
+
+  connectTrackEffectSends(source, track, collector = null) {
+    this.effectChainForTrack(track).forEach((effect) => {
+      if (!effect?.effectId || effect.bypass) return;
+      const key = this.effectKey(track, effect.effectId);
+      const entry = this.effectInstances.get(key);
+      if (entry) {
+        this.connectEffectSend(source, entry.inputGain, effect.send ?? 0.35, collector);
+      } else {
+        void this.ensureEffect(track, effect);
+      }
+    });
+  }
+
+  updateInstrumentEffectSends(track, entry) {
+    if (!entry?.outputGain) return;
+    const chain = this.effectChainForTrack(track).filter((effect) => effect?.effectId && !effect.bypass);
+    const activeIds = new Set(chain.map((effect) => effect.effectId));
+    entry.effectSendGains.forEach((sendGain, effectId) => {
+      if (activeIds.has(effectId)) return;
+      try { sendGain.disconnect(); } catch (_) { /* already disconnected */ }
+      entry.effectSendGains.delete(effectId);
+    });
+    chain.forEach((effect) => {
+      const existing = entry.effectSendGains.get(effect.effectId);
+      if (existing) {
+        existing.gain.setTargetAtTime(clamp01(effect.send ?? 0.35), this.context.currentTime, 0.01);
+        return;
+      }
+      if (entry.pendingEffectSendIds.has(effect.effectId)) return;
+      entry.pendingEffectSendIds.add(effect.effectId);
+      void this.ensureEffect(track, effect).then((effectEntry) => {
+        entry.pendingEffectSendIds.delete(effect.effectId);
+        if (!effectEntry || entry.effectSendGains.has(effect.effectId) || !this.effectForTrack(track, effect.effectId)) return;
+        const sendGain = this.context.createGain();
+        sendGain.gain.value = clamp01(effect.send ?? 0.35);
+        entry.outputGain.connect(sendGain);
+        sendGain.connect(effectEntry.inputGain);
+        entry.effectSendGains.set(effect.effectId, sendGain);
+      });
     });
   }
 

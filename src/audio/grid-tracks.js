@@ -138,6 +138,16 @@ export function removeTrackFromConfigMaps(config, trackId) {
     delete map[trackId];
     next.trackPluginParams = map;
   }
+  if (next?.trackPluginEffects?.[trackId] !== undefined) {
+    const map = { ...next.trackPluginEffects };
+    delete map[trackId];
+    next.trackPluginEffects = map;
+  }
+  if (next?.trackPluginEffectParams?.[trackId] !== undefined) {
+    const map = { ...next.trackPluginEffectParams };
+    delete map[trackId];
+    next.trackPluginEffectParams = map;
+  }
   if (next?.trackAutomationParams && typeof next.trackAutomationParams === "object") {
     const map = { ...next.trackAutomationParams };
     delete map[`grid:${trackId}`];
@@ -268,6 +278,8 @@ export function replaceTrackIdInConfig(config, oldId, newId) {
   next.trackAutomationCurves = replaceLaneKeysInMap(next.trackAutomationCurves, oldId, newId);
   next.midiNoteMap = replaceKeyInMap(next.midiNoteMap, oldId, newId);
   next.midiControlMap = replaceMidiControlTrackId(next.midiControlMap, oldId, newId);
+  next.trackPluginEffects = replaceKeyInMap(next.trackPluginEffects, oldId, newId);
+  next.trackPluginEffectParams = replaceKeyInMap(next.trackPluginEffectParams, oldId, newId);
 
   if (Array.isArray(next.editorLaneOrder)) {
     next.editorLaneOrder = uniqueArray(

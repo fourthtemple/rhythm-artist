@@ -561,6 +561,14 @@ export class RhythmEngine {
     return this.wadspaHost.ensureInstrument(track);
   }
 
+  async preparePluginEffects(track) {
+    if (!this.wadspaHost || !track) return [];
+    const effects = Array.isArray(this.config.trackPluginEffects?.[track])
+      ? this.config.trackPluginEffects[track]
+      : [];
+    return Promise.all(effects.map((effect) => this.wadspaHost.ensureEffect(track, effect)));
+  }
+
   readyForImmediateAudition() {
     return Boolean(this.context && this.context.state === "running" && this.kitLoaded);
   }
@@ -1422,6 +1430,7 @@ export class RhythmEngine {
     const dubEcho = clamp01(options.dubEcho);
     this.connectSend(source, this.fxSend, this.trackBusSend(track) + clamp01(options.delaySend) + dubEcho * 0.74, collector);
     this.connectSend(source, this.reverbSend, this.trackReverbSend(track) + clamp01(options.reverbSend) + dubEcho * 0.22, collector);
+    this.wadspaHost?.connectTrackEffectSends?.(source, track, collector);
   }
 
   /**

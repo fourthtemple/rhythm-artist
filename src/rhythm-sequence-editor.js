@@ -535,6 +535,7 @@ const selectedControlsWrap = $("#selected-controls");
 const selectedTrackPanel = $("#selected-track-panel");
 const selectedTrackTab = $("#selected-tab-track");
 const selectedEffectsChainPanel = $("#selected-effects-chain-panel");
+const selectedPluginEffectsChain = $("#selected-plugin-effects-chain");
 const selectedQuantizeToggle = $("#selected-quantize-toggle");
 const selectedQuantizeEnabled = $("#selected-quantize-enabled");
 const selectedGridSteps = $("#selected-grid-steps");
@@ -856,6 +857,7 @@ function syncSelectedEffectsDefaults() {
   const hit = selectedPanelTrackId();
   const visible = Boolean(hit);
   if (effectsDefaultControls) effectsDefaultControls.hidden = !visible;
+  renderSelectedPluginEffectsChain();
   if (!visible) return;
   const level = selectedTrackLevelFor(hit);
   const pan = selectedTrackPanFor(hit);
@@ -912,6 +914,223 @@ function commitSelectedEffectDefault(kind, value, options = {}) {
   }
 }
 
+function selectedEffectTrackIds() {
+  const selected = state.selectedTracks?.length
+    ? state.selectedTracks
+    : (state.selected?.hit ? [state.selected.hit] : []);
+  return [...new Set(selected.filter((hit) => hit && getTrackDef(hit)))];
+}
+
+function pluginEffectParamStep(parameter) {
+  if (parameter?.integer || parameter?.enumeration) return 1;
+  const span = Math.abs((Number(parameter?.max) || 0) - (Number(parameter?.min) || 0));
+  return span > 0 ? Number(Math.max(span / 100, 0.0001).toFixed(4)) : 0.01;
+}
+
+function pluginEffectScalePoints(parameter) {
+  if (!Array.isArray(parameter?.scalePoints)) return [];
+  return parameter.scalePoints
+    .filter((point) => point && Number.isFinite(Number(point.value)))
+    .map((point) => ({
+      label: typeof point.label === "string" && point.label.trim() ? point.label.trim() : String(point.value),
+      value: Number(point.value)
+    }));
+}
+
+function normalizedPluginEffectParamValue(parameter, value, fallback = parameter?.default) {
+  const min = Number.isFinite(Number(parameter?.min)) ? Number(parameter.min) : 0;
+  const max = Number.isFinite(Number(parameter?.max)) ? Number(parameter.max) : min + 1;
+  let next = clamp(value, min, max, Number.isFinite(Number(fallback)) ? Number(fallback) : min);
+  if (parameter?.integer || parameter?.enumeration) next = Math.round(next);
+  return next;
+}
+
+function formatPluginEffectParamValue(parameter, value) {
+  const number = normalizedPluginEffectParamValue(parameter, value);
+  const scalePoint = pluginEffectScalePoints(parameter)
+    .find((point) => Math.round(point.value) === Math.round(number));
+  if (scalePoint) return `${scalePoint.label} (${Math.round(number)})`;
+  if (parameter?.integer || parameter?.enumeration) return String(Math.round(number));
+  const span = Math.abs((Number(parameter?.max) || 0) - (Number(parameter?.min) || 0));
+  return number.toFixed(span <= 2 ? 2 : 1);
+}
+
+function pluginEffectParamValue(track, effect, parameter) {
+  const stored = state.config.trackPluginEffectParams?.[track]?.[effect.effectId]?.[parameter.symbol];
+  return normalizedPluginEffectParamValue(parameter, stored);
+}
+
+function setPluginEffectParamValue(track, effect, parameter, value) {
+  const nextValue = normalizedPluginEffectParamValue(parameter, value, pluginEffectParamValue(track, effect, parameter));
+  state.config.trackPluginEffectParams = {
+    ...(state.config.trackPluginEffectParams || {}),
+    [track]: {
+      ...(state.config.trackPluginEffectParams?.[track] || {}),
+      [effect.effectId]: {
+        ...(state.config.trackPluginEffectParams?.[track]?.[effect.effectId] || {}),
+        [parameter.symbol]: nextValue
+      }
+    }
+  };
+  applyConfig();
+  return nextValue;
+}
+
+function setPluginEffectSend(track, effect, value) {
+  const send = clamp(value, 0, 1, 0.35);
+  const next = { ...(state.config.trackPluginEffects || {}) };
+  next[track] = (Array.isArray(next[track]) ? next[track] : []).map((entry) =>
+    entry?.effectId === effect.effectId ? { ...entry, send } : entry
+  );
+  state.config.trackPluginEffects = next;
+  applyConfig();
+}
+
+function removePluginEffect(track, effect) {
+  const next = { ...(state.config.trackPluginEffects || {}) };
+  next[track] = (Array.isArray(next[track]) ? next[track] : []).filter((entry) => entry?.effectId !== effect.effectId);
+  if (!next[track].length) delete next[track];
+  state.config.trackPluginEffects = next;
+  if (state.config.trackPluginEffectParams?.[track]?.[effect.effectId]) {
+    const params = { ...(state.config.trackPluginEffectParams || {}) };
+    const trackParams = { ...(params[track] || {}) };
+    delete trackParams[effect.effectId];
+    if (Object.keys(trackParams).length) params[track] = trackParams;
+    else delete params[track];
+    state.config.trackPluginEffectParams = params;
+  }
+  applyConfig();
+  syncJson();
+  renderSelectedPluginEffectsChain();
+  status.textContent = `Removed ${effect.name || effect.label || "effect"}`;
+}
+
+function renderPluginEffectParamControl(track, effect, parameter) {
+  if (!parameter?.symbol) return null;
+  const current = pluginEffectParamValue(track, effect, parameter);
+  const label = document.createElement("label");
+  label.className = "plugin-effect-param";
+  if (parameter.enumeration || pluginEffectScalePoints(parameter).length) label.classList.add("is-enum");
+  const name = document.createElement("span");
+  name.textContent = parameter.name || parameter.symbol;
+  name.title = parameter.name || parameter.symbol;
+  const range = document.createElement("input");
+  range.type = "range";
+  range.min = String(parameter.min);
+  range.max = String(parameter.max);
+  range.step = String(pluginEffectParamStep(parameter));
+  range.value = String(current);
+  range.dataset.midiParam = `track.${track}.effect.${effect.effectId}.${parameter.symbol}`;
+  range.dataset.midiLabel = `${trackName(track)} ${effect.name || "Effect"} ${parameter.name || parameter.symbol}`;
+  range.dataset.midiAction = "value";
+  const out = document.createElement("output");
+  out.textContent = formatPluginEffectParamValue(parameter, current);
+  out.title = out.textContent;
+  range.addEventListener("input", () => {
+    const next = setPluginEffectParamValue(track, effect, parameter, range.value);
+    range.value = String(next);
+    out.textContent = formatPluginEffectParamValue(parameter, next);
+    out.title = out.textContent;
+  });
+  range.addEventListener("change", syncJson);
+  label.append(name, range, out);
+  return label;
+}
+
+function renderSelectedPluginEffectsChain() {
+  if (!selectedPluginEffectsChain) return;
+  selectedPluginEffectsChain.innerHTML = "";
+  const tracks = selectedEffectTrackIds();
+  if (!tracks.length) {
+    const empty = document.createElement("p");
+    empty.className = "plugin-effect-empty";
+    empty.textContent = "Select a track, then choose an effect from Available Effects.";
+    selectedPluginEffectsChain.appendChild(empty);
+    return;
+  }
+  const track = tracks[0];
+  const chain = Array.isArray(state.config.trackPluginEffects?.[track])
+    ? state.config.trackPluginEffects[track]
+    : [];
+  if (tracks.length > 1) {
+    const hint = document.createElement("p");
+    hint.className = "plugin-effect-empty";
+    hint.textContent = `${tracks.length} tracks selected. New effects are added to all selected tracks; showing ${trackName(track)}.`;
+    selectedPluginEffectsChain.appendChild(hint);
+  }
+  if (!chain.length) {
+    const empty = document.createElement("p");
+    empty.className = "plugin-effect-empty";
+    empty.textContent = `No plugin effects on ${trackName(track)}.`;
+    selectedPluginEffectsChain.appendChild(empty);
+    return;
+  }
+  chain.forEach((effect, index) => {
+    const card = document.createElement("details");
+    card.className = "plugin-effect-card";
+    if (index === 0) card.open = true;
+
+    const summary = document.createElement("summary");
+    const title = document.createElement("span");
+    title.className = "plugin-effect-title";
+    title.textContent = effect.name || effect.label || effect.slug || "Plugin Effect";
+    const meta = document.createElement("span");
+    meta.className = "plugin-effect-meta";
+    meta.textContent = `${effect.audioInputs || 0} in/${effect.audioOutputs || 0} out · ${effect.controlInputs || 0} controls`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "plugin-effect-remove";
+    remove.textContent = "×";
+    remove.title = `Remove ${title.textContent}`;
+    remove.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      removePluginEffect(track, effect);
+    });
+    summary.append(title, meta, remove);
+    card.appendChild(summary);
+
+    const body = document.createElement("div");
+    body.className = "plugin-effect-body";
+    const send = document.createElement("label");
+    send.className = "plugin-effect-param plugin-effect-send";
+    const sendName = document.createElement("span");
+    sendName.textContent = "Send";
+    const sendRange = document.createElement("input");
+    sendRange.type = "range";
+    sendRange.min = "0";
+    sendRange.max = "1";
+    sendRange.step = "0.01";
+    sendRange.value = String(clamp(effect.send, 0, 1, 0.35));
+    sendRange.dataset.midiParam = `track.${track}.effect.${effect.effectId}.send`;
+    sendRange.dataset.midiLabel = `${trackName(track)} ${title.textContent} Send`;
+    sendRange.dataset.midiAction = "value";
+    const sendOut = document.createElement("output");
+    sendOut.textContent = Number(sendRange.value).toFixed(2);
+    sendRange.addEventListener("input", () => {
+      setPluginEffectSend(track, effect, sendRange.value);
+      sendOut.textContent = Number(sendRange.value).toFixed(2);
+    });
+    sendRange.addEventListener("change", syncJson);
+    send.append(sendName, sendRange, sendOut);
+    body.appendChild(send);
+
+    const parameters = Array.isArray(effect.parameters) ? effect.parameters : [];
+    parameters.forEach((parameter) => {
+      const control = renderPluginEffectParamControl(track, effect, parameter);
+      if (control) body.appendChild(control);
+    });
+    if (!parameters.length) {
+      const empty = document.createElement("span");
+      empty.className = "plugin-effect-no-params";
+      empty.textContent = "No control inputs";
+      body.appendChild(empty);
+    }
+    card.appendChild(body);
+    selectedPluginEffectsChain.appendChild(card);
+  });
+}
+
 function setSelectedBottomTab(tab = "note") {
   const noteAvailable = state.trackEditorMode !== "wave";
   const requested = tab === "track" || tab === "effects" ? tab : "note";
@@ -931,6 +1150,7 @@ function setSelectedBottomTab(tab = "note") {
   });
   syncSelectedGridStepsControl();
   syncSelectedEffectsDefaults();
+  renderSelectedPluginEffectsChain();
   clampBottomPanelHeightToContent({ fitContent: true });
 }
 
@@ -2321,25 +2541,26 @@ function wireTrackPaletteButtons() {
     const midi = plugin.midiInputs ? `${plugin.midiInputs} MIDI in · ` : "";
     return `${midi}${audio}${controlCount ? ` · ${controlCount} controls` : ""}`;
   };
+  const pluginSourceFromCatalog = (plugin, kind = "instrument") => ({
+    id: plugin.id,
+    slug: plugin.slug || plugin.id,
+    label: plugin.label || plugin.slug || plugin.id,
+    name: plugin.name,
+    kind,
+    assetPath: plugin.assetPath || `plugins/${plugin.slug || plugin.id}`,
+    processorFile: plugin.processorFile || "processor.js",
+    wasmFile: plugin.wasmFile || "",
+    controlInputs: Number(plugin.controlInputs) || 0,
+    audioInputs: Number(plugin.audioInputs) || 0,
+    audioOutputs: Number(plugin.audioOutputs) || 0,
+    midiInputs: Number(plugin.midiInputs) || 0,
+    parameters: Array.isArray(plugin.parameters) ? plugin.parameters : []
+  });
   const addPluginInstrument = (plugin) => {
     const trackId = pluginTrackIdFor(plugin);
     state.config.trackPluginSources = {
       ...(state.config.trackPluginSources || {}),
-      [trackId]: {
-        id: plugin.id,
-        slug: plugin.slug || trackId,
-        label: plugin.label || plugin.slug || trackId,
-        name: plugin.name,
-        kind: "instrument",
-        assetPath: plugin.assetPath || `plugins/${plugin.slug || trackId}`,
-        processorFile: plugin.processorFile || "processor.js",
-        wasmFile: plugin.wasmFile || "",
-        controlInputs: Number(plugin.controlInputs) || 0,
-        audioInputs: Number(plugin.audioInputs) || 0,
-        audioOutputs: Number(plugin.audioOutputs) || 0,
-        midiInputs: Number(plugin.midiInputs) || 0,
-        parameters: Array.isArray(plugin.parameters) ? plugin.parameters : []
-      }
+      [trackId]: pluginSourceFromCatalog(plugin, "instrument")
     };
     const mode = currentSampleAddMode();
     if (mode === "pianoRoll") {
@@ -2356,6 +2577,43 @@ function wireTrackPaletteButtons() {
     renderTrackExplorer();
     renderTrackInspector();
     syncJson();
+  };
+  const pluginEffectId = (plugin) => {
+    const slug = String(plugin.slug || plugin.id || "effect").replace(/[^a-z0-9_-]+/gi, "_");
+    const suffix = globalThis.crypto?.randomUUID?.()
+      || `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    return `${slug}_${suffix}`.slice(0, 96);
+  };
+  const addPluginEffect = (plugin) => {
+    const tracks = selectedEffectTrackIds();
+    if (!tracks.length) {
+      status.textContent = "Select a track before adding an effect";
+      setSelectedBottomTab("effects");
+      return;
+    }
+    const next = { ...(state.config.trackPluginEffects || {}) };
+    tracks.forEach((track) => {
+      const current = Array.isArray(next[track]) ? next[track] : [];
+      next[track] = [
+        ...current,
+        {
+          ...pluginSourceFromCatalog(plugin, "effect"),
+          effectId: pluginEffectId(plugin),
+          send: 0.35,
+          bypass: false
+        }
+      ];
+    });
+    state.config.trackPluginEffects = next;
+    applyConfig();
+    void Promise.all(tracks.map((track) => state.engine?.preparePluginEffects?.(track)));
+    setSelectedBottomTab("effects");
+    renderSelectedPluginEffectsChain();
+    renderTrackPaletteButtons();
+    syncJson();
+    status.textContent = tracks.length > 1
+      ? `Added ${plugin.name} to ${tracks.length} tracks`
+      : `Added ${plugin.name} to ${trackName(tracks[0])} sends`;
   };
   const hydratePluginTrackSources = () => {
     if (!state.config?.trackPluginSources || !wadspaPlugins.length) return;
@@ -2418,6 +2676,44 @@ function wireTrackPaletteButtons() {
     renderTrackInspector();
     syncJson();
   };
+  const hydratePluginEffectSources = () => {
+    if (!state.config?.trackPluginEffects || !wadspaPlugins.length) return;
+    const catalogById = new Map(wadspaPlugins.map((plugin) => [plugin.id, plugin]));
+    const catalogBySlug = new Map(wadspaPlugins.map((plugin) => [plugin.slug, plugin]));
+    let changed = false;
+    const next = {};
+    Object.entries(state.config.trackPluginEffects || {}).forEach(([track, effects]) => {
+      if (!Array.isArray(effects)) return;
+      next[track] = effects.map((effect) => {
+        const plugin = catalogById.get(effect?.id) || catalogBySlug.get(effect?.slug);
+        if (!plugin) return effect;
+        const hydrated = {
+          ...effect,
+          ...pluginSourceFromCatalog(plugin, "effect"),
+          effectId: effect.effectId,
+          send: effect.send,
+          bypass: Boolean(effect.bypass)
+        };
+        const oldParamCount = Array.isArray(effect.parameters) ? effect.parameters.length : 0;
+        const newParamCount = Array.isArray(hydrated.parameters) ? hydrated.parameters.length : 0;
+        if (
+          oldParamCount !== newParamCount
+          || effect.controlInputs !== hydrated.controlInputs
+          || effect.audioInputs !== hydrated.audioInputs
+          || effect.audioOutputs !== hydrated.audioOutputs
+          || effect.wasmFile !== hydrated.wasmFile
+        ) {
+          changed = true;
+        }
+        return hydrated;
+      });
+    });
+    if (!changed) return;
+    state.config.trackPluginEffects = next;
+    applyConfig();
+    renderSelectedPluginEffectsChain();
+    syncJson();
+  };
   const appendWadspaPalette = (host, plugins, kind) => {
     if (!host || !plugins.length) return;
     const divider = document.createElement("div");
@@ -2435,7 +2731,7 @@ function wireTrackPaletteButtons() {
       button.append(label);
       button.addEventListener("click", () => {
         if (kind === "instrument") addPluginInstrument(plugin);
-        else status.textContent = `${plugin.name} plugin is listed; effects-chain support is next`;
+        else addPluginEffect(plugin);
       });
       host.appendChild(button);
     });
@@ -2488,6 +2784,7 @@ function wireTrackPaletteButtons() {
         : [];
       wadspaCatalogState = "ready";
       hydratePluginTrackSources();
+      hydratePluginEffectSources();
     } catch (error) {
       console.warn("WADSPA catalog unavailable", error);
       wadspaCatalogState = "unavailable";

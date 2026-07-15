@@ -142,6 +142,49 @@ test("normalizeRhythmConfig preserves nonstandard per-track step counts", () => 
   assert.equal(config.trackStepCounts.hat, undefined);
 });
 
+test("normalizeRhythmConfig preserves plugin effect chains", () => {
+  const config = normalizeRhythmConfig({
+    trackPluginEffects: {
+      kick: [
+        {
+          effectId: "tube_1",
+          id: "wadspa:zam_tube",
+          slug: "zam_tube",
+          name: "ZamTube",
+          kind: "effect",
+          assetPath: "plugins/zam_tube",
+          processorFile: "processor.js",
+          wasmFile: "ZamTube.wasm",
+          audioInputs: 1,
+          audioOutputs: 1,
+          controlInputs: 2,
+          send: 2,
+          parameters: [
+            { symbol: "drive", name: "Drive", min: 0, max: 1, default: 0.25 },
+            { symbol: "mode", name: "Mode", min: 0, max: 3, default: 1, integer: true }
+          ]
+        }
+      ],
+      missing: [{ effectId: "bad", wasmFile: "bad.wasm" }]
+    },
+    trackPluginEffectParams: {
+      kick: {
+        tube_1: {
+          drive: 0.75,
+          mode: 8,
+          missing: 0.2
+        }
+      }
+    }
+  });
+  assert.equal(config.trackPluginEffects.kick.length, 1);
+  assert.equal(config.trackPluginEffects.kick[0].kind, "effect");
+  assert.equal(config.trackPluginEffects.kick[0].send, 1);
+  assert.equal(config.trackPluginEffects.missing, undefined);
+  assert.equal(config.trackPluginEffectParams.kick.tube_1.drive, 0.75);
+  assert.equal(config.trackPluginEffectParams.kick.tube_1.mode, 3);
+});
+
 test("normalizeRhythmConfig stores sparse per-track sampler defaults", () => {
   const config = normalizeRhythmConfig({
     trackOptionDefaults: {

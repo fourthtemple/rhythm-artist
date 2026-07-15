@@ -107,6 +107,8 @@ test("removeTrackFromConfigMaps drops the id from every map immutably", () => {
     trackLevels: { kick: 1, "clap~a1": 0.5 },
     trackPans: { "clap~a1": -0.3 },
     trackOptionDefaults: { "clap~a1": { offsetMs: 12 } },
+    trackPluginEffects: { "clap~a1": [{ effectId: "fx_1", name: "Tube" }] },
+    trackPluginEffectParams: { "clap~a1": { fx_1: { drive: 0.5 } } },
     other: { keep: true }
   };
   const next = removeTrackFromConfigMaps(config, "clap~a1");
@@ -114,6 +116,8 @@ test("removeTrackFromConfigMaps drops the id from every map immutably", () => {
   assert.equal(next.trackLevels["clap~a1"], undefined);
   assert.equal(next.trackPans["clap~a1"], undefined);
   assert.equal(next.trackOptionDefaults["clap~a1"], undefined);
+  assert.equal(next.trackPluginEffects["clap~a1"], undefined);
+  assert.equal(next.trackPluginEffectParams["clap~a1"], undefined);
   assert.equal(next.trackLevels.kick, 1);
   // Original is untouched.
   assert.equal(config.trackLevels["clap~a1"], 0.5);
@@ -144,6 +148,8 @@ test("replaceTrackIdInConfig moves track data and editor references", () => {
     trackOptionDefaults: { kick: { offsetMs: 12, delaySend: 0.3 } },
     trackSamples: { kick: { label: "dusty kick" } },
     trackStepCounts: { kick: 12 },
+    trackPluginEffects: { kick: [{ effectId: "fx_1", name: "Tube" }] },
+    trackPluginEffectParams: { kick: { fx_1: { drive: 0.5 } } },
     trackViewTrackIds: ["kick", "snare"],
     hiddenGridTrackIds: ["kick"],
     pianoRollTracks: ["kick"],
@@ -172,6 +178,8 @@ test("replaceTrackIdInConfig moves track data and editor references", () => {
   assert.deepEqual(next.trackOptionDefaults["clap~a1"], { offsetMs: 12, delaySend: 0.3 });
   assert.deepEqual(next.trackSamples["clap~a1"], { label: "dusty kick" });
   assert.equal(next.trackStepCounts["clap~a1"], 12);
+  assert.deepEqual(next.trackPluginEffects["clap~a1"], [{ effectId: "fx_1", name: "Tube" }]);
+  assert.deepEqual(next.trackPluginEffectParams["clap~a1"], { fx_1: { drive: 0.5 } });
   assert.deepEqual(next.trackViewTrackIds, ["clap~a1", "snare"]);
   assert.deepEqual(next.hiddenGridTrackIds, ["clap~a1"]);
   assert.deepEqual(next.pianoRollTracks, ["clap~a1"]);

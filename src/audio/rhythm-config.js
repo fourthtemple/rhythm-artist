@@ -364,6 +364,8 @@ export const DEFAULT_RHYTHM_CONFIG = {
   trackSamples: {},
   trackPluginSources: {},
   trackPluginParams: {},
+  trackPluginEffects: {},
+  trackPluginEffectParams: {},
   trackViewTrackIds: [],
   hiddenGridTrackIds: [],
   trackStepCounts: {},
@@ -609,6 +611,27 @@ const normalizePluginParameters = (parameters = []) => {
     .slice(0, 256);
 };
 
+const normalizePluginSource = (plugin = {}, fallbackId = "plugin", fallbackKind = "instrument") => {
+  const id = typeof plugin.id === "string" && plugin.id.trim() ? plugin.id.trim() : fallbackId;
+  const slug = typeof plugin.slug === "string" && plugin.slug.trim() ? plugin.slug.trim() : id;
+  const kind = plugin.kind === "effect" || fallbackKind === "effect" ? "effect" : "instrument";
+  return {
+    id,
+    slug,
+    label: typeof plugin.label === "string" && plugin.label.trim() ? plugin.label.trim() : slug,
+    name: typeof plugin.name === "string" && plugin.name.trim() ? plugin.name.trim() : "Plugin",
+    kind,
+    assetPath: typeof plugin.assetPath === "string" ? plugin.assetPath : `plugins/${slug}`,
+    processorFile: typeof plugin.processorFile === "string" ? plugin.processorFile : "processor.js",
+    wasmFile: typeof plugin.wasmFile === "string" ? plugin.wasmFile : "",
+    controlInputs: Math.max(0, Math.round(finiteNumber(plugin.controlInputs, 0))),
+    audioInputs: Math.max(0, Math.round(finiteNumber(plugin.audioInputs, 0))),
+    audioOutputs: Math.max(0, Math.round(finiteNumber(plugin.audioOutputs, 0))),
+    midiInputs: Math.max(0, Math.round(finiteNumber(plugin.midiInputs, 0))),
+    parameters: normalizePluginParameters(plugin.parameters)
+  };
+};
+
 /**
  * Gather every non-registry (instance) track id referenced anywhere in the
  * config: the per-track maps and the pattern bars. Used so per-instance
@@ -634,6 +657,8 @@ const collectExtraTrackIds = (config = {}) => {
   scan(config.trackSamples);
   scan(config.trackPluginSources);
   scan(config.trackPluginParams);
+  scan(config.trackPluginEffects);
+  scan(config.trackPluginEffectParams);
   if (typeof config.defaultNote?.instrument === "string" && !known.has(baseTrackId(config.defaultNote.instrument))) {
     found.add(config.defaultNote.instrument);
   }
@@ -816,20 +841,34 @@ export const normalizeRhythmConfig = (config = {}) => {
     Object.entries(sourcePluginTracks)
       .filter(([track, plugin]) => isKnownTrackId(track) && plugin && typeof plugin === "object")
       .map(([track, plugin]) => [track, {
-        id: typeof plugin.id === "string" ? plugin.id : track,
-        slug: typeof plugin.slug === "string" ? plugin.slug : track,
-        label: typeof plugin.label === "string" ? plugin.label : typeof plugin.slug === "string" ? plugin.slug : track,
-        name: typeof plugin.name === "string" && plugin.name.trim() ? plugin.name.trim() : getTrackDef(track)?.label || "Plugin",
-        kind: plugin.kind === "effect" ? "effect" : "instrument",
-        assetPath: typeof plugin.assetPath === "string" ? plugin.assetPath : `plugins/${typeof plugin.slug === "string" ? plugin.slug : track}`,
-        processorFile: typeof plugin.processorFile === "string" ? plugin.processorFile : "processor.js",
-        wasmFile: typeof plugin.wasmFile === "string" ? plugin.wasmFile : "",
-        controlInputs: Math.max(0, Math.round(finiteNumber(plugin.controlInputs, 0))),
-        audioInputs: Math.max(0, Math.round(finiteNumber(plugin.audioInputs, 0))),
-        audioOutputs: Math.max(0, Math.round(finiteNumber(plugin.audioOutputs, 0))),
-        midiInputs: Math.max(0, Math.round(finiteNumber(plugin.midiInputs, 0))),
-        parameters: normalizePluginParameters(plugin.parameters)
+        ...normalizePluginSource(plugin, track, "instrument"),
+        name: typeof plugin.name === "string" && plugin.name.trim() ? plugin.name.trim() : getTrackDef(track)?.label || "Plugin"
       }])
+  );
+  const sourcePluginEffects = merged.trackPluginEffects && typeof merged.trackPluginEffects === "object"
+    ? merged.trackPluginEffects
+    : {};
+  merged.trackPluginEffects = Object.fromEntries(
+    Object.entries(sourcePluginEffects)
+      .filter(([track, effects]) => isKnownTrackId(track) && Array.isArray(effects))
+      .map(([track, effects]) => [track, effects
+        .filter((effect) => effect && typeof effect === "object")
+        .map((effect, index) => {
+          const source = normalizePluginSource(effect, `${track}_effect_${index + 1}`, "effect");
+          const effectId = typeof effect.effectId === "string" && effect.effectId.trim()
+            ? effect.effectId.trim()
+            : `${source.slug || source.id}_${index + 1}`;
+          return {
+            ...source,
+            effectId,
+            kind: "effect",
+            send: clamp01(effect.send ?? 0.35),
+            bypass: Boolean(effect.bypass)
+          };
+        })
+        .filter((effect) => effect.wasmFile)
+        .slice(0, 32)])
+      .filter(([, effects]) => effects.length > 0)
   );
   const sourcePluginParams = merged.trackPluginParams && typeof merged.trackPluginParams === "object"
     ? merged.trackPluginParams
@@ -854,6 +893,39 @@ export const normalizeRhythmConfig = (config = {}) => {
         return [track, values];
       })
       .filter(([, values]) => Object.keys(values).length > 0)
+  );
+  const sourcePluginEffectParams = merged.trackPluginEffectParams && typeof merged.trackPluginEffectParams === "object"
+    ? merged.trackPluginEffectParams
+    : {};
+  merged.trackPluginEffectParams = Object.fromEntries(
+    Object.entries(sourcePluginEffectParams)
+      .filter(([track, effects]) => isKnownTrackId(track) && effects && typeof effects === "object")
+      .map(([track, effects]) => {
+        const chain = new Map((merged.trackPluginEffects?.[track] || []).map((effect) => [effect.effectId, effect]));
+        const effectValues = Object.fromEntries(
+          Object.entries(effects)
+            .filter(([effectId, params]) => chain.has(effectId) && params && typeof params === "object")
+            .map(([effectId, params]) => {
+              const parameterDefs = new Map((chain.get(effectId)?.parameters || []).map((parameter) => [parameter.symbol, parameter]));
+              const values = Object.fromEntries(
+                Object.entries(params)
+                  .filter(([symbol]) => typeof symbol === "string" && symbol)
+                  .map(([symbol, value]) => {
+                    const parameter = parameterDefs.get(symbol);
+                    const fallback = parameter?.default ?? 0;
+                    const min = parameter?.min ?? -Infinity;
+                    const max = parameter?.max ?? Infinity;
+                    const number = finiteNumber(value, fallback);
+                    return [symbol, Math.max(min, Math.min(max, number))];
+                  })
+              );
+              return [effectId, values];
+            })
+            .filter(([, values]) => Object.keys(values).length > 0)
+        );
+        return [track, effectValues];
+      })
+      .filter(([, effects]) => Object.keys(effects).length > 0)
   );
   merged.pianoRollTracks = Array.isArray(merged.pianoRollTracks)
     ? [...new Set(merged.pianoRollTracks
