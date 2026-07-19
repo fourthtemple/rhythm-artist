@@ -3005,6 +3005,7 @@ sampleBrowser = createSampleBrowser({
   setStatus: (text) => { status.textContent = text; },
   getSelectedHit: () => state.selected?.hit ?? null,
   assignSample: (hit, sample) => assignSampleToTrack(hit, sample),
+  addGridSampleTrack: () => addTrackInstance("sampler", { select: true, expose: true }),
   addSampleTrack: ({ name, file, source }) => {
     const cleanName = String(name || "Sample").replace(/\.[^.]+$/, "");
     state.trackEditorMode = "wave";

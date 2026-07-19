@@ -25,6 +25,7 @@ export function createSampleBrowser({
   setStatus = () => {},
   getSelectedHit = () => null,
   assignSample = () => {},
+  addGridSampleTrack = null,
   addSampleTrack = null,
   addPianoRollTrack = null,
   onSampleFolderConfigured = null,
@@ -731,7 +732,7 @@ export function createSampleBrowser({
   }
 
   async function loadEntry(entry) {
-    const hit = getSelectedHit();
+    const hit = getSelectedHit() || await addGridSampleTrack?.({ name: entry.name });
     if (!hit) { setStatus("Select a track first"); return; }
     if (entry.url && !entry.file && !entry.handle) {
       await assignSample(hit, bundledSampleReference({
