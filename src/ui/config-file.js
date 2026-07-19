@@ -8,12 +8,22 @@
 // of injected primitives. The editor keeps thin hoisted wrappers so existing
 // call sites (Save/Load buttons, bootstrap) are unchanged.
 
-import { createBlankRhythmConfig } from "../audio/rhythm-config.js";
+import {
+  createBlankRhythmConfig,
+  DEFAULT_GRID_TRACK_IDS
+} from "../audio/rhythm-config.js";
 
 export function shouldStartWithBlankProject(location = globalThis.location) {
   return location?.protocol === "https:"
     && location?.hostname === "fourthtemple.github.io"
     && /^\/rhythm-artist(?:\/|$)/.test(location?.pathname || "");
+}
+
+export function createHostedBlankRhythmConfig() {
+  return {
+    ...createBlankRhythmConfig(),
+    hiddenGridTrackIds: [...DEFAULT_GRID_TRACK_IDS]
+  };
 }
 
 /**
@@ -170,7 +180,7 @@ export function createConfigFile(deps) {
 
   async function loadSavedRhythmConfig() {
     if (shouldStartWithBlankProject()) {
-      applyLoadedConfig(createBlankRhythmConfig());
+      applyLoadedConfig(createHostedBlankRhythmConfig());
       setStatus("New empty project");
       return;
     }
