@@ -8,6 +8,14 @@
 // of injected primitives. The editor keeps thin hoisted wrappers so existing
 // call sites (Save/Load buttons, bootstrap) are unchanged.
 
+import { createBlankRhythmConfig } from "../audio/rhythm-config.js";
+
+export function shouldStartWithBlankProject(location = globalThis.location) {
+  return location?.protocol === "https:"
+    && location?.hostname === "fourthtemple.github.io"
+    && /^\/rhythm-artist(?:\/|$)/.test(location?.pathname || "");
+}
+
 /**
  * @param {object} deps
  * @param {object} deps.state Shared editor state (mutated in place).
@@ -161,6 +169,11 @@ export function createConfigFile(deps) {
   }
 
   async function loadSavedRhythmConfig() {
+    if (shouldStartWithBlankProject()) {
+      applyLoadedConfig(createBlankRhythmConfig());
+      setStatus("New empty project");
+      return;
+    }
     const localMode = await getLocalServerMode();
     let browserError = null;
     if (!localMode.preferBundledDefault) {
