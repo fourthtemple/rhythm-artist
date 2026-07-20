@@ -17,6 +17,16 @@ function gridRowStartFor(el) {
 }
 
 function desiredRowHeightFor(el, defaultHeight) {
+  const isResizableEditorLane = el?.classList?.contains?.("piano-roll-lane")
+    || el?.classList?.contains?.("piano-roll-lane-label")
+    || el?.classList?.contains?.("sample-lane")
+    || el?.classList?.contains?.("sample-lane-label");
+  const isFixedGridRow = !isResizableEditorLane && (
+    el?.classList?.contains?.("track-label")
+    || el?.classList?.contains?.("step-row")
+  );
+  if (isFixedGridRow) return defaultHeight;
+
   const inlineHeight = numericPx(el?.style?.height);
   const inlineMinHeight = numericPx(el?.style?.minHeight);
   const laneHeight = numericPx(el?.style?.getPropertyValue?.("--lane-height"));
