@@ -418,7 +418,7 @@ export const createBlankRhythmConfig = ({ bars = PHRASE_BARS } = {}) => {
     generatedRowsEditable: 1,
     trackSamples: {},
     trackViewTrackIds: [],
-    hiddenGridTrackIds: [],
+    hiddenGridTrackIds: [...DEFAULT_GRID_TRACK_IDS],
     trackStepCounts: {},
     midiNoteMap: {},
     midiControlMap: {},

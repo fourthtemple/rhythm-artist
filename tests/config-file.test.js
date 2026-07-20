@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { DEFAULT_GRID_TRACK_IDS } from "../src/audio/rhythm-config.js";
+import {
+  createBlankRhythmConfig,
+  DEFAULT_GRID_TRACK_IDS
+} from "../src/audio/rhythm-config.js";
 import {
   createHostedBlankRhythmConfig,
   shouldStartWithBlankProject
@@ -25,6 +28,15 @@ test("local development keeps its configured startup project", () => {
 
 test("hosted blank project has no visible default tracks", () => {
   const config = createHostedBlankRhythmConfig();
+
+  assert.deepEqual(config.trackViewTrackIds, []);
+  assert.deepEqual(config.pianoRollTracks, []);
+  assert.deepEqual(config.loopTracks, []);
+  assert.deepEqual(config.hiddenGridTrackIds, DEFAULT_GRID_TRACK_IDS);
+});
+
+test("new blank projects have no visible default tracks", () => {
+  const config = createBlankRhythmConfig();
 
   assert.deepEqual(config.trackViewTrackIds, []);
   assert.deepEqual(config.pianoRollTracks, []);
